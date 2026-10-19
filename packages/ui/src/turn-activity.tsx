@@ -23,6 +23,26 @@ function plural(count: number, word: string): string {
   return `${count} ${word}${count === 1 ? "" : "s"}`
 }
 
+// A running command can be a quoted script thousands of characters long (walk
+// finding F7). The row names it by its first line, cut to a bound, and says it
+// was cut; the step keeps the whole text.
+const commandSummaryLength = 72
+
+export function commandSummary(command: string): string {
+  const lines = command.split(/\r?\n/u).map((line) => line.trim()).filter((line) => line.length > 0)
+  const first = (lines[0] ?? "").replace(/\s+/gu, " ")
+  // Cut by code point, so a character outside the BMP is kept or dropped
+  // whole rather than leaving half a surrogate pair to draw as a box.
+  const points = Array.from(first)
+  if (points.length <= commandSummaryLength && lines.length <= 1) return first
+  // The ellipsis counts toward the bound.
+  return `${points.slice(0, commandSummaryLength - 1).join("").trimEnd()}…`
+}
+
+function commandShortened(command: string | undefined): command is string {
+  return command !== undefined && commandSummary(command) !== command
+}
+
 // The line beside the label: how much of the worktree the turn has moved, and
 // what it is doing right now. A count nobody can verify is worse than no count,
 // so files are the distinct paths the calls reported and nothing is inferred
@@ -34,7 +54,8 @@ export function activityMeta(items: readonly ToolActivity[], running: boolean): 
   if (files.size > 0) parts.push(plural(files.size, "file"))
   const current = running ? items.find((item) => item.outcome === "running") : undefined
   if (current) {
-    parts.push(`running ${current.argument ?? current.name}`)
+    const summary = current.argument === undefined ? "" : commandSummary(current.argument)
+    parts.push(`running ${summary || current.name}`)
     return parts.join(" · ")
   }
   const failures = items.filter((item) => item.failed).length
@@ -102,17 +123,19 @@ export const TurnActivity = memo(function TurnActivity({
         // opens an empty list reads as a broken control.
         disabled={items.length === 0}
         onClick={() => setOpen((current) => !current)}
-        className="flex w-fit items-center gap-2 rounded-full border border-border px-3 py-1 text-muted-foreground disabled:cursor-default disabled:opacity-100"
+        // One line at any width: the row may shrink to its column and cut its
+        // meta, never wrap into a taller pill over the thread.
+        className="flex w-fit max-w-full min-w-0 items-center gap-2 rounded-full border border-border px-3 py-1 text-left text-muted-foreground disabled:cursor-default disabled:opacity-100"
       >
         {items.length > 0 ? (
-          <ChevronRightIcon aria-hidden className={cn("size-3.5 transition-transform", open && "rotate-90")} />
+          <ChevronRightIcon aria-hidden className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
         ) : null}
-        <span className="text-[11.5px]">{activityLabel(items, running, timing, open)}</span>
-        {metaLine ? <span className="font-mono text-[10.5px] text-faint">{metaLine}</span> : null}
+        <span className="shrink-0 text-[11.5px] whitespace-nowrap">{activityLabel(items, running, timing, open)}</span>
+        {metaLine ? <span className="min-w-0 truncate font-mono text-[10.5px] text-faint">{metaLine}</span> : null}
         {running ? (
           // The only moving thing on the screen, and it says the turn is alive
           // rather than estimating a duration nobody can know.
-          <span aria-hidden className="relative block h-[3px] w-[34px] overflow-hidden rounded-[3px] bg-muted">
+          <span aria-hidden className="relative block h-[3px] w-[34px] shrink-0 overflow-hidden rounded-[3px] bg-muted">
             <span className="sweep-bar absolute inset-0 block w-[30%] rounded-[3px] bg-primary" />
           </span>
         ) : null}
@@ -122,11 +145,24 @@ export const TurnActivity = memo(function TurnActivity({
         <ol className="m-0 flex list-none flex-col overflow-hidden rounded-lg border border-border bg-card p-0">
           {items.map((item) => {
             const logOpen = openLog === item.id
+            // A command cut to fit its row opens to its whole text, so the
+            // step keeps what the row had no room for.
+            const fullCommand = commandShortened(item.argument) ? item.argument : undefined
+            const opens = Boolean(item.log) || fullCommand !== undefined
             const step = (
               <>
                 <StatusDot meaning={stepMeaning(item, running)} label={item.name} size="inline" />
+                {/* A cut command shows its summary, which also bounds the
+                    step button's accessible name; one short enough to
+                    keep whole can still be cut by a narrow column, so it
+                    carries its text as a title. */}
                 {item.argument ? (
-                  <span className="min-w-0 truncate font-mono text-[10.5px] text-muted-foreground">{item.argument}</span>
+                  <span
+                    className="min-w-0 truncate font-mono text-[10.5px] text-muted-foreground"
+                    {...(fullCommand === undefined ? { title: item.argument } : {})}
+                  >
+                    {fullCommand === undefined ? item.argument : commandSummary(item.argument)}
+                  </span>
                 ) : null}
                 <span className="ml-auto font-mono text-[10.5px] text-faint">{item.outcome === "running" && !running ? "no result" : item.outcome}</span>
               </>
@@ -134,9 +170,9 @@ export const TurnActivity = memo(function TurnActivity({
             return (
             <li key={item.id} className="border-b border-border last:border-b-0">
               {/* Desktop V2 opens a step's log from its whole row, so a step
-                  with a log is one button; a step without one is not a
-                  control. */}
-              {item.log ? (
+                  with a log, or with a command cut to fit, is one button; a
+                  step with neither is not a control. */}
+              {opens ? (
                 <button
                   type="button"
                   aria-expanded={logOpen}
@@ -149,6 +185,11 @@ export const TurnActivity = memo(function TurnActivity({
               ) : (
                 <div className="flex items-center gap-2 px-3 py-2">{step}</div>
               )}
+              {logOpen && fullCommand !== undefined ? (
+                <pre className="m-0 max-h-40 overflow-auto border-t border-border bg-code px-3 py-2 font-mono text-[10.5px] whitespace-pre-wrap text-muted-foreground">
+                  {fullCommand}
+                </pre>
+              ) : null}
               {logOpen && item.log ? (
                 <pre className="m-0 max-h-40 overflow-auto border-t border-border bg-code px-3 py-2 font-mono text-[10.5px] whitespace-pre-wrap text-muted-foreground">
                   {item.log}

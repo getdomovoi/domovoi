@@ -299,6 +299,169 @@ describe("terminalLines and cursor movement within a line", () => {
   })
 })
 
+// F17: zsh with a starship prompt and zsh-autosuggestions, recorded from a
+// pty at a 40 column grid and cut down. Typing "w" shows the rest of a
+// history entry in grey; it runs past the grid onto a second row, so zsh
+// moves back up a row and along to the cursor. On Enter it erases both rows
+// of the suggestion and reaches the row below with a move down and a carriage
+// return, not a line break, and only then does the command print.
+const zshPrompt = "\u001b[38;2;166;218;149m\u{F011B}\u001b[38;2;245;169;127m ❯\u001b[0m \u001b[K\u001b[?1h\u001b=\u001b[?2004h"
+const zshTyped = [
+  "w",
+  "\b\u001b[32mw\u001b[39m\u001b[90mhoami && echo staging-deploy-finished\u001b[39m\u001b[K\u001b[A\u001b[3C",
+  "\u001b[32mh\u001b[39m",
+  "\u001b[32mo\u001b[39m",
+  "\u001b[32ma\u001b[39m",
+  "\u001b[32mm\u001b[39m",
+  "\u001b[32mi\u001b[39m",
+  "\b\b\b\b\b\b\u001b[32mwhoami\u001b[39m",
+].join("")
+const zshEnter = [
+  "\u001b[K\u001b[1B\r\u001b[K\u001b[A\u001b[10C",
+  "\u001b[?1l\u001b>\u001b[?2004l",
+  "\u001b[1B\r",
+  "\u001b]2;whoami\u0007",
+  "fetzy\r\n",
+  `\u001b[1m\u001b[7m%\u001b[27m\u001b[1m\u001b[0m${" ".repeat(39)}\r \r`,
+  "\r\u001b[0m\u001b[27m\u001b[24m\u001b[J\r\n~/walk on main\r\n",
+  zshPrompt,
+].join("")
+
+describe("terminalLines at the holder's grid", () => {
+  it("keeps a command and its output on their own lines when zsh moves between rows", () => {
+    const text = `~/walk on main\r\n${zshPrompt}${zshTyped}${zshEnter}`
+    expect(terminalLines(`~/walk on main\r\n${zshPrompt}${zshTyped}`, 40)).toEqual([
+      "~/walk on main",
+      "\u{F011B} ❯ whoami && echo staging-deploy-finished",
+    ])
+    expect(terminalLines(text, 40)).toEqual([
+      "~/walk on main",
+      "\u{F011B} ❯ whoami",
+      "fetzy",
+      " ".repeat(40),
+      "~/walk on main",
+      "\u{F011B} ❯ ",
+    ])
+  })
+
+  it("returns a carriage return to the start of the cursor's row", () => {
+    expect(terminalLines(`${"a".repeat(12)}\rX\n`, 5)).toEqual([`${"a".repeat(10)}Xa`])
+    // Exactly a row printed leaves the cursor on that row, at its last cell.
+    expect(terminalLines("abcde\rX\n", 5)).toEqual(["Xbcde"])
+    // An erase in line there erases from the cursor, past the row's text, and
+    // leaves the next character to wrap, as the holder's xterm does.
+    expect(terminalLines("abcde\u001b[KX\n", 5)).toEqual(["abcdeX"])
+    expect(terminalLines("abcde\u001b[1KX\n", 5)).toEqual(["     X"])
+    expect(terminalLines("abcdefgh\u001b[A\u001b[2CY\u001b[1K\n", 5)).toEqual(["     fgh"])
+    // A tab there moves nothing either.
+    expect(terminalLines("abcde\tX\n", 5)).toEqual(["abcdeX"])
+    // Without the grid the whole line is one row, as before.
+    expect(terminalLines(`${"a".repeat(12)}\rX\n`)).toEqual([`X${"a".repeat(11)}`])
+  })
+
+  it("moves up and down the rows of one wrapped line", () => {
+    // Rows "abcde" and "fgh": up to column 3, X, then down to column 4 of
+    // the second row, past its text.
+    expect(terminalLines("abcdefgh\u001b[AX\u001b[BY\n", 5)).toEqual(["abcXefgh Y"])
+    // A move does not leave the row it starts on sideways.
+    expect(terminalLines("abcdefgh\u001b[9DX\n", 5)).toEqual(["abcdeXgh"])
+    expect(terminalLines("abcdefgh\u001b[AY\u001b[9CX\n", 5)).toEqual(["abcYXfgh"])
+    expect(terminalLines("abcdefgh\u001b[1GX\n", 5)).toEqual(["abcdeXgh"])
+  })
+
+  it("starts the next line on a move down past the line, once however far", () => {
+    expect(terminalLines("abc\u001b[BX\n", 5)).toEqual(["abc", "   X"])
+    expect(terminalLines("abc\u001b[999B\rX\n", 5)).toEqual(["abc", "X"])
+    expect(terminalLines("abc\u001b[E\u001b[EX\n", 5)).toEqual(["abc", "", "X"])
+  })
+
+  // The phone keeps no screen, so a move up past the line's first row is
+  // dropped, and a move down after it only undoes that.
+  it("drops a move up past the line, and the move down that undoes it", () => {
+    expect(terminalLines("one\r\ntwo\u001b[A\rX\u001b[B\rY\n", 5)).toEqual(["one", "Ywo"])
+    expect(terminalLines("one\r\ntwo\u001b[A\u001b[2B\rY\n", 5)).toEqual(["one", "two", "Y"])
+  })
+
+  it("erases to the end of the cursor's row, not of the whole line", () => {
+    expect(terminalLines("abcdefgh\u001b[A\u001b[K\n", 5)).toEqual(["abc  fgh"])
+    expect(terminalLines("abcdefgh\u001b[A\u001b[1K\n", 5)).toEqual(["    efgh"])
+    expect(terminalLines("abcdefgh\u001b[A\u001b[2K\n", 5)).toEqual(["     fgh"])
+    expect(terminalLines("abcdefgh\u001b[2K\n", 5)).toEqual(["abcde"])
+    expect(terminalLines("abcdefgh\u001b[A\u001b[9X\n", 5)).toEqual(["abc  fgh"])
+    // An erase in line of another mode erases nothing, as before.
+    expect(terminalLines("abcdefgh\u001b[A\u001b[3K\n", 5)).toEqual(["abcdefgh"])
+  })
+
+  it("deletes and inserts characters within the cursor's row", () => {
+    expect(terminalLines("abcdefgh\u001b[A\u001b[P\u001b[B\rZ\n", 5)).toEqual(["abce Zgh"])
+    expect(terminalLines("abcdefgh\u001b[A\u001b[2@\n", 5)).toEqual(["abc  fgh"])
+    expect(terminalLines("abcdefgh\u001b[A\u001b[9@\n", 5)).toEqual(["abc  fgh"])
+    // Once spare blanks are spent, an insert cut short at the old end takes
+    // a wide character it splits, as without the grid.
+    expect(drawnText(`${"\u001b[1000Cx\n".repeat(66)}界\r\u001b[@\u001b[3GX\n`, 1_000).lines.at(-2)).toBe("  X")
+    // A holder's row past the first thousand cells, at a grid that does not
+    // divide a thousand.
+    const long = `${"x".repeat(990)}${"abcdefghij".repeat(4)}`
+    expect(terminalLines(`${long}\u001b[A\r\u001b[P\n`, 30)).toEqual([`${"x".repeat(990)}bcdefghijabcdefghijabcdefghij abcdefghij`])
+    expect(terminalLines(`${long}\u001b[A\r\u001b[@\n`, 30)).toEqual([`${"x".repeat(990)} abcdefghijabcdefghijabcdefghiabcdefghij`])
+  })
+
+  // As without the grid: a record of row edits costs about what a record of
+  // plain output costs to read, best of five against plain text.
+  it("reads a record of row edits at the holder's grid about as fast as plain output", () => {
+    const best = (text: string, columns: number) => {
+      let fastest = Infinity
+      for (let run = 0; run < 5; run += 1) {
+        const started = performance.now()
+        drawnText(text, columns)
+        fastest = Math.min(fastest, performance.now() - started)
+      }
+      return fastest
+    }
+    const plain = best("\u001b[32m ✓\u001b[0m src/webhooks/handler.spec.ts (14 tests) 412ms\r\n".repeat(900), 1_000)
+    const widest = best(`${"x".repeat(1_500)}\u001b[A\r${"\u001b[@\u001b[P".repeat(10_756)}`, 1_000)
+    // 120 does not divide a thousand: the row edited starts at cell 960.
+    const narrower = best(`${"x".repeat(1_100)}\u001b[A\r${"\u001b[@\u001b[P".repeat(10_756)}`, 120)
+    expect(widest / plain).toBeLessThan(10)
+    expect(narrower / plain).toBeLessThan(10)
+  })
+
+  // A wide character with one cell left on the row wraps before it is drawn,
+  // leaving that cell blank, so the cells after it are where the holder has
+  // them.
+  it("wraps a wide character that does not fit the row", () => {
+    expect(terminalLines("abcd界\u001b[AX\n", 5)).toEqual(["abXd 界"])
+  })
+
+  // A row of the holder's grid can lie past the widest grid in a long line;
+  // a move along it is bounded by that row, not by the widest grid.
+  it("moves along a row past the widest grid", () => {
+    expect(terminalLines(`${"x".repeat(1_100)}\r\u001b[5CY\n`, 100)).toEqual([`${"x".repeat(1_005)}Y${"x".repeat(94)}`])
+  })
+
+  // The walk: the phone watched while the prompt held the typed command, so
+  // the record ended mid-line and Enter arrived live. The output printed over
+  // the command line ("fetzy    whoami") instead of under it.
+  it("draws a command the record ended on once, above its live output, at the holder's grid", () => {
+    const watchedAt = "2026-10-15T23:22:26.000Z"
+    const record = withNotification(
+      watchFrom(watched({ cols: 40, buffer: `~/walk on main\r\n${zshPrompt}${zshTyped}`, watchedAt })),
+      { method: "terminal.output", params: { terminalId: "terminal-1", data: zshEnter } },
+      at,
+    )
+    expect(terminalRows(record, true).map((row) => row.text)).toEqual([
+      "~/walk on main",
+      `Recent output above. Live from ${clock(watchedAt)}.`,
+      "\u{F011B} ❯ whoami",
+      "fetzy",
+      " ".repeat(40),
+      "~/walk on main",
+      "\u{F011B} ❯ ",
+    ])
+    expect(terminalLineCount(record)).toBe(6)
+  })
+})
+
 // Strings a terminal reads and never draws: a Device Control String such as
 // sixel graphics, an application program command, a privacy message, a start
 // of string. Each runs to the string terminator, ESC then backslash.
@@ -734,6 +897,11 @@ describe("withNotification", () => {
     expect(output(output(watchFrom(watched()), "\u001b[?"), "2C").pieces).toBe(0)
     expect(output(output(watchFrom(watched()), "\u001b["), "2C").pieces).toBe(1)
     expect(output(watchFrom(watched()), "\u001b[31m").pieces).toBe(0)
+    // A move between rows can start a line or move along a wrapped one.
+    for (const move of ["\u001b[A", "\u001b[B", "\u001b[2E", "\u001b[F"]) {
+      expect(output(watchFrom(watched()), move).pieces).toBe(1)
+    }
+    expect(output(watchFrom(watched()), "\u001b[?1B").pieces).toBe(0)
   })
 
   it("moves the claimant line when the claim moves", () => {

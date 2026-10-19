@@ -72,6 +72,28 @@ export type TerminalControls = {
   | { watch?: never, unwatch?: never }
 )
 
+// The terminal face, then faces that carry what it lacks. Shell prompts such
+// as starship and powerlevel10k print Nerd Font icons from the private use
+// areas; the browser looks for each glyph down this list, so a Nerd Font the
+// machine has installed draws them instead of an empty box. Nothing here is
+// bundled: a machine with none of these faces still shows the box. Names stay
+// unquoted for xterm, so none may start with a digit or hold one as a word.
+const terminalFontFamily = [
+  "JetBrains Mono Variable",
+  "JetBrains Mono",
+  "Symbols Nerd Font Mono",
+  "Symbols Nerd Font",
+  "JetBrainsMono Nerd Font Mono",
+  "JetBrainsMono Nerd Font",
+  "MesloLGS NF",
+  "MesloLGS Nerd Font Mono",
+  "Hack Nerd Font Mono",
+  "FiraCode Nerd Font Mono",
+  "Apple Symbols",
+  "Segoe UI Symbol",
+  "monospace",
+].join(", ")
+
 // The interval at which a pane that does not hold the shell reads the holder
 // again. The daemon sends no notice when the holder's connection drops, so
 // between reads (this interval plus the reply's time, or longer when a read
@@ -226,7 +248,7 @@ export function TerminalPane({
     const terminal = new Terminal({
       cursorBlink: !readOnly,
       disableStdin: true,
-      fontFamily: "JetBrains Mono Variable, JetBrains Mono, monospace",
+      fontFamily: terminalFontFamily,
       fontSize: 11,
       lineHeight: 1.85,
       screenReaderMode: true,
