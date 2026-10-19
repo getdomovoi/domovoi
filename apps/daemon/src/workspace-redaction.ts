@@ -1,6 +1,6 @@
 import { resolve } from "node:path"
 
-import { maximumPairedDeviceLabelLength, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { maximumCommitMessageLength, maximumPairedDeviceLabelLength, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import {
   affectsLinePaths,
@@ -239,6 +239,13 @@ function redactThreadItem(item: ThreadItem): ThreadItem {
       ...(item.midTurn ? { midTurn: {
         ...item.midTurn,
         changedPaths: item.midTurn.changedPaths.filter(checkpointPathIsSafe),
+      } } : {}),
+      // A commit's message is the person's own text. The replacement marker
+      // can lengthen it past its schema bound, so it is cut back.
+      ...(item.committed ? { committed: {
+        ...item.committed,
+        message: redactDurableText(item.committed.message).value.slice(0, maximumCommitMessageLength).trim(),
+        paths: item.committed.paths.filter(checkpointPathIsSafe),
       } } : {}),
     }
   }

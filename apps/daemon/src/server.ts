@@ -13,6 +13,8 @@ import {
   maximumMidTurnCheckpointPaths,
   maximumMidTurnCheckpointPathLength,
   maximumMidTurnCheckpointPathsBytes,
+  maximumCommittedPaths,
+  type CommittedCheckpoint,
   type MidTurnCheckpoint,
   type ApprovalCheckpointRefusal,
   type SessionAttachmentRefusal,
@@ -224,9 +226,11 @@ import {
   RepositoryFilterRefusedError,
   RepositoryGitFilterRefusedError,
   GitWorkspaceService,
+  SessionCommitRefusedError,
   WorkspaceEvidenceUnstableError,
   type Checkpoint,
   type FileRevert,
+  type SessionCommit,
   type WorkspaceService,
 } from "./workspace.js"
 import {
@@ -468,6 +472,7 @@ const sessionResourceMethods = new Set([
   "session.history",
   "session.send",
   "session.revertFile",
+  "session.commit",
   "session.restartProviderThread",
   "session.setRuntime",
   "session.transfer",
@@ -1246,6 +1251,7 @@ export function sessionHistoryEntries(
         ...(item.reason ? { reason: item.reason } : {}),
         ...(item.midTurn ? { midTurn: item.midTurn } : {}),
         ...(item.commit ? { commit: item.commit } : {}),
+        ...(item.committed ? { committed: item.committed } : {}),
       })
     } else if (item.kind === "user") {
       // The thread notes beside a sent message how many open annotations the
@@ -1715,6 +1721,21 @@ function checkpointCaptureFacts(providerTurnId: string | undefined, checkpoint: 
     changedPaths: displayedChangedPaths,
     changedPathCount: changedPaths.length,
   }
+}
+
+// What a person's commit put on the session branch, as the thread records it:
+// the first paths that fit the record's bounds, in Git's order, and how many
+// there were in all. The workspace refused the commit if any path was not one
+// the thread can show, so the safety filter here only guards stored records.
+function committedCheckpointFacts(made: SessionCommit, message: string, client: ClientKind): CommittedCheckpoint {
+  const paths: string[] = []
+  for (const path of made.changedFiles) {
+    if (path.length === 0 || path.length > maximumMidTurnCheckpointPathLength || !checkpointPathIsSafe(path)) continue
+    if (paths.length >= maximumCommittedPaths
+      || Buffer.byteLength(JSON.stringify([...paths, path]), "utf8") > maximumMidTurnCheckpointPathsBytes) break
+    paths.push(path)
+  }
+  return { message, branch: made.branch, paths, pathCount: made.changedFiles.length, client }
 }
 
 // A file tool's request: the file an edit reaches, read again at every Allow.
@@ -11150,6 +11171,77 @@ export class DomovoiDaemon {
         changed = true
       }
 
+      // A person commits the session's work (walk finding F10, ruled
+      // 2026-10-18). The agent's sandbox stays closed to .git, so Domovoi
+      // makes the commit, on the session branch only (workspace.ts commit).
+      // It is a person's control action, never an agent's: Ask and Plan run
+      // read-only and refuse it, Build allows it with or without Auto, and it
+      // waits for the turn, as a restore or a file revert does, so the branch
+      // never moves under a working agent. The thread records the message, the
+      // files and the sha as a commit checkpoint.
+      if (method === "session.commit") {
+        const params = paramsResult.data as RpcParams<"session.commit">
+        const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
+          return
+        }
+        if (!session?.workspacePath) {
+          this.#error(socket, request.id, invalidParams, "Session has no worktree")
+          return
+        }
+        if (session.runtime.permissionMode !== "build") {
+          const mode = session.runtime.permissionMode === "ask" ? "Ask" : "Plan"
+          this.#error(socket, request.id, invalidParams, `This session is in ${mode}, which is read-only, so Domovoi does not commit in it. Switch it to Build to commit.`)
+          return
+        }
+        if (session.activeTurnId) {
+          this.#error(socket, request.id, invalidParams, "Stop the active turn before committing")
+          return
+        }
+        if (!this.#workspaceService.commit) {
+          this.#error(socket, request.id, invalidParams, "Committing is unavailable")
+          return
+        }
+        const repositoryPath = this.#projectForSession(session)?.path
+        if (!repositoryPath) {
+          this.#error(socket, request.id, invalidParams, "Domovoi cannot find this session's project, so it did not commit.")
+          return
+        }
+        let running: Promise<SessionCommit> | undefined
+        let made: SessionCommit
+        try {
+          made = await this.#withAbortTimeout(
+            (signal) => {
+              running = this.#workspaceService.commit!(session.workspacePath!, {
+                repositoryPath,
+                sessionId: session.id,
+                message: params.message,
+                expectedHead: params.expectedHead,
+              }, signal)
+              return running
+            },
+            this.#agentTimeoutMs,
+            "Commit timed out",
+          )
+        } catch (error) {
+          if (error instanceof SessionCommitRefusedError) throw new PublicRpcError(invalidParams, error.message)
+          // A deadline rejects without waiting for the git run it aborted, and
+          // the workspace finishes a commit whose branch already moved. So the
+          // request, and with it the session's lock, waits for the run to
+          // settle: no turn or other change to the session starts while the
+          // branch may still move, and a commit that lands is recorded.
+          const late = running ? await running.catch(() => undefined) : undefined
+          if (late === undefined) throw error
+          made = late
+        }
+        if (!this.#recordSessionCommit(params.sessionId, made, params.message, params.client)) {
+          this.#error(socket, request.id, invalidParams, "Session no longer exists")
+          return
+        }
+        changed = true
+      }
+
       if (changed) this.#syncArtifactWatchers()
       workspaceSnapshotSchema.parse(this.#snapshot)
       if (changed && !alreadyPersisted) await this.#persistSnapshot()
@@ -12549,6 +12641,41 @@ export class DomovoiDaemon {
     this.#broadcastNotification("system.emergencyStopped", result)
     this.#sendSnapshot()
     return result
+  }
+
+  // Records a person's commit in the thread (walk finding F10): a commit
+  // checkpoint with the message, the branch, the files and the sha, and, when
+  // something failed after the branch moved, a system row saying what was
+  // left undone. False when the session is gone.
+  #recordSessionCommit(sessionId: string, made: SessionCommit, message: string, client: ClientKind): boolean {
+    const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+    if (!session) return false
+    const createdAt = new Date().toISOString()
+    // A commit whose index publication did not happen leaves the worktree
+    // reading as changed, so its count stands until evidence is read again.
+    if (made.afterCommitError === undefined) session.changedFiles = 0
+    session.updatedAt = createdAt
+    this.#snapshot.thread.push({
+      id: `checkpoint-${randomUUID()}`,
+      sessionId,
+      kind: "checkpoint",
+      reason: "commit",
+      label: `${made.commit.slice(0, 8)} · ${message.split("\n", 1)[0]!.trim()}`,
+      commit: made.commit,
+      committed: committedCheckpointFacts(made, message, client),
+      createdAt,
+    })
+    if (made.afterCommitError !== undefined) {
+      this.#snapshot.thread.push({
+        id: `system-${randomUUID()}`,
+        sessionId,
+        kind: "system",
+        body: `Committed ${made.commit.slice(0, 8)}, with something left undone`,
+        detail: made.afterCommitError,
+        createdAt,
+      })
+    }
+    return true
   }
 
   #withAbortTimeout<T>(

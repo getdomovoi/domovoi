@@ -25,3 +25,60 @@ boundary either.
 Legacy rows keep `reason` absent. The daemon does not derive it from labels, commit
 equality or position. Reasons survive snapshot persistence and session transfer.
 They describe why a checkpoint exists; they do not create per-turn fork points.
+
+## Commit checkpoints
+
+`commit` marks a commit a person asked for with their own message, through
+`session.commit`. An agent's sandbox cannot write a linked worktree's Git metadata,
+and Domovoi keeps it that way (walk finding F10), so the person commits the
+session's work from the Changes tab instead. The daemon:
+
+- commits only in the session's own worktree under the worktree root, a linked
+  worktree registered in the session's project repository, only on its branch
+  `domovoi/<session>`, and refuses when HEAD names any other branch or none, when
+  that branch is a symbolic ref, or when it moved since the person read the changes
+  (`expectedHead`);
+- refuses in Ask and Plan, which run read-only, and while a turn runs. Build allows
+  it with or without Auto, since the commit is always the person's own action;
+- stages and commits through the isolated Git directory checkpoints use, so no
+  repository hook runs and no repository config can start a program, and signs
+  nothing. Unlike a checkpoint, it refuses while the repository's own config sets a
+  filter, a reviewed and trusted one included: it would have to run it, and
+  committing without it would commit what the filter exists to change. Filters in
+  the person's global or system config, and the exact `git lfs install` lines in
+  the repository's own config (ruling Q207 A, kept for commits by Q139), run as
+  they do for every Git command;
+- refuses whenever the isolated directory holds back anything from the
+  repository's own config (local and worktree scope, included files among them):
+  a filter driver it blanks, a Git LFS extension or transfer it leaves out, or any
+  key it does not carry (ruling Q140). This is derived, not listed: for every key
+  the repository sets, the directory must read the worktree's effective value and
+  every value the repository gives it, compared between the worktree's whole
+  config and the directory's whole config. It is decided from the one config read
+  the directory is built from, and again once staging is done, so a setting that
+  appears after the gate read (an include edited, a config change in between)
+  refuses too. The second read also refuses any key whose values changed since the
+  first, in any scope, such as a repository override removed so a global value
+  shows through. The worktree's sparse-checkout patterns are always carried, so
+  Git applies them whenever its own reading of `core.sparseCheckout` turns sparse
+  checkout on (`1` and `yes` included). The only list is of keys known to change nothing a commit stores or
+  runs (`commitInertKeys` in `workspace.ts`: repository layout, hooks and
+  fsmonitor, index and storage formats, other commands' programs, branches and
+  remotes, the identity), so a key nothing names, a later Git's included, refuses.
+  The refusal names the keys, redacted, never their values;
+- refuses the whole commit when a path it would add or change names a credential,
+  a private key or an environment file, submodule entries the repository asks Git
+  to ignore included, counting them without naming them, and refuses a message the
+  durable-text redactor would change. Deleting a tracked secret file is allowed;
+- moves `refs/heads/domovoi/<session>` itself (`update-ref --no-deref`) from
+  `expectedHead` and nothing else, keeps the commit under `refs/domovoi/checkpoints`
+  like every checkpoint, and pushes nothing. Once the branch has moved, a later
+  failure (the checkpoint ref, the worktree's index, a deadline) is recorded beside
+  the commit, never reported as a commit that did not happen;
+- authors the commit as the person when Git has both `user.name` and `user.email`
+  for the worktree, as Domovoi otherwise, with Domovoi as the committer.
+
+The thread item and its history entry carry a `committed` record: the message, the
+branch, the first 50 paths and the count of all of them, and the kind of client that
+asked. Only a `commit` checkpoint carries that record, and it always does. A commit
+is restored and forked like any other checkpoint.

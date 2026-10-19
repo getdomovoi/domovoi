@@ -4117,6 +4117,26 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect((await markers()).filter((name) => name === "smudge").length).toBe(smudgesBeforeRestore + 2)
   })
 
+  // Walk finding F10: a person's commit runs no program the repository's own
+  // config names, a reviewed and trusted filter included. Committing without
+  // the filter would put its unfiltered contents in history, so the commit is
+  // refused, and the checkpoints above keep running it under the grant.
+  it("refuses a person's commit while the repository's own config sets a trusted filter, and runs nothing for it", async () => {
+    const { repositoryPath, markers, trust, service } = await trustedRepository("domovoi-trusted-commit-")
+    await trust()
+    const trusted = service()
+    const workspace = await trusted.createSessionWorkspace(repositoryPath, "session-trusted-commit")
+    await writeFile(join(workspace.path, "victim.txt"), "CHANGED\n")
+    const ran = await markers()
+
+    await expect(trusted.commit(workspace.path, {
+      repositoryPath, sessionId: "session-trusted-commit", message: "feat: change the victim", expectedHead: workspace.baseCommit,
+    })).rejects.toMatchObject({ name: "SessionCommitRefusedError", reason: "repository-filters" })
+
+    expect(await markers()).toEqual(ran)
+    expect((await run("-C", workspace.path, "rev-parse", "domovoi/session-trusted-commit")).stdout.trim()).toBe(workspace.baseCommit)
+  })
+
   // A grant for the current digest whose client never showed the git filters
   // (an older client, or a grant from before filters could run) keeps them
   // held back until the repository is reviewed and trusted again.
