@@ -1,0 +1,32 @@
+diff --git a/apple/scripts/build-xcframework.sh b/apple/scripts/build-xcframework.sh
+index 4c506533866d411b18799e5441f02c2b3e9a0c44..f0602d63bec771d99566847311b84091dce38689 100755
+--- a/apple/scripts/build-xcframework.sh
++++ b/apple/scripts/build-xcframework.sh
+@@ -296,11 +296,17 @@ build_slice() {
+ 
+   # Strip declarations from public .swiftinterface that external consumers can't resolve:
+   # - C++ type extensions (__ObjC) — entire blocks including their closing braces
+-  #   e.g. "extension __ObjC.expo.CppError : Swift.Error { ... }"
++  #   e.g. "extension __ObjC.expo.CppError : Swift.Error { ... }", or with the module
++  #   selectors Swift 6.4 prints: "extension __ObjC::expo.__ObjC::CppError : Swift::Error { ... }"
+   # - Package-internal conformances (_ConstraintThatIsNotPartOfTheAPIOfThisLibrary)
+   #   e.g. "extension Swift.Optional : where Wrapped : _Constraint... {}"
+   # - @usableFromInline attributes preceding the _Constraint protocol definition
+   #   e.g. "@usableFromInline\ninternal protocol _ConstraintThatIsNotPartOfTheAPIOfThisLibrary {}"
++  # - @available(*, unavailable) attributes that Swift 6.4 prints on their own line before
++  #   those conformances, which would otherwise attach to the next declaration
++  #   e.g. "@available(*, unavailable)\nextension Swift::Optional : P where Wrapped : _Constraint... {}"
++  # Domovoi patch: the expo-modules-jsi 58 strip program (expo/expo#50569, #51234),
++  # backported to 57.1.0. Drop the patch once the app moves to Expo SDK 58.
+   # NOTE: If these patterns change in a future Swift version, the build will fail with
+   # "expected declaration" or "expected type" errors in the .swiftinterface file.
+   # Run plain `sed` to a temp file and move it back instead of `sed -i ''`:
+@@ -309,7 +315,7 @@ build_slice() {
+   # filename, failing with "can't read …: No such file or directory".
+   while IFS= read -r swiftinterface; do
+     local stripped_swiftinterface="${swiftinterface}.stripped"
+-    sed '/^extension __ObjC\./,/^}/d;/^@usableFromInline$/{N;/_ConstraintThatIsNotPartOfTheAPIOfThisLibrary/d;};/_ConstraintThatIsNotPartOfTheAPIOfThisLibrary/d' "$swiftinterface" > "$stripped_swiftinterface"
++    sed -E '/^extension __ObjC(\.|::)/,/^}/d;/^@usableFromInline$/{N;/_ConstraintThatIsNotPartOfTheAPIOfThisLibrary/d;};/^@available\(\*, unavailable\)$/{N;/_ConstraintThatIsNotPartOfTheAPIOfThisLibrary/d;};/_ConstraintThatIsNotPartOfTheAPIOfThisLibrary/d' "$swiftinterface" > "$stripped_swiftinterface"
+     mv "$stripped_swiftinterface" "$swiftinterface"
+   done < <(find "${modules_dir}/${PACKAGE_NAME}.swiftmodule" -name '*.swiftinterface')
+ 

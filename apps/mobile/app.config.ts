@@ -36,5 +36,11 @@ export default {
     ...app.expo.android,
     adaptiveIcon: { ...app.expo.android.adaptiveIcon, backgroundColor: colors.dark.card },
   },
-  plugins: [splashScreen, "./plugins/with-gradle-daemon-jdk.js", ...app.expo.plugins],
+  plugins: [
+    splashScreen,
+    "./plugins/with-gradle-daemon-jdk.js",
+    "./plugins/with-source-built-expo-modules.js",
+    "./plugins/with-pnpm-node-path.js",
+    ...app.expo.plugins,
+  ],
 }

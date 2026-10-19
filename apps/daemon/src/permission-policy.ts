@@ -25,6 +25,17 @@ export function permissionPolicyRefusalFor(runtime: Runtime): PolicyRefusalFacts
   }
 }
 
+// Ask's other rule: a read that would ask for an approval in Build, one that
+// leaves the session worktree or names a secret, is refused in Ask, which
+// has no approvals. A refusal for that reason names this rule, not the
+// read-only one, so the card's rule matches its headline (walk F18).
+export const askHasNoApprovalsRefusal: PolicyRefusalFacts = {
+  rule: "Ask mode has no approvals",
+  setBy: "Domovoi permission mode",
+  scope: "This session",
+  remedy: "Switch to Build mode, where a read like this asks for your approval unless a standing rule already allows it.",
+}
+
 const pathSeparator = String.raw`[/\\]`
 const credentialStorePatterns = credentialStoreNames.map(
   (parts) => parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)).join(pathSeparator),
@@ -116,6 +127,18 @@ const hardGateGroups: Record<HardGateCategory["id"], { label: string; patterns: 
   "skill-installation": { label: "installing skills", patterns: [] },
 }
 const hardGatePatterns = Object.values(hardGateGroups).flatMap(({ patterns }) => patterns)
+
+// The label of the hard gate a command meets, as the rules surface lists it,
+// tested in permissionDecisionFor's order; undefined when it meets none. It
+// names a gate for a refusal's words and decides nothing itself.
+export function hardGateLabelFor(command: string): string | undefined {
+  const trimmed = command.trim()
+  if (trimmed && isSkillInstallCommand(trimmed)) return hardGateGroups["skill-installation"].label
+  const group = Object.values(hardGateGroups).find(({ patterns }) => patterns.some((pattern) => pattern.test(trimmed)))
+  if (group) return group.label
+  if (trimmed && commandNamesSecretPath(trimmed)) return hardGateGroups.credentials.label
+  return undefined
+}
 
 export function permissionHardGates(): { categories: HardGateCategory[] } {
   return { categories: (Object.keys(hardGateGroups) as HardGateCategory["id"][])

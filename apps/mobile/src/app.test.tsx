@@ -303,6 +303,21 @@ describe("App", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("The daemon went away before it confirmed. The gate may or may not have been answered; when the connection returns, this screen shows which.")
   })
 
+  // Walk F12: once the connection drops, the Sessions header says its counts
+  // are the last read and when the phone got it, not a live count.
+  it("says the Sessions counts are the last read once the connection drops", async () => {
+    const { socket } = await openApp(workspace())
+    const machine = workspace().machine.name
+    expect(screen.getByText(new RegExp(`^${machine} · 1 running`))).toBeOnTheScreen()
+    expect(screen.queryByText(/when last read/)).toBeNull()
+
+    await act(async () => { socket.close() })
+    await settle()
+
+    expect(screen.getByText(new RegExp(`^${machine} · 1 running when last read at \\d{2}:\\d{2}$`))).toBeOnTheScreen()
+    expect(screen.queryByText(/reachable/)).toBeNull()
+  })
+
   // A refusal says the gate is still waiting. A drop after it does not
   // change that, so the watching phone keeps the daemon's words.
   it("keeps a refused Allow's sentence after the connection drops", async () => {

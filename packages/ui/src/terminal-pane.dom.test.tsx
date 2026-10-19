@@ -260,6 +260,30 @@ async function drawnRows(container: HTMLElement): Promise<string[]> {
   return rows
 }
 
+describe("TerminalPane font", () => {
+  // Starship and powerlevel10k prompts print Nerd Font icons from the private
+  // use areas, which JetBrains Mono does not carry. The rows name installed
+  // symbol faces after it, so the browser finds those glyphs there instead of
+  // drawing empty boxes, and nothing is bundled.
+  it("falls back to installed Nerd Font and symbol faces for glyphs the terminal face lacks", async () => {
+    const target = harness()
+    const { container } = render(<TerminalPane connected controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.connect(thisClient)
+    })
+
+    const rules = [...document.querySelectorAll("style")].map((style) => style.textContent ?? "")
+    const rows = rules.find((rule) => rule.includes(".xterm-rows") && rule.includes("font-family"))
+    expect(container.querySelector(".xterm-rows")).not.toBeNull()
+    const stack = /\.xterm-rows\s*\{[^}]*font-family:\s*([^;]+);/u.exec(rows ?? "")?.[1]?.split(",").map((family) => family.trim()) ?? []
+    expect(stack[0]).toBe("JetBrains Mono Variable")
+    for (const family of ["Symbols Nerd Font Mono", "JetBrainsMono Nerd Font Mono", "MesloLGS NF", "Apple Symbols", "Segoe UI Symbol"]) {
+      expect(stack).toContain(family)
+    }
+    expect(stack.at(-1)).toBe("monospace")
+  })
+})
+
 describe("TerminalPane claim banner", () => {
   it("says this desktop holds the shell", async () => {
     const target = harness()
