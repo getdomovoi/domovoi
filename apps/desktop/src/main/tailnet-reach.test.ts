@@ -568,6 +568,27 @@ describe("turning TailnetReach on", () => {
     expect(calls.at(-1)).toBe(`remove directory ${tls}/.pending-1`)
   })
 
+  // Walk F11: the record lives with the app and the files with the profile, so
+  // a profile directory removed or replaced at the same path leaves the switch
+  // on with no certificate. (A profile at another path reads off: the record's
+  // paths no longer match its tls directory.) The card's "Get the
+  // certificate again" is this turn-on: it asks Tailscale again, stores the new
+  // pair, records it and restarts once, with nothing to set aside.
+  it("reports on with no expiry, then gets the certificate again, when the stored files are missing", async () => {
+    const { reach, deps, calls, files, record } = harness({ record: ours })
+    await expect(reach.status()).resolves.toEqual({
+      state: "on", name, address: "100.101.102.103", stored: `~/.domovoi/tls/${name}.crt, .key`, httpsCertificates: true,
+    })
+    await expect(reach.turnOn()).resolves.toEqual({ ok: true, report: expect.objectContaining({ state: "on", certificateExpiresAt: "2025-01-02T00:00:00.000Z" }) })
+    expect(calls).toContain(`tailscale cert --cert-file ${tls}/.pending-1/${name}.crt --key-file ${tls}/.pending-1/${name}.key ${name}`)
+    expect(calls.filter((call) => call.includes("previous."))).toEqual([])
+    expect(deps.restart).toHaveBeenCalledOnce()
+    expect(deps.restart).toHaveBeenCalledWith({ set: { address: "100.101.102.103", name, certPath, keyPath } })
+    expect(files.get(certPath)).toBe(certificate)
+    expect([...files.keys()].sort()).toEqual([certPath, keyPath])
+    expect(record()).toEqual(ours)
+  })
+
   it("renews over its own files", async () => {
     const { reach, calls, files } = harness({ record: ours, files: { [certPath]: "old", [keyPath]: "old key" } })
     await expect(reach.turnOn()).resolves.toMatchObject({ ok: true })
