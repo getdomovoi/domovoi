@@ -36,6 +36,7 @@ const evidence: SessionEvidence = {
   refreshedAt: "2026-10-18T12:00:00.000Z",
   workspace: {
     baseCommit: "a".repeat(40),
+    changesDigest: `sha256:${"b".repeat(64)}`,
     diff: "",
     diffTruncated: false,
     totalChangedFiles: 2,
@@ -83,9 +84,28 @@ describe("committing from the Changes tab", () => {
     await user.type(message, "fix(api): retry the webhook")
     await user.click(screen.getByRole("button", { name: "Commit 1" }))
 
-    expect(onCommit).toHaveBeenCalledWith("fix(api): retry the webhook", "a".repeat(40))
+    expect(onCommit).toHaveBeenCalledWith("fix(api): retry the webhook", "a".repeat(40), evidence.workspace.changesDigest)
     expect(await screen.findByText("Committed on mac-mini. Nothing has left the machine.")).toBeTruthy()
     expect(screen.queryByRole("textbox", { name: "Commit message" })).toBeNull()
+  })
+
+  it("refuses to submit older evidence without a digest", async () => {
+    const { changesDigest: _digest, ...workspace } = evidence.workspace
+    const { onCommit } = show({}, { ...evidence, workspace })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Commit without a pull request" }))
+    await user.click(screen.getByRole("button", { name: "Commit 1" }))
+    expect(onCommit).not.toHaveBeenCalled()
+    expect(screen.getByText("Refresh and review the changes again before committing.")).toBeTruthy()
+  })
+
+  it("forwards the evidence digest through the panel callback", async () => {
+    const onCommit = vi.fn(async () => {})
+    render(<SessionEvidencePanel connected sessionId="session-1" onLoad={vi.fn(async () => evidence)} onCommit={onCommit} commitFacts={{ defaultMessage: "Retry", machine: "mac-mini" }} />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole("button", { name: "Commit without a pull request" }))
+    await user.click(screen.getByRole("button", { name: "Commit 1" }))
+    expect(onCommit).toHaveBeenCalledWith("session-1", "Retry", evidence.workspace.baseCommit, evidence.workspace.changesDigest)
   })
 
   it("keeps Commit off while the message is empty", async () => {

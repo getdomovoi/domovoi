@@ -114,7 +114,7 @@ async function fixture(options: {
   })
   expect(await rpc("system.hello", { client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken })).toHaveProperty("result")
   const commitRequest = (message = "fix(api): retry the webhook\n\nThe provider retries on 5xx.") =>
-    rpc("session.commit", { sessionId: "session-1", message, expectedHead: head, client: "desktop" })
+    rpc("session.commit", { sessionId: "session-1", message, expectedHead: head, expectedChangesDigest: `sha256:${"b".repeat(64)}`, client: "desktop" })
   const thread = async () => ((await rpc("workspace.get", {})).result as WorkspaceSnapshot).thread
   return { claude, commit, commitRequest, rpc, thread }
 }
@@ -132,7 +132,7 @@ describe("session.commit", () => {
     expect(commit.mock.calls[0]![0]).toBe("/worktrees/session-1")
     expect(commit.mock.calls[0]![1]).toEqual({
       repositoryPath: "/code/acme",
-      sessionId: "session-1", message: "fix(api): retry the webhook\n\nThe provider retries on 5xx.", expectedHead: head,
+      sessionId: "session-1", message: "fix(api): retry the webhook\n\nThe provider retries on 5xx.", expectedHead: head, expectedChangesDigest: `sha256:${"b".repeat(64)}`,
     })
     const snapshot = (response as { result: WorkspaceSnapshot }).result
     const item = snapshot.thread.at(-1)

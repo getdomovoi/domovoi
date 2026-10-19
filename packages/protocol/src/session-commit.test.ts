@@ -6,6 +6,7 @@ import {
   rpcMethodMutations,
   rpcMethods,
   sessionHistoryEntrySchema,
+  workspaceEvidenceSchema,
 } from "./rpc.js"
 import { workspaceSnapshotSchema } from "./schema.js"
 import { threadItemSchema } from "./schema.js"
@@ -15,7 +16,7 @@ import { maximumCommittedPaths } from "./session-history-metadata.js"
 // .git, so Domovoi commits a session's work on the person's word, on the
 // session branch only, and the thread records what it committed.
 describe("session.commit", () => {
-  const params = { sessionId: "session-1", message: "fix(api): retry the webhook", expectedHead: "a".repeat(40), client: "desktop" }
+  const params = { sessionId: "session-1", message: "fix(api): retry the webhook", expectedHead: "a".repeat(40), expectedChangesDigest: `sha256:${"b".repeat(64)}`, client: "desktop" }
 
   it("is a control method that changes state, like a checkpoint or a file revert", () => {
     expect(rpcMethods["session.commit"].params.parse(params)).toEqual(params)
@@ -28,6 +29,20 @@ describe("session.commit", () => {
     expect(phoneAndTabletRpcMethods.has("session.commit")).toBe(false)
   })
 
+  it("requires the digest even when the field is omitted entirely", () => {
+    const { expectedChangesDigest: _digest, ...missing } = params
+    expect(rpcMethods["session.commit"].params.safeParse(missing).success).toBe(false)
+  })
+
+  it("validates the digest on evidence while preserving older read-only evidence", () => {
+    const workspace = { baseCommit: params.expectedHead, diff: "", diffTruncated: false, totalChangedFiles: 0, files: [], filesTruncated: false }
+    expect(workspaceEvidenceSchema.parse(workspace)).toEqual(workspace)
+    expect(workspaceEvidenceSchema.parse({ ...workspace, changesDigest: params.expectedChangesDigest }).changesDigest).toBe(params.expectedChangesDigest)
+    for (const changesDigest of ["", "sha256:abc", `sha256:${"A".repeat(64)}`, "b".repeat(64), null]) {
+      expect(workspaceEvidenceSchema.safeParse({ ...workspace, changesDigest }).success).toBe(false)
+    }
+  })
+
   it("trims the message the person typed and keeps its body lines", () => {
     expect(rpcMethods["session.commit"].params.parse({ ...params, message: "  feat: add login\n\nWhy it changed.  " }).message)
       .toBe("feat: add login\n\nWhy it changed.")
@@ -38,6 +53,8 @@ describe("session.commit", () => {
     ["a blank message", { message: " \n\t " }],
     ["a message past 4096 UTF-16 units", { message: "m".repeat(4_097) }],
     ["a NUL in the message, which Git cannot take as an argument", { message: "feat: a\u0000b" }],
+    ["no digest", { expectedChangesDigest: undefined }],
+    ["a malformed digest", { expectedChangesDigest: "sha256:abc" }],
     ["no expected head", { expectedHead: undefined }],
     ["an expected head that is not a full commit id", { expectedHead: "abc123" }],
     ["no session", { sessionId: "" }],

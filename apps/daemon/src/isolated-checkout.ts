@@ -847,6 +847,8 @@ async function refuseGitTooOldForIsolation(git: CapturedGit, read?: (command: st
 
 export async function openIsolatedGit(input: {
   worktree: string
+  // Evidence may stage to identify contents but must discard the new blobs.
+  temporaryObjects?: boolean
   // A trusted repository's reviewed filter definitions, as key and value.
   reviewed?: ReadonlyArray<readonly [string, string]> | undefined
   // Read and write the session worktree's own index (an operation on an
@@ -976,7 +978,11 @@ export async function openIsolatedGit(input: {
   environment.GIT_CONFIG_NOSYSTEM = "1"
   environment.GIT_DIR = gitDirectory
   environment.GIT_WORK_TREE = worktree
-  environment.GIT_OBJECT_DIRECTORY = join(commonDirectory, "objects")
+  environment.GIT_OBJECT_DIRECTORY = input.temporaryObjects ? join(gitDirectory, "objects") : join(commonDirectory, "objects")
+  if (input.temporaryObjects) {
+    // Git accepts a C-quoted alternate path, including separators and spaces.
+    environment.GIT_ALTERNATE_OBJECT_DIRECTORIES = JSON.stringify(join(commonDirectory, "objects"))
+  }
   if (input.worktreeIndex) environment.GIT_INDEX_FILE = index
   pins.forEach(([key, value], position) => {
     environment[`GIT_CONFIG_KEY_${position}`] = key

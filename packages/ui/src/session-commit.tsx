@@ -16,7 +16,7 @@ export type SessionCommitControls = {
   // Why this session cannot commit now: a read-only mode or a running turn.
   // The daemon refuses the same cases; the card says so before it is asked.
   blocked?: string | undefined
-  onCommit: (message: string, expectedHead: string) => Promise<void>
+  onCommit: (message: string, expectedHead: string, expectedChangesDigest: string) => Promise<void>
 }
 
 // Why a session cannot commit now, in the daemon's own words for the same
@@ -52,6 +52,7 @@ export function SessionCommitCard({
   files,
   totalFiles,
   baseCommit,
+  changesDigest,
   onCancel,
   onCommitted,
 }: {
@@ -59,6 +60,7 @@ export function SessionCommitCard({
   files: readonly ChangedFileEvidence[]
   totalFiles: number
   baseCommit: string
+  changesDigest: string | undefined
   onCancel: () => void
   onCommitted: () => void
 }) {
@@ -67,9 +69,13 @@ export function SessionCommitCard({
   const [error, setError] = useState("")
   const commit = () => {
     if (pending || controls.blocked !== undefined || !message.trim()) return
+    if (changesDigest === undefined) {
+      setError("Refresh and review the changes again before committing.")
+      return
+    }
     setPending(true)
     setError("")
-    void controls.onCommit(message, baseCommit).then(
+    void controls.onCommit(message, baseCommit, changesDigest).then(
       () => {
         setPending(false)
         onCommitted()

@@ -49,6 +49,21 @@ afterEach(() => {
 })
 
 describe("useWorkspace connection lifecycle", () => {
+  it("carries the reviewed digest through the hook and client to session.commit", async () => {
+    const view = mountWorkspace()
+    const socket = harness.socket(0)
+    await drive(() => completeHandshake(socket, workspaceSnapshot()))
+    const head = "a".repeat(40)
+    const digest = `sha256:${"b".repeat(64)}`
+    let committing: Promise<void>
+    await drive(() => { committing = view.result.current.commitSession("session-1", "fix: reviewed", head, digest) })
+    expect(sentRequests(socket, "session.commit")[0]?.params).toEqual({
+      sessionId: "session-1", message: "fix: reviewed", expectedHead: head, expectedChangesDigest: digest, client: "web",
+    })
+    await drive(() => respond(socket, "session.commit", workspaceSnapshot()))
+    await committing!
+  })
+
   it("opens one socket per target and installs the handshake snapshot", async () => {
     const view = mountWorkspace({ url: daemonUrl, authToken: "device-token" })
     expect(harness.sockets.map((socket) => socket.url)).toEqual([daemonUrl])

@@ -498,10 +498,10 @@ export function useWorkspace(
     updateSnapshotFrom(client, await client.revertSessionFile(sessionId, path, expectedBaseCommit))
   }, [updateSnapshotFrom])
 
-  const commitSession = useCallback(async (sessionId: string, message: string, expectedHead: string) => {
+  const commitSession = useCallback(async (sessionId: string, message: string, expectedHead: string, expectedChangesDigest: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshotFrom(client, await client.commitSession(sessionId, message, expectedHead))
+    updateSnapshotFrom(client, await client.commitSession(sessionId, message, expectedHead, expectedChangesDigest))
   }, [updateSnapshotFrom])
 
   const editPlan = useCallback(async (

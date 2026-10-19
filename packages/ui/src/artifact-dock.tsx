@@ -269,7 +269,7 @@ export function ArtifactDock({
   onLoadSessionEvidence: (sessionId: string) => Promise<SessionEvidence>
   onRevertSessionFile: (sessionId: string, path: string, expectedBaseCommit?: string) => Promise<void>
   // A person's commit of the active session's work (walk finding F10).
-  onCommitSession?: ((sessionId: string, message: string, expectedHead: string) => Promise<void>) | undefined
+  onCommitSession?: ((sessionId: string, message: string, expectedHead: string, expectedChangesDigest: string) => Promise<void>) | undefined
   onRestoreCheckpoint?: ((checkpointId: string) => void) | undefined
   worktreeName?: string | undefined
   onForkCheckpoint?: ((checkpointId: string) => void) | undefined

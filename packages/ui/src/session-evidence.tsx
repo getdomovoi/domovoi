@@ -506,6 +506,7 @@ export function SessionEvidenceContent({
                   files={evidence.workspace.files}
                   totalFiles={evidence.workspace.totalChangedFiles}
                   baseCommit={evidence.workspace.baseCommit}
+                  changesDigest={evidence.workspace.changesDigest}
                   onCancel={() => setCommitOpen(false)}
                   onCommitted={() => {
                     setCommitOpen(false)
@@ -740,7 +741,7 @@ export function SessionEvidencePanel({
   onLoad: (sessionId: string) => Promise<SessionEvidence>
   onRevertFile?: (sessionId: string, path: string, expectedBaseCommit?: string) => Promise<void>
   onOpenInEditor?: (() => void) | undefined
-  onCommit?: ((sessionId: string, message: string, expectedHead: string) => Promise<void>) | undefined
+  onCommit?: ((sessionId: string, message: string, expectedHead: string, expectedChangesDigest: string) => Promise<void>) | undefined
   commitFacts?: Omit<SessionCommitControls, "onCommit"> | undefined
 }) {
   const generation = useRef(0)
@@ -839,8 +840,8 @@ export function SessionEvidencePanel({
         ? {
           commit: {
             ...commitFacts,
-            onCommit: async (message: string, expectedHead: string) => {
-              await onCommit(sessionId, message, expectedHead)
+            onCommit: async (message: string, expectedHead: string, expectedChangesDigest: string) => {
+              await onCommit(sessionId, message, expectedHead, expectedChangesDigest)
               refresh()
             },
           },

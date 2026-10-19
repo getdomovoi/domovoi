@@ -38,6 +38,16 @@ session's work from the Changes tab instead. The daemon:
   `domovoi/<session>`, and refuses when HEAD names any other branch or none, when
   that branch is a symbolic ref, or when it moved since the person read the changes
   (`expectedHead`);
+- requires `expectedChangesDigest`, the revision supplied by `session.evidence`.
+  Evidence hashes every changed path, including paths beyond the 200-row display
+  limit, from private staging passes around the same stable read as the file list.
+  Raw path bytes, status, old and new modes, and full blob or gitlink IDs determine
+  the digest. Renames count as deletion plus addition. Symlink targets are blobs.
+  Evidence discards its staged objects. After staging the commit's private index,
+  the daemon compares its digest before creating a commit. A mismatch leaves the
+  shared index, worktree and refs untouched and asks the person to refresh and
+  review the changes again. Missing request digests are invalid; older evidence
+  without a digest remains readable but cannot authorize a commit;
 - refuses in Ask and Plan, which run read-only, and while a turn runs. Build allows
   it with or without Auto, since the commit is always the person's own action;
 - stages and commits through the isolated Git directory checkpoints use, so no
