@@ -47,6 +47,10 @@ characters of the commit the running daemon was built from. A daemon built from 
 tracked files differ from that commit, or without Git, shows no commit, so package from a clean
 checkout. Untracked files do not count.
 
+On macOS, open the app by its path (`open /Applications/Domovoi.app`), and check that the commit in
+"About this build" matches the build sha before you walk. Every Domovoi.app copy shares one bundle
+id, so a name or Spotlight launch can start an older copy left in a checkout.
+
 ### Run record
 
 Add one line per run. A section passes only when every row in it says what the step expects.
@@ -203,9 +207,10 @@ need.
    filter shows "Domovoi did not start this session" with the same "Review and trust".
 2. **Start an agent.** Choose "+" in the title bar ("New session") to open "Start a session". Type
    a "Session goal", pick the provider and model under "Provider and model", then "Create
-   session". The thread shows "Worktree ready" and "Nothing has run yet". The mode chip in the
-   composer opens "MODE FOR THE NEXT TURN" with "Plan", "Ask" and "Build"; "Auto" is a separate
-   switch and works only with Build. Type a request and send it.
+   session". The goal is also the first message, so the agent starts on it in the mode the
+   launcher names under the field (ruling Q135). The mode chip in the composer opens "MODE FOR
+   THE NEXT TURN" with "Plan", "Ask" and "Build"; "Auto" is a separate switch and works only with
+   Build. Type a follow-up request and send it.
 3. **Review tool activity.** Each turn shows a pill: "Working" while it runs, then "N tool calls".
    Choose it to list the calls, and "Output" on a call to read its output. When files changed,
    "Review all N changed files" opens the "Changes" tab of the sheet with the diff. The sheet's
