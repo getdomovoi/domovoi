@@ -7,6 +7,7 @@ import { promisify } from "node:util"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { openIsolatedGit, type IsolatedGit } from "./isolated-checkout.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
 import { projectRootRead } from "./repository-trust-apply.js"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -24,6 +25,11 @@ const scratchDirectories: string[] = []
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>()
   return { ...original, lstat: vi.fn(original.lstat) }
+})
+
+vi.mock("./isolated-checkout.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./isolated-checkout.js")>()
+  return { ...original, openIsolatedGit: vi.fn(original.openIsolatedGit) }
 })
 
 afterEach(async () => {
@@ -92,6 +98,42 @@ describe("GitWorkspaceService.commit", () => {
     expect(paths).toContain(join(workspace.path, "new.txt"))
     expect(paths).not.toContain(join(workspace.path, "README.md"))
     expect(paths).not.toContain(join(workspace.path, "old.txt"))
+  })
+
+  it.each([false, true])("streams large index listings and split gitlink entries (gitlink: %s)", async (gitlink) => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-index-stream-")
+    await writeFile(join(workspace.path, "new.txt"), "new\n")
+    const original = await vi.importActual<typeof import("./isolated-checkout.js")>("./isolated-checkout.js")
+    let stages = 0
+    const stopped: boolean[] = []
+    vi.mocked(openIsolatedGit).mockImplementationOnce(async (input) => {
+      const isolated = await original.openIsolatedGit(input)
+      const run = isolated.run.bind(isolated)
+      const stream = isolated.stream.bind(isolated)
+      const scan: IsolatedGit["stream"] = async (args, onStdout, options) => {
+        if (args[0] !== "ls-files" || !args.includes("--stage")) return stream(args, onStdout, options)
+        let stop = false
+        const emit = (chunk: Buffer) => { if (!stop) onStdout(chunk, () => { stop = true }) }
+        // A path containing the mode text must not count as a gitlink.
+        const entry = `100644 ${"a".repeat(40)} 0\t160000 ordinary-file\0`
+        if (gitlink) {
+          // Every boundary, including the mode prefix and NUL, splits a chunk.
+          for (const byte of Buffer.from(`${entry}160000 ${"b".repeat(40)} 0\tmodule\0`)) emit(Buffer.from([byte]))
+        } else {
+          const chunk = Buffer.from(entry.repeat(16_384))
+          for (let i = 0; i < 33; i += 1) emit(chunk)
+        }
+        stopped.push(stop)
+        return { code: stop ? null : 0, signal: stop ? "SIGTERM" : null, stderr: "" }
+      }
+      return { ...isolated, stream: scan, run: async (args, options) => {
+        if (args[0] === "add") stages += 1
+        return run(args, options)
+      } }
+    })
+    expect((await service.evidence(workspace.path)).changesDigest).toBeDefined()
+    expect(stages).toBe(gitlink ? 2 : 1)
+    expect(stopped).toEqual([gitlink, gitlink])
   })
 
   it("keeps the canonical digest identical to fresh staging", async () => {

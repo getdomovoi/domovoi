@@ -258,6 +258,7 @@ const maximumEvidenceAttempts = 3
 // lock. The staging deadline is checked between Git steps; only the caller's
 // signal may stop running Git, which must otherwise finish and release locks.
 const maximumEvidenceStagingBytes = 64 * 1_024 * 1_024
+// Includes deletions reported by --modified, even though they need no hashing.
 const maximumEvidenceStagingPaths = 10_000
 const evidenceStagingBudgetMs = 5_000
 const maximumGitOutputBytes = 32 * 1_024 * 1_024
@@ -1323,6 +1324,30 @@ async function evidenceChangesDigest(isolated: IsolatedGit, baseCommit: string, 
   }
 }
 
+// Only the seven-byte mode prefix can identify a gitlink. Carry that prefix
+// across chunks and discard the rest of each NUL-delimited entry. An index
+// with many unchanged files must not spend the changed-path output budget.
+async function evidenceHasGitlinks(isolated: IsolatedGit, signal?: AbortSignal): Promise<boolean> {
+  let prefix = ""
+  let found = false
+  const result = await isolated.stream(["ls-files", "--stage", "-z"], (chunk, stop) => {
+    let offset = 0
+    while (offset < chunk.length && !found) {
+      const nul = chunk.indexOf(0, offset)
+      const end = nul === -1 ? chunk.length : nul
+      prefix += chunk.toString("ascii", offset, Math.min(end, offset + 7 - prefix.length))
+      if (prefix === "160000 ") { found = true; stop(); return }
+      if (nul === -1) return
+      prefix = ""
+      offset = nul + 1
+    }
+  }, { signal })
+  signal?.throwIfAborted()
+  if (found) return true
+  if (result.code !== 0) throw new Error(result.stderr || "Git could not list evidence index entries")
+  return false
+}
+
 // Reuse only within one observation, never at commit time. Include raw path
 // bytes, the shared index and changed paths' ctime as well as mtime. A tracked
 // file changed between observations enters the modified list. On filesystems
@@ -1346,13 +1371,13 @@ async function evidenceStagingState(worktree: string, isolated: IsolatedGit, sig
     return [...new Set(Buffer.concat(chunks).toString("binary").split("\0").filter(Boolean))].sort()
   }
   try {
-    const [paths, entries, index] = await Promise.all([
-      list(["--modified", "--others", "--exclude-standard"]), list(["--stage"]), readIndexFile(isolated.worktreeIndex),
+    const [paths, hasGitlinks, index] = await Promise.all([
+      list(["--modified", "--others", "--exclude-standard"]), evidenceHasGitlinks(isolated, signal), readIndexFile(isolated.worktreeIndex),
     ])
     if (paths.length > maximumEvidenceStagingPaths) return { tooLarge: true }
     const hash = createHash("sha256").update(index ?? "no-index")
     let bytes = 0n
-    let reusable = !entries.some((entry) => entry.startsWith("160000 "))
+    let reusable = !hasGitlinks
     // Bound outstanding filesystem calls even for very large worktrees.
     for (let start = 0; start < paths.length; start += 64) {
       signal?.throwIfAborted()
