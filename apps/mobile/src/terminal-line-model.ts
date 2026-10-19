@@ -550,15 +550,12 @@ class Reader {
 // empty, as a text ending in a line break draws an empty line after it; and
 // where each line after the first starts in the text, just past the line
 // break the terminal drew. A line break inside a payload is not one.
-// rowBreaks: the line starts a move down past a line made, just past the
-// move, which a reader of the text alone (nextLineStart) does not see.
-export type DrawnText = { lines: string[], lineStarts: number[], rowBreaks: number[] }
+export type DrawnText = { lines: string[], lineStarts: number[] }
 
 // columns: the holder's grid width, when known (see the top of this file).
 export function drawnText(text: string, columns?: number): DrawnText {
   const lines: string[] = []
   const lineStarts: number[] = []
-  const rowBreaks: number[] = []
   const spare: SpareBlanks = { cells: spareBlankCells }
   const grid = columns !== undefined && Number.isInteger(columns) && columns > 0 ? Math.min(columns, widestGrid) : undefined
   let line = new Line(spare, grid)
@@ -594,7 +591,6 @@ export function drawnText(text: string, columns?: number): DrawnText {
           const column = vertical.toStart ? 0 : line.column - line.gridRowStart()
           lines.push(line.drawn())
           lineStarts.push(index)
-          rowBreaks.push(index)
           line = new Line(spare, grid)
           line.moveTo(column)
         } else if (vertical.toStart) {
@@ -604,7 +600,7 @@ export function drawnText(text: string, columns?: number): DrawnText {
     }
   }
   lines.push(line.drawn())
-  return { lines, lineStarts, rowBreaks }
+  return { lines, lineStarts }
 }
 
 // A move up (negative) or down a number of rows: CUU, CUD, and CPL and CNL,
