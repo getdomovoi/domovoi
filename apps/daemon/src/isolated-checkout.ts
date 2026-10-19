@@ -887,8 +887,6 @@ export async function openIsolatedGit(input: {
     const value = last(key)
     if (value !== undefined) pins.push([key, value])
   }
-  const storage = last("lfs.storage")
-  pins.push(["lfs.storage", storage === undefined || storage === "" ? join(commonDirectory, "lfs") : isAbsolute(storage) ? storage : resolve(commonDirectory, storage)])
   // The gate's policy, one value per key: its last one wins, as at the gate.
   const reviewed = new Map(input.reviewed ?? [])
   refuseChangedPolicy(entries, reviewed)
@@ -970,6 +968,13 @@ export async function openIsolatedGit(input: {
     await fs.rm(snapshot.directory, { recursive: true, force: true })
     throw error
   }
+
+  // LFS clean stores payloads outside Git's object directory. Evidence must
+  // discard those too; commits and checkpoints retain the configured store.
+  const storage = last("lfs.storage")
+  pins.push(["lfs.storage", input.temporaryObjects
+    ? join(gitDirectory, "lfs")
+    : storage === undefined || storage === "" ? join(commonDirectory, "lfs") : isAbsolute(storage) ? storage : resolve(commonDirectory, storage)])
 
   const environment: NodeJS.ProcessEnv = { ...git.env }
   for (const name of droppedEnvironment) delete environment[name]

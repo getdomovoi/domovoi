@@ -1,11 +1,13 @@
 import { execFile, spawnSync } from "node:child_process"
-import { chmod, link, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { readRepositoryProviderConfig } from "./repository-provider-config.js"
+import { projectRootRead } from "./repository-trust-apply.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { GitWorkspaceService, SessionCommitRefusedError, WorkspaceEvidenceUnstableError, type GitWorkspaceServiceOptions } from "./workspace.js"
 
@@ -57,6 +59,65 @@ describe("GitWorkspaceService.commit", () => {
     await expect(git(workspace.path, "cat-file", "-e", blob)).rejects.toThrow()
     expect((await service.evidence(workspace.path)).changesDigest).toMatch(/^sha256:[a-f0-9]{64}$/u)
     await expect(git(workspace.path, "cat-file", "-e", blob)).rejects.toThrow()
+  })
+
+  it.each([
+    ["checkpoint", "default"], ["commit", "default"],
+    ["checkpoint", "custom"], ["commit", "custom"],
+  ] as const)("discards evidence LFS payloads but retains %s payloads in the %s store", async (operation, store) => {
+    const { scratch, repositoryPath, workspace, sessionId } = await sessionWorktree("domovoi-commit-lfs-storage-")
+    const home = join(scratch, "home")
+    await mkdir(home)
+    vi.stubEnv("HOME", home)
+    vi.stubEnv("XDG_CONFIG_HOME", join(home, ".config"))
+    const script = join(scratch, "fake-clean.sh").replaceAll("\\", "/")
+    const observations = join(scratch, "storage-observations").replaceAll("\\", "/")
+    await writeFile(script, [
+      'set -eu',
+      'lfs_store=$(git config --get lfs.storage)',
+      'mkdir -p "$lfs_store"',
+      'cat > "$lfs_store/payload"',
+      'printf "%s\\n" "$lfs_store" >> "$1"',
+      'cat "$lfs_store/payload"',
+      '',
+    ].join("\n"))
+    // Checkpoints can run reviewed repository filters. A person's commit
+    // accepts only filters from the person's global/system configuration.
+    const scope = operation === "commit" ? ["--global"] : []
+    await git(repositoryPath, "config", ...scope, "filter.fixture.clean", `sh "${script}" "${observations}"`)
+    await git(repositoryPath, "config", ...scope, "filter.fixture.required", "true")
+    const common = await git(workspace.path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    const persistentStore = store === "custom" ? join(scratch, "custom-lfs") : join(common, "lfs")
+    if (store === "custom") await git(repositoryPath, "config", "--global", "lfs.storage", persistentStore)
+    const config = await readRepositoryProviderConfig(repositoryPath, projectRootRead)
+    if (operation === "checkpoint") expect(config.gitFilters?.reviewDigest).toBeDefined()
+    const grant = {
+      projectId: "project-lfs", trustedDigest: config.configDigest, trustedAt: "2026-10-19T00:00:00.000Z",
+      trustedBy: { client: "desktop" as const },
+      ...(config.gitFilters?.reviewDigest === undefined ? {} : { gitFilterReviewDigest: config.gitFilters.reviewDigest }),
+    }
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), {
+      repositoryTrust: () => ({ projectId: grant.projectId, projectPath: repositoryPath, grant: () => grant, generation: () => 0 }),
+    })
+    await writeFile(join(workspace.path, ".gitattributes"), "object.bin filter=fixture\n")
+    await writeFile(join(workspace.path, "object.bin"), "payload bytes\n")
+    const shown = await service.evidence(workspace.path)
+    expect(shown.changesDigest).toMatch(/^sha256:[a-f0-9]{64}$/u)
+    const seen = (await readFile(observations, "utf8")).trim().split("\n")
+    expect(seen.length).toBeGreaterThanOrEqual(2)
+    await expect(lstat(persistentStore)).rejects.toMatchObject({ code: "ENOENT" })
+    for (const storage of seen) {
+      expect(storage).toContain("domovoi-checkout-")
+      await expect(lstat(storage)).rejects.toMatchObject({ code: "ENOENT" })
+    }
+    const made = operation === "checkpoint"
+      ? await service.checkpoint(workspace.path, "retain LFS payload")
+      : await service.commit(workspace.path, {
+          repositoryPath, sessionId, message: "feat: retain payload", expectedHead: shown.baseCommit, expectedChangesDigest: shown.changesDigest!,
+        })
+    expect(await readFile(join(persistentStore, "payload"), "utf8")).toBe("payload bytes\n")
+    expect((await readFile(observations, "utf8")).trim().split("\n").at(-1)).toBe(persistentStore)
+    expect(await git(workspace.path, "show", `${made.commit}:object.bin`)).toBe("payload bytes")
   })
 
   it("keeps evidence readable without a commit digest when submodule config makes staging unsafe", async () => {

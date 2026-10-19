@@ -43,7 +43,8 @@ session's work from the Changes tab instead. The daemon:
   limit, from private staging passes around the same stable read as the file list.
   Raw path bytes, status, old and new modes, and full blob or gitlink IDs determine
   the digest. Renames count as deletion plus addition. Symlink targets are blobs.
-  Evidence discards its staged objects. After staging the commit's private index,
+  Evidence discards its staged objects and temporary LFS storage. After staging
+  the commit's private index,
   the daemon compares its digest before creating a commit. A mismatch leaves the
   shared index, worktree and refs untouched and asks the person to refresh and
   review the changes again. Missing request digests are invalid; older evidence
