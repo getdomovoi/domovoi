@@ -35,6 +35,8 @@ async function draw(
     deciding?: boolean
     decideProblem?: string
     sendProblem?: string
+    live?: boolean
+    lastReadAt?: number
   } = {},
 ) {
   const snapshot = structuredClone(demoWorkspace)
@@ -62,6 +64,8 @@ async function draw(
     onDenyExplain: jest.fn<(approvalId: string) => void>(),
     onPostReview: extra.onPostReview ?? jest.fn<(artifactId: string, body: string) => Promise<void>>(async () => {}),
     ...(extra.notice ? { notice: extra.notice } : {}),
+    live: extra.live ?? true,
+    lastReadAt: extra.lastReadAt,
     deciding: extra.deciding ?? false,
     decideProblem: extra.decideProblem === undefined ? undefined : { approvalId: approval.id, text: extra.decideProblem },
     sendProblems: new Map(extra.sendProblem === undefined ? [] : [[approval.sessionId, extra.sendProblem]]),
@@ -297,6 +301,20 @@ describe("TabletShell", () => {
     expect(screen.getByRole("button", { name: "Open review sheet, 1 file" })).toHaveTextContent("1 file")
   })
 
+  // Walk F19's sweep: the work line's tool count agrees with its count too.
+  it("names one tool call in the singular", async () => {
+    await draw("normal", "full", (snapshot) => {
+      const sessionId = snapshot.activeSessionId!
+      snapshot.thread = snapshot.thread.filter((item) => item.kind !== "tool")
+      snapshot.thread.push({
+        id: "tool-one", sessionId, kind: "tool", tool: "command", status: "completed", title: "pnpm migrate", createdAt: "2026-08-25T21:52:00.000Z",
+      })
+      snapshot.sessions.find((candidate) => candidate.id === sessionId)!.changedFiles = 2
+    })
+
+    expect(screen.getByText("1 tool · 2 files")).toBeOnTheScreen()
+  })
+
   // Q338 A: a comment posted from the tablet is anchored to the whole render
   // (cssSelector body), so the sheet says that rather than promising an
   // element the person never chose.
@@ -338,6 +356,51 @@ describe("TabletShell", () => {
     await draw("normal", "full")
 
     expect(screen.getByText("waiting on you")).toBeOnTheScreen()
+  })
+
+  // Walk F12, on the tablet's rail: a session listed as running from the last
+  // state the tablet was sent may have stopped. While not live no rail row
+  // keeps a live light, and "running" says it is the last read.
+  it("drops the rail's live lights and says running is the last read while not live", async () => {
+    await draw("normal", "full")
+    const pane = screen.getByTestId("tablet-sessions-pane")
+    expect(within(pane).getByText("running")).toBeOnTheScreen()
+    expect(within(pane).getAllByTestId("rail-dot").some((dot) => String(dot.props.className).includes("bg-success"))).toBe(true)
+
+    await draw("normal", "full", undefined, {
+      live: false,
+      notice: { tone: "warning", headline: "Not connected", detail: "Nothing here is live. This is the last state the phone was sent." },
+    })
+    const stale = screen.getByTestId("tablet-sessions-pane")
+    expect(within(stale).queryByText("running")).toBeNull()
+    expect(within(stale).getByText("running when last read")).toBeOnTheScreen()
+    for (const dot of within(stale).getAllByTestId("rail-dot")) {
+      expect(String(dot.props.className)).not.toMatch(/bg-success|bg-warning/)
+    }
+    // What waits on the person stays: it is an approval fact, and the banner
+    // says none of this is live.
+    expect(within(stale).getByText("waiting on you")).toBeOnTheScreen()
+
+    // With the time the tablet received that state, the row says it, as the
+    // phone's header does.
+    const readAt = new Date()
+    readAt.setHours(9, 5, 0, 0)
+    await draw("normal", "full", undefined, { live: false, lastReadAt: readAt.getTime() })
+    expect(within(screen.getByTestId("tablet-sessions-pane")).getByText("running when last read at 09:05")).toBeOnTheScreen()
+  })
+
+  // Walk F12 review: the idle pane's "Everything is idle" on the success
+  // ground is a claim about now, so while not live it says idle when last read.
+  it("says the machine was idle when last read in the idle pane while not live", async () => {
+    await draw("normal", "full", (snapshot) => {
+      snapshot.sessions = []
+      snapshot.approvals = []
+      snapshot.activeSessionId = null
+    }, { live: false })
+
+    expect(screen.queryByText("Everything is idle")).toBeNull()
+    expect(screen.getByText("Idle when last read")).toBeOnTheScreen()
+    expect(screen.getByText(/had no work in flight when last read\.$/)).toBeOnTheScreen()
   })
 
   it("keeps the rule, who set it, where it applies and the remedy on a policy refusal in the thread", async () => {

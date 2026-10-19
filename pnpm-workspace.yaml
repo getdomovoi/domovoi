@@ -98,3 +98,13 @@ auditConfig:
     # apps/mobile, and the shadcn CLI in packages/ui. Ruling Q406 A, 2026-10-02.
     # Remove once a patched braces is published, and force it in overrides.
     - GHSA-vfj7-8cjw-p6xm
+
+# Swift 6.4 (Xcode 27.1) spells C++ types `__ObjC::expo...`, which the published SDK 57 strip
+# program misses; the patch backports the expo-modules-jsi 58 program. Remove it with the move to
+# Expo SDK 58. apps/mobile/README.md has the details.
+patchedDependencies:
+  expo-modules-jsi@57.1.0: patches/expo-modules-jsi@57.1.0.patch
+# Desktop packaging runs `pnpm --filter @getdomovoi/daemon deploy`, whose filtered install has no
+# expo-modules-jsi and would otherwise fail with ERR_PNPM_UNUSED_PATCH. A patch that stops
+# applying after an Expo upgrade is caught by apps/mobile/src/expo-modules-jsi-patch.test.ts.
+allowUnusedPatches: true

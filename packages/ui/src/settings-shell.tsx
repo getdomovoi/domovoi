@@ -241,7 +241,8 @@ function parseSupervisorFacts(value: unknown): SupervisorFacts | undefined {
     restartCount: (entry) => integer(entry, 0, 4_294_967_295),
     windowsTaskKind: (entry) => entry === "legacy" || entry === "supervised",
     pid: (entry) => integer(entry, 1, 2_147_483_647),
-    lastExit: (entry) => typeof entry === "string" && /^(?:code -?[0-9]{1,16}|signal SIG[A-Z0-9]{1,24}|launch failure [A-Z0-9_-]{1,64})$/u.test(entry),
+    // "never exited": launchd's record that the job has not exited since it loaded.
+    lastExit: (entry) => typeof entry === "string" && /^(?:code -?[0-9]{1,16}|signal SIG[A-Z0-9]{1,24}|launch failure [A-Z0-9_-]{1,64}|never exited)$/u.test(entry),
     startedAt: (entry) => typeof entry === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(entry)
       && Number.isFinite(Date.parse(entry)) && new Date(entry).toISOString() === entry,
     supervisionFailure: (entry) => entry === "exhausted" || entry === "observation-failure" || entry === "configuration-missing",
@@ -399,8 +400,9 @@ function DaemonSection({ daemon, footer, buildStatus, buildSettled, onUpdated }:
             <span>{supervisor?.restartCount !== undefined
               ? `${supervisor.restartCount} automatic ${supervisor.restartCount === 1 ? "restart" : "restarts"} since its last start that was not automatic, or its last counter reset`
               : daemon.platform === "linux" && supervisor?.crashCount === undefined ? "Automatic restart count unknown" : crashes}</span>
-            <span>{supervisor?.lastExit ? `Last exit: ${supervisor.lastExit}` : "Last exit unknown"}</span>
-            {supervisor?.supervisionFailure === undefined && supervisor?.crashCount === undefined ? <span>Supervisor exhaustion unknown</span> : null}
+            <span>{supervisor?.lastExit === "never exited" ? "Last exit: none since the service loaded" : supervisor?.lastExit ? `Last exit: ${supervisor.lastExit}` : "Last exit unknown"}</span>
+            {/* Walk F20: the LaunchAgent's KeepAlive has no restart cap, so launchd never gives up and exhaustion is not a fact there to be unknown. */}
+            {daemon.platform !== "darwin" && supervisor?.supervisionFailure === undefined && supervisor?.crashCount === undefined ? <span>Supervisor exhaustion unknown</span> : null}
           </> : null}
         </div>
         {live?.status ? <div><Button type="button" variant="outline" size="sm" disabled={checking || busy || updating} onClick={() => void check()}>Check again</Button></div> : null}
@@ -501,7 +503,8 @@ function DaemonSection({ daemon, footer, buildStatus, buildSettled, onUpdated }:
         <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{command}</span>
       </div> : null}
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" disabled={installLocked} {...(live ? {} : { title: "Not built yet" })} onClick={() => void run("install")}>Install</Button>
+        {/* Walk F20: filled primary at reduced opacity still read as live, so a locked Install is drawn unfilled. */}
+        <Button size="sm" variant={installLocked ? "outline" : "default"} disabled={installLocked} {...(live ? {} : { title: "Not built yet" })} onClick={() => void run("install")}>Install</Button>
         <Button size="sm" variant="outline" className="border-danger-border text-destructive" disabled={removeLocked} {...(live ? {} : { title: "Not built yet" })} onClick={() => setConfirmingRemove(true)}>Remove</Button>
         {live?.refusal && !installed && !unknown && !busy ? null : <span className="text-[11px] text-faint">{lockReason}</span>}
       </div>

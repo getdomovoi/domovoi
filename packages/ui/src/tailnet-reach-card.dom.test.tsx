@@ -377,6 +377,101 @@ it("says when the daemon does not answer on the tailnet, in the daemon's words",
   expect(alert.getByRole("button", { name: "Renew now" })).toBeTruthy()
 })
 
+// Walk F11: the switch is recorded with the app and the certificate stored in
+// the profile, so a replaced profile directory leaves the switch on with no
+// certificate: the desktop reads no expiry and the daemon refuses the listener.
+// The alert offers to get the certificate again, which is a turn-on, rather
+// than a renewal.
+it("offers to get the certificate again when the stored certificate is missing", async () => {
+  const missing = { ...off, state: "on" } as const
+  const refused: TailnetListenerStatus = { state: "refused", address: "100.101.102.103", retrying: false,
+    reason: `Domovoi could not read the tailnet certificate at /Users/dana/.domovoi/tls/${name}.crt (ENOENT), so the daemon answers on this computer only.` }
+  const getting = deferred<unknown>()
+  const { act: ask, user } = await card({ status: missing, on: () => getting.promise }, { listener: refused })
+  const view = within(region())
+  expect(view.getByText("Not answering")).toBeTruthy()
+  const alert = within(view.getByRole("alert"))
+  expect(alert.getByText(refused.reason)).toBeTruthy()
+  expect(alert.queryByRole("button", { name: "Renew now" })).toBeNull()
+  expect(alert.getByText("Tailscale is asked for this machine's certificate again, then the daemon restarts.")).toBeTruthy()
+  await user.click(alert.getByRole("button", { name: "Get the certificate again" }))
+  expect(ask).toHaveBeenLastCalledWith("on")
+  expect(view.getByText("Getting the certificate")).toBeTruthy()
+  expect(view.getByText("Getting the certificate. Tailscale is asked for it again, then the daemon restarts.")).toBeTruthy()
+  expect(view.queryByText("Renewing")).toBeNull()
+  getting.resolve({ ok: true, report: on })
+  await settle()
+  // A certificate is stored again; the daemon here still refuses, so the alert
+  // goes back to offering a renewal.
+  expect(view.getByText("expires 20 Dec 2026")).toBeTruthy()
+  expect(within(view.getByRole("alert")).getByRole("button", { name: "Renew now" })).toBeTruthy()
+})
+
+// Codex review round 1 (Minor): no expiry from the desktop alone does not
+// prove the certificate missing. When the daemon still names one, the alert
+// keeps offering a renewal.
+it("keeps Renew now when the daemon reads a certificate the desktop cannot", async () => {
+  const unread = { ...off, state: "on" } as const
+  const refused: TailnetListenerStatus = { state: "refused", address: "100.101.102.103", retrying: true, certificateExpiresAt: "2026-12-20T12:00:00.000Z",
+    reason: "The tailnet address 100.101.102.103 is not on this machine (EADDRNOTAVAIL)." }
+  await card({ status: unread }, { listener: refused })
+  const alert = within(within(region()).getByRole("alert"))
+  expect(alert.getByRole("button", { name: "Renew now" })).toBeTruthy()
+  expect(alert.queryByRole("button", { name: "Get the certificate again" })).toBeNull()
+  expect(alert.getByText("The daemon tries the address again on its own.")).toBeTruthy()
+})
+
+// PR #877 bot review (P3): the turn-on answers with a report that has an
+// expiry before the status read after it settles. The progress says what this
+// change set out to do until it ends, not what the newer report suggests.
+it("keeps saying Getting the certificate until the read after it settles", async () => {
+  const missing = { ...off, state: "on" } as const
+  const refused: TailnetListenerStatus = { state: "refused", address: "100.101.102.103", retrying: false, reason: "Domovoi could not read the tailnet certificate (ENOENT)." }
+  const after = deferred<unknown>()
+  const reads = [() => Promise.resolve(missing), () => after.promise]
+  const ask = vi.fn(async (action: "status" | "on" | "off") => action === "status" ? (reads.shift() ?? (() => Promise.resolve(on)))() : { ok: true, report: on })
+  render(<Harness source={{ act: ask, listener: async () => refused, inApp: true }} />)
+  await settle()
+  const view = within(region())
+  await userEvent.setup().click(within(view.getByRole("alert")).getByRole("button", { name: "Get the certificate again" }))
+  await settle()
+  expect(view.getByText("Getting the certificate")).toBeTruthy()
+  expect(view.queryByText("Renewing")).toBeNull()
+  after.resolve(on)
+  await settle()
+  expect(view.queryByText("Getting the certificate")).toBeNull()
+})
+
+// PR #877 bot review (P2): a renewal that failed before the certificate became
+// unreadable leaves both alerts up. They name one operation one way, the
+// refusal carries its one button, and the renewal alert does not speak of a
+// certificate in use until it expires.
+it("offers one way to get the certificate again when a renewal also failed", async () => {
+  const missing = { ...off, state: "on", renewalFailed: { at: "2026-10-02T12:00:00.000Z", message: `Tailscale did not renew the certificate for ${name}: tailscaled did not answer.` } } as const
+  const refused: TailnetListenerStatus = { state: "refused", address: "100.101.102.103", retrying: false, reason: "Domovoi could not read the tailnet certificate (ENOENT)." }
+  await card({ status: missing }, { listener: refused })
+  const view = within(region())
+  expect(view.getAllByRole("alert")).toHaveLength(2)
+  expect(view.getAllByRole("button", { name: "Get the certificate again" })).toHaveLength(1)
+  expect(view.queryByRole("button", { name: "Renew now" })).toBeNull()
+  expect(view.getByText("The certificate did not renew")).toBeTruthy()
+  expect(view.getByText("Domovoi cannot read a stored certificate, so no expiry is known.")).toBeTruthy()
+  expect(view.queryByText(/until the certificate expires/u)).toBeNull()
+})
+
+it("offers to get the certificate again from the renewal alert when the daemon did not refuse", async () => {
+  const missing = { ...off, state: "on", renewalFailed: { at: "2026-10-02T12:00:00.000Z", message: "Tailscale did not renew the certificate." } } as const
+  const getting = deferred<unknown>()
+  const { act: ask, user } = await card({ status: missing, on: () => getting.promise }, { listener: "unknown" })
+  const alert = within(within(region()).getByRole("alert"))
+  expect(alert.getByText("Domovoi cannot read a stored certificate, so no expiry is known.")).toBeTruthy()
+  await user.click(alert.getByRole("button", { name: "Get the certificate again" }))
+  expect(ask).toHaveBeenLastCalledWith("on")
+  expect(within(region()).getByText("Getting the certificate")).toBeTruthy()
+  getting.resolve({ ok: true, report: on })
+  await settle()
+})
+
 it("turns off through the switch, listing the two steps", async () => {
   const turning = deferred<unknown>()
   const { act: ask, user } = await card({ status: on, off: () => turning.promise }, { listener: listening })
