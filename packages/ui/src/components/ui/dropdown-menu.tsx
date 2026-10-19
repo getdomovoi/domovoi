@@ -4,10 +4,19 @@ import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui"
 import { cn } from "@/lib/utils"
 import { CheckIcon, ChevronRightIcon } from "lucide-react"
 
+// Whether the menu is modal, which Radix keeps to itself. The content reads
+// it to tell an outside click that could not reach the page (modal) from one
+// that landed on another control (not modal).
+const DropdownMenuModalContext = React.createContext(true)
+
 function DropdownMenu({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
-  return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} />
+  return (
+    <DropdownMenuModalContext.Provider value={props.modal ?? true}>
+      <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} />
+    </DropdownMenuModalContext.Provider>
+  )
 }
 
 function DropdownMenuPortal({
@@ -29,18 +38,73 @@ function DropdownMenuTrigger({
   )
 }
 
+// Radix hands focus back to the trigger however the menu closed. After a
+// mouse open from nothing focused, Chromium draws that returned focus as
+// keyboard focus, so a click elsewhere left a ring on the trigger (walk F6).
+// A close whose last input was the pointer still returns focus to the
+// trigger, so the next Tab starts from it, but asks the browser not to draw
+// it as keyboard focus. A keyboard close is left to Radix, ring and all.
+// A menu that is not modal lets an outside click reach the page, so a close
+// by a click outside it leaves focus where the person clicked, as Radix does.
+function useClosedByPointer(): React.RefObject<boolean> {
+  const closedByPointer = React.useRef(false)
+  React.useEffect(() => {
+    // Only a primary press counts. Radix leaves focus alone after a right
+    // click (or Ctrl-click on macOS) outside, so the context menu keeps its
+    // target, and that close stays Radix's.
+    const pointer = (event: PointerEvent) => {
+      closedByPointer.current = event.button === 0 && !event.ctrlKey
+    }
+    const keyboard = () => { closedByPointer.current = false }
+    document.addEventListener("pointerdown", pointer, true)
+    document.addEventListener("keydown", keyboard, true)
+    return () => {
+      document.removeEventListener("pointerdown", pointer, true)
+      document.removeEventListener("keydown", keyboard, true)
+    }
+  }, [])
+  return closedByPointer
+}
+
 function DropdownMenuContent({
   className,
   align = "start",
   sideOffset = 4,
+  onCloseAutoFocus,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+  const closedByPointer = useClosedByPointer()
+  const modal = React.useContext(DropdownMenuModalContext)
+  const interactedOutside = React.useRef(false)
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
         align={align}
+        onInteractOutside={(event) => {
+          onInteractOutside?.(event)
+          interactedOutside.current = true
+        }}
+        onCloseAutoFocus={(event) => {
+          const outside = interactedOutside.current
+          interactedOutside.current = false
+          onCloseAutoFocus?.(event)
+          // A caller that moved focus itself, a pointer that already put
+          // focus somewhere else, or a click outside a menu that is not
+          // modal keeps Radix's own handling.
+          if (event.defaultPrevented || !closedByPointer.current || (outside && !modal)) return
+          const active = document.activeElement
+          if (active && active !== document.body && active.isConnected) return
+          const content = event.target instanceof HTMLElement ? event.target : null
+          const triggerId = content?.getAttribute("aria-labelledby")
+          const trigger = triggerId ? document.getElementById(triggerId) : null
+          if (!trigger) return
+          event.preventDefault()
+          // focusVisible is a FocusOptions member the DOM typings here lack.
+          trigger.focus({ preventScroll: true, focusVisible: false } as FocusOptions)
+        }}
         className={cn("z-50 max-h-(--radix-dropdown-menu-content-available-height) w-(--radix-dropdown-menu-trigger-width) min-w-32 origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 duration-100 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:overflow-hidden data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95", className )}
         {...props}
       />
