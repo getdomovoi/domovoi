@@ -255,8 +255,10 @@ export const maximumEvidenceDiffBytes = 256 * 1_024
 const maximumEvidenceAttempts = 3
 // Evidence is interactive. Larger staging inputs remain visible but cannot
 // authorize Commit. This bounds compression work before Git opens an index
-// lock; the deadline below also covers slow storage and clean filters.
+// lock. The staging deadline is checked between Git steps; only the caller's
+// signal may stop running Git, which must otherwise finish and release locks.
 const maximumEvidenceStagingBytes = 64 * 1_024 * 1_024
+const maximumEvidenceStagingPaths = 10_000
 const evidenceStagingBudgetMs = 5_000
 const maximumGitOutputBytes = 32 * 1_024 * 1_024
 const restoreClaimIoTimeoutMs = 10_000
@@ -1303,13 +1305,16 @@ async function seedPrivateIndex(isolated: IsolatedGit, sharedIndex: string, inde
 async function evidenceChangesDigest(isolated: IsolatedGit, baseCommit: string, deadline: OperationDeadline, signal?: AbortSignal): Promise<string | undefined> {
   const index = join(isolated.gitDirectory, "evidence-index")
   try {
-    deadline.throwIfExpired()
-    await seedPrivateIndex(isolated, isolated.worktreeIndex, index, baseCommit, deadline.signal)
-    await isolated.run(["add", "--all"], { index, signal: deadline.signal })
-    return await stagedChangesDigest(isolated, baseCommit, index, deadline.signal)
+    if (deadline.remainingMs() === 0) return undefined
+    await seedPrivateIndex(isolated, isolated.worktreeIndex, index, baseCommit, signal)
+    if (deadline.remainingMs() === 0) return undefined
+    await isolated.run(["add", "--all"], { index, signal })
+    if (deadline.remainingMs() === 0) return undefined
+    const digest = await stagedChangesDigest(isolated, baseCommit, index, signal)
+    return deadline.remainingMs() === 0 ? undefined : digest
   } catch (error) {
     signal?.throwIfAborted()
-    if (deadline.signal.aborted) return undefined
+    if (isolated.indexLocksLeft.length > 0) throw error
     // Git add's path refusal (1) or fatal staging failure (128) must not
     // hide otherwise readable evidence. No digest means no commit authority.
     const code = (error as { code?: unknown }).code
@@ -1319,17 +1324,19 @@ async function evidenceChangesDigest(isolated: IsolatedGit, baseCommit: string, 
 }
 
 // Reuse only within one observation, never at commit time. Include raw path
-// bytes, the shared index and nanosecond ctime as well as mtime: rewriting
-// same-sized bytes and restoring mtime must invalidate the staged object IDs.
-// Gitlinks/directories need Git's own second staging pass to observe their
+// bytes, the shared index and changed paths' ctime as well as mtime. A tracked
+// file changed between observations enters the modified list. On filesystems
+// with 1 s timestamps, a same-size rewrite can pass this stat check; the fresh
+// commit-time recompute and refusal remain the backstop.
+// Gitlinks need Git's own second staging pass to observe their
 // nested HEADs. Unreadable metadata withholds authority, not the file view.
 async function evidenceStagingState(worktree: string, isolated: IsolatedGit, signal?: AbortSignal): Promise<{
   fingerprint?: string; tooLarge: boolean
 }> {
-  const list = async (kind: "--cached" | "--modified") => {
+  const list = async (args: string[]) => {
     const chunks: Buffer[] = []
     let bytes = 0
-    const result = await isolated.stream(["ls-files", kind, "--others", "--exclude-standard", "-z"], (chunk, stop) => {
+    const result = await isolated.stream(["ls-files", ...args, "-z"], (chunk, stop) => {
       bytes += chunk.length
       if (bytes > maximumGitOutputBytes) { stop(); return }
       chunks.push(chunk)
@@ -1339,13 +1346,13 @@ async function evidenceStagingState(worktree: string, isolated: IsolatedGit, sig
     return [...new Set(Buffer.concat(chunks).toString("binary").split("\0").filter(Boolean))].sort()
   }
   try {
-    const [paths, changed, index] = await Promise.all([
-      list("--cached"), list("--modified"), readIndexFile(isolated.worktreeIndex),
+    const [paths, entries, index] = await Promise.all([
+      list(["--modified", "--others", "--exclude-standard"]), list(["--stage"]), readIndexFile(isolated.worktreeIndex),
     ])
-    const changedPaths = new Set(changed)
+    if (paths.length > maximumEvidenceStagingPaths) return { tooLarge: true }
     const hash = createHash("sha256").update(index ?? "no-index")
     let bytes = 0n
-    let reusable = true
+    let reusable = !entries.some((entry) => entry.startsWith("160000 "))
     // Bound outstanding filesystem calls even for very large worktrees.
     for (let start = 0; start < paths.length; start += 64) {
       signal?.throwIfAborted()
@@ -1356,13 +1363,13 @@ async function evidenceStagingState(worktree: string, isolated: IsolatedGit, sig
           if (error.code === "ENOENT" || error.code === "ENOTDIR") return undefined
           throw error
         })
-        return { path, raw, stat }
+        return { raw, stat }
       }))
-      for (const { path, raw, stat } of batch) {
+      for (const { raw, stat } of batch) {
         hashField(hash, raw)
         if (!stat) { hashField(hash, "missing"); continue }
         if (!stat.isFile() && !stat.isSymbolicLink()) reusable = false
-        if (changedPaths.has(path) && stat.isFile()) bytes += stat.size
+        if (stat.isFile()) bytes += stat.size
         hashField(hash, `${stat.dev}:${stat.ino}:${stat.mode}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`)
       }
     }
@@ -1924,15 +1931,17 @@ export class GitWorkspaceService implements WorkspaceService {
   // file view may show a filtered file as changed. Under a grant the reviewed
   // filters read the files as a checkpoint would store them.
   async evidence(worktreePath: string, signal?: AbortSignal, includeRevertTargets = false): Promise<WorkspaceEvidence> {
-    const deadline = OperationDeadline.start(this.#evidenceStagingBudgetMs, signal ? { signal } : {})
+    let deadline: OperationDeadline | undefined
+    // One budget across attempts, starting only when staging first begins.
+    const stagingDeadline = () => deadline ??= OperationDeadline.start(this.#evidenceStagingBudgetMs)
     try {
-      return await this.#isolated(worktreePath, worktreePath, signal, (isolated) => this.#evidence(worktreePath, isolated, deadline, signal, includeRevertTargets), "filters-off")
+      return await this.#isolated(worktreePath, worktreePath, signal, (isolated) => this.#evidence(worktreePath, isolated, stagingDeadline, signal, includeRevertTargets), "filters-off")
     } finally {
-      deadline.clear()
+      deadline?.clear()
     }
   }
 
-  async #evidence(worktreePath: string, isolated: IsolatedGit, deadline: OperationDeadline, signal: AbortSignal | undefined, includeRevertTargets: boolean): Promise<WorkspaceEvidence> {
+  async #evidence(worktreePath: string, isolated: IsolatedGit, stagingDeadline: () => OperationDeadline, signal: AbortSignal | undefined, includeRevertTargets: boolean): Promise<WorkspaceEvidence> {
     const diffSettings = await diffBinarySettings(worktreePath, signal)
     let canStage = true
     try {
@@ -1952,7 +1961,7 @@ export class GitWorkspaceService implements WorkspaceService {
       if (fingerprintBefore.headCommit !== baseCommit) continue
       const stagingBefore = canStage ? await evidenceStagingState(worktreePath, isolated, signal) : undefined
       const changesDigest = stagingBefore && !stagingBefore.tooLarge
-        ? await evidenceChangesDigest(isolated, baseCommit, deadline, signal) : undefined
+        ? await evidenceChangesDigest(isolated, baseCommit, stagingDeadline(), signal) : undefined
       const status = (await isolated.run([
         "--no-optional-locks",
         "status",
@@ -1997,7 +2006,7 @@ export class GitWorkspaceService implements WorkspaceService {
       let changesDigestAfter: string | undefined
       if (changesDigest !== undefined && !stagingAfter?.tooLarge) {
         if (stagingBefore?.fingerprint === undefined) {
-          changesDigestAfter = await evidenceChangesDigest(isolated, baseCommit, deadline, signal)
+          changesDigestAfter = await evidenceChangesDigest(isolated, baseCommit, stagingDeadline(), signal)
         } else if (stagingBefore.fingerprint === stagingAfter?.fingerprint) {
           changesDigestAfter = changesDigest
         }

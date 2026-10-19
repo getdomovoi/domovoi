@@ -1,6 +1,6 @@
 import { execFile, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, truncate, utimes, writeFile } from "node:fs/promises"
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, truncate, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -21,7 +21,13 @@ import { GitWorkspaceService, SessionCommitRefusedError, WorkspaceEvidenceUnstab
 const execute = promisify(execFile)
 const scratchDirectories: string[] = []
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>()
+  return { ...original, lstat: vi.fn(original.lstat) }
+})
+
 afterEach(async () => {
+  vi.clearAllMocks()
   vi.unstubAllEnvs()
   await removeScratchDirectories(scratchDirectories)
 })
@@ -60,6 +66,32 @@ describe("GitWorkspaceService.commit", () => {
     const shown = await service.evidence(workspace.path)
     expect(shown.files.map((entry) => entry.path)).toEqual(["large.bin"])
     expect(shown.changesDigest).toBeUndefined()
+    const common = await git(workspace.path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    expect((await readdir(common)).filter((name) => name.startsWith("domovoi-checkout-"))).toEqual([])
+  })
+
+  it("bounds the number of changed paths before staging", async () => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-many-", "session-commit", { evidenceStagingBudgetMs: 30_000 })
+    for (let start = 0; start < 10_001; start += 64) {
+      await Promise.all(Array.from({ length: Math.min(64, 10_001 - start) }, (_, offset) =>
+        writeFile(join(workspace.path, `new-${start + offset}.txt`), "small\n")))
+    }
+    const shown = await service.evidence(workspace.path)
+    expect(shown.totalChangedFiles).toBe(10_001)
+    expect(shown.changesDigest).toBeUndefined()
+    const common = await git(workspace.path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    expect((await readdir(common)).filter((name) => name.startsWith("domovoi-checkout-"))).toEqual([])
+  }, 30_000)
+
+  it("does not stat unchanged tracked files to reuse staged evidence", async () => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-stat-cost-")
+    await writeFile(join(workspace.path, "new.txt"), "new\n")
+    vi.mocked(lstat).mockClear()
+    expect((await service.evidence(workspace.path)).changesDigest).toBeDefined()
+    const paths = vi.mocked(lstat).mock.calls.map(([path]) => path.toString())
+    expect(paths).toContain(join(workspace.path, "new.txt"))
+    expect(paths).not.toContain(join(workspace.path, "README.md"))
+    expect(paths).not.toContain(join(workspace.path, "old.txt"))
   })
 
   it("keeps the canonical digest identical to fresh staging", async () => {
@@ -91,6 +123,8 @@ describe("GitWorkspaceService.commit", () => {
     const shown = await service.evidence(workspace.path)
     expect(shown.files.map((file) => file.path)).toContain("new.txt")
     expect(shown.changesDigest).toBeUndefined()
+    const common = await git(workspace.path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    expect((await readdir(common)).filter((name) => name.startsWith("domovoi-checkout-"))).toEqual([])
   })
 
   it("does not turn caller cancellation into readable evidence", async () => {
