@@ -16,7 +16,7 @@ export type SessionCommitControls = {
   // Why this session cannot commit now: a read-only mode or a running turn.
   // The daemon refuses the same cases; the card says so before it is asked.
   blocked?: string | undefined
-  onCommit: (message: string, expectedHead: string) => Promise<void>
+  onCommit: (message: string, expectedHead: string, expectedChangesDigest: string) => Promise<void>
 }
 
 // Why a session cannot commit now, in the daemon's own words for the same
@@ -52,6 +52,7 @@ export function SessionCommitCard({
   files,
   totalFiles,
   baseCommit,
+  changesDigest,
   onCancel,
   onCommitted,
 }: {
@@ -59,17 +60,21 @@ export function SessionCommitCard({
   files: readonly ChangedFileEvidence[]
   totalFiles: number
   baseCommit: string
+  changesDigest: string | undefined
   onCancel: () => void
   onCommitted: () => void
 }) {
   const [message, setMessage] = useState(controls.defaultMessage)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState("")
+  const blocked = controls.blocked ?? (changesDigest === undefined
+    ? "Domovoi cannot verify these changes for a commit. The files may still be changing, or Git may be unable to stage them safely."
+    : undefined)
   const commit = () => {
-    if (pending || controls.blocked !== undefined || !message.trim()) return
+    if (pending || blocked !== undefined || changesDigest === undefined || !message.trim()) return
     setPending(true)
     setError("")
-    void controls.onCommit(message, baseCommit).then(
+    void controls.onCommit(message, baseCommit, changesDigest).then(
       () => {
         setPending(false)
         onCommitted()
@@ -122,8 +127,8 @@ export function SessionCommitCard({
       <p className="m-0 border-t px-3 py-2 text-[11px] leading-normal text-muted-foreground">
         Built from the worktree as it is now. Your own checkout is never written, and nothing is pushed.
       </p>
-      {controls.blocked !== undefined ? (
-        <p className="m-0 border-t px-3 py-2 text-[11px] leading-normal text-muted-foreground">{controls.blocked}</p>
+      {blocked !== undefined ? (
+        <p className="m-0 border-t px-3 py-2 text-[11px] leading-normal text-muted-foreground">{blocked}</p>
       ) : null}
       {error ? (
         <div className="border-t p-3">
@@ -135,7 +140,7 @@ export function SessionCommitCard({
         </div>
       ) : null}
       <div className="flex flex-wrap items-center gap-2 border-t px-3 py-2">
-        <Button size="xs" disabled={pending || controls.blocked !== undefined || !message.trim()} onClick={commit}>
+        <Button size="xs" disabled={pending || blocked !== undefined || !message.trim()} onClick={commit}>
           <GitCommitHorizontalIcon />
           {pending ? "Committing" : "Commit 1"}
         </Button>

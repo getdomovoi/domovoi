@@ -88,6 +88,7 @@ export type SessionCommitRequest = {
   // The session branch's commit the person's view of the changes was read
   // against.
   expectedHead: string
+  expectedChangesDigest: string
 }
 
 export type SessionCommit = {
@@ -116,6 +117,7 @@ export type SessionCommitRefusal =
   | "not-session-worktree"
   | "not-session-branch"
   | "head-moved"
+  | "changes-moved"
   | "nothing-to-commit"
   | "secret-paths"
   | "secret-message"
@@ -195,6 +197,8 @@ function sessionCommitRefusalText(reason: SessionCommitRefusal, branch: string, 
       return `The worktree is not on ${branch}, so Domovoi did not commit. Domovoi commits on the session branch and never on another.`
     case "head-moved":
       return `${branch} moved since these changes were read. Nothing was committed. Read the changes again, then commit.`
+    case "changes-moved":
+      return "The changes no longer match the reviewed change set. Nothing was committed. Refresh and review the changes again, then commit."
     case "nothing-to-commit":
       return `The worktree matches ${branch}, so there is nothing to commit.`
     case "secret-paths":
@@ -233,6 +237,8 @@ export type ChangedFileEvidence = {
 }
 
 export type WorkspaceEvidence = {
+  // Absent when the file view is readable but safe staging is unavailable.
+  changesDigest?: string
   baseCommit: string
   diff: string
   diffTruncated: boolean
@@ -1244,6 +1250,65 @@ async function hashIsolatedGit(isolated: IsolatedGit, arguments_: string[], sign
   return hash.digest("hex")
 }
 
+// Canonical change identity: raw NUL-delimited paths, status, old/new modes
+// and full object IDs. Renames are delete plus add. Gitlinks and symlink
+// targets participate through their object IDs, and no text decoding occurs.
+async function stagedChangesDigest(isolated: IsolatedGit, baseCommit: string, index: string, signal?: AbortSignal): Promise<string> {
+  const hash = createHash("sha256").update("domovoi.commit-changes.v1\0").update(baseCommit).update("\0")
+  const result = await isolated.stream([
+    "--no-optional-locks", "diff", "--cached", "--raw", "-z", "--no-abbrev", "--no-renames",
+    "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", baseCommit, "--",
+  ], (chunk) => { hash.update(chunk) }, { index, signal })
+  if (result.code !== 0) throw new Error(result.stderr || `git diff exited with ${result.code ?? result.signal ?? "no status"}`)
+  return `sha256:${hash.digest("hex")}`
+}
+
+// Both evidence and commits stage a private copy with the same index flags
+// and staged gitlinks. Never refresh or rewrite the worktree's shared index.
+async function seedPrivateIndex(isolated: IsolatedGit, sharedIndex: string, index: string, head: string | undefined, signal?: AbortSignal): Promise<boolean> {
+  // Only the worktree's index itself being absent means there is none
+  // (ruling Q295): nothing else that goes missing below does.
+  const seed = await readIndexFile(sharedIndex)
+  if (seed !== undefined) {
+    await writeFile(index, seed)
+    // A split index keeps most entries in a sharedindex.<hash> file, which
+    // Git looks for beside the index it reads. The copy gets those files
+    // too, and is then written whole (ruling Q281): the index published
+    // from it must not name a shared index that lives only here. Git
+    // removes expired ones on its own, so one that vanishes meanwhile is
+    // passed over; if it was the one the index needs, rewriting the copy
+    // whole fails, and so does the checkpoint.
+    const shared = (await readdir(dirname(sharedIndex))).filter((name) => /^sharedindex\.[0-9a-f]+$/u.test(name))
+    for (const name of shared) {
+      await copyFile(join(dirname(sharedIndex), name), join(isolated.gitDirectory, name)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error
+      })
+    }
+    if (shared.length > 0) await isolated.run(["update-index", "--no-split-index"], { index, signal })
+    return true
+  }
+  await rm(index, { force: true })
+  if (head !== undefined) await isolated.run(["read-tree", head], { index, signal })
+  return false
+}
+
+// Observe the complete worktree without publishing an index or moving refs.
+async function evidenceChangesDigest(isolated: IsolatedGit, baseCommit: string, signal?: AbortSignal): Promise<string | undefined> {
+  const index = join(isolated.gitDirectory, "evidence-index")
+  await seedPrivateIndex(isolated, isolated.worktreeIndex, index, baseCommit, signal)
+  try {
+    await isolated.run(["add", "--all"], { index, signal })
+  } catch (error) {
+    signal?.throwIfAborted()
+    // Git add's path refusal (1) or fatal staging failure (128) must not
+    // hide otherwise readable evidence. No digest means no commit authority.
+    const code = (error as { code?: unknown }).code
+    if (code === 1 || code === 128) return undefined
+    throw error
+  }
+  return stagedChangesDigest(isolated, baseCommit, index, signal)
+}
+
 // The `diff.<driver>.binary` settings Git reads in the worktree, as `-c`
 // arguments for the evidence diffs in the isolated directory, which reads no
 // repository config. A driver marked binary keeps a file's contents out of a
@@ -1579,12 +1644,12 @@ export class GitWorkspaceService implements WorkspaceService {
     const gate = await this.#gate(anchor, worktree, signal)
     if (refuseRepositoryFilters && gate.filters.length > 0) throw refuseRepositoryFilters()
     if (!gate.open && whenRefused === "refuse") throw new RepositoryFilterRefusedError(gate.filters, { reason: gate.reason, projectId: gate.projectId })
-    // Evidence keeps out of submodule worktrees (--ignore-submodules=dirty);
-    // every other operation may stage, which looks into each one.
+    // Evidence can still be read without staging an unsafe submodule; its
+    // own guard below withholds the digest in that case.
     if (whenRefused === "refuse") await refuseSubmoduleConfig(worktree, worktree, signal)
     await this.#afterRepositoryFilterGate?.(worktree)
     const isolated = await openIsolatedGit({
-      worktree, reviewed: gate.open ? gate.reviewed : [], worktreeIndex: true, beforeCommand: this.#confirm(gate), signal,
+      worktree, temporaryObjects: whenRefused === "filters-off", reviewed: gate.open ? gate.reviewed : [], worktreeIndex: true, beforeCommand: this.#confirm(gate), signal,
     })
     try {
       return await work(isolated)
@@ -1785,7 +1850,7 @@ export class GitWorkspaceService implements WorkspaceService {
     return { path: await realpath(path), branch, baseCommit: checkpointCommit }
   }
 
-  // Evidence reads what the worktree shows and stores nothing, so a filter
+  // Evidence reads what the worktree shows and discards its staged blobs, so a filter
   // its trust does not cover is treated as absent there, not refused: the
   // file view may show a filtered file as changed. Under a grant the reviewed
   // filters read the files as a checkpoint would store them.
@@ -1795,6 +1860,15 @@ export class GitWorkspaceService implements WorkspaceService {
 
   async #evidence(worktreePath: string, isolated: IsolatedGit, signal: AbortSignal | undefined, includeRevertTargets: boolean): Promise<WorkspaceEvidence> {
     const diffSettings = await diffBinarySettings(worktreePath, signal)
+    let canStage = true
+    try {
+      await refuseSubmoduleConfig(worktreePath, worktreePath, signal)
+    } catch {
+      signal?.throwIfAborted()
+      // This guard authorizes staging, not the read-only file view. Any
+      // failure withholds commit authorization while preserving that view.
+      canStage = false
+    }
     for (let attempt = 0; attempt < maximumEvidenceAttempts; attempt += 1) {
       // Every observation compares against this commit; the fingerprints
       // read the worktree's HEAD again, so one that moved meanwhile retries.
@@ -1802,6 +1876,7 @@ export class GitWorkspaceService implements WorkspaceService {
       await isolated.setHead(baseCommit)
       const fingerprintBefore = await workspaceEvidenceFingerprint(worktreePath, isolated, baseCommit, diffSettings, signal)
       if (fingerprintBefore.headCommit !== baseCommit) continue
+      const changesDigest = canStage ? await evidenceChangesDigest(isolated, baseCommit, signal) : undefined
       const status = (await isolated.run([
         "--no-optional-locks",
         "status",
@@ -1842,8 +1917,13 @@ export class GitWorkspaceService implements WorkspaceService {
         ),
         includeRevertTargets ? pathsAtCommit(isolated, baseCommit, signal) : undefined,
       ])
+      const changesDigestAfter = canStage ? await evidenceChangesDigest(isolated, baseCommit, signal) : undefined
       const fingerprintAfter = await workspaceEvidenceFingerprint(worktreePath, isolated, baseCommit, diffSettings, signal)
       if (fingerprintBefore.digest !== fingerprintAfter.digest) continue
+      const digestStable = changesDigest === changesDigestAfter
+      if (!digestStable && attempt + 1 < maximumEvidenceAttempts) continue
+      // Untracked bytes are not shown in the diff. If only those keep
+      // changing, the view remains readable but cannot authorize a commit.
 
       const stats = parseNumstat(numstat)
       const allFiles: ChangedFileEvidence[] = parseStatus(status).map((file) => {
@@ -1857,6 +1937,7 @@ export class GitWorkspaceService implements WorkspaceService {
       })
       return {
         baseCommit,
+        ...(changesDigest === undefined || !digestStable ? {} : { changesDigest }),
         diff: diff.output,
         diffTruncated: diff.truncated,
         totalChangedFiles: allFiles.length,
@@ -2182,6 +2263,9 @@ export class GitWorkspaceService implements WorkspaceService {
           const written = await changedPaths(["--diff-filter=d"])
           const secret = written.filter((candidate) => !checkpointPathIsSafe(candidate)).length
           if (secret > 0) throw new SessionCommitRefusedError("secret-paths", branch, secret)
+          if (request.expectedChangesDigest !== await stagedChangesDigest(isolated, head, index, signal)) {
+            throw new SessionCommitRefusedError("changes-moved", branch)
+          }
         },
       }, signal).then(({ commit, changedFiles, afterCommitError }) => ({
         commit, branch, changedFiles, ...(afterCommitError === undefined ? {} : { afterCommitError }),
@@ -2238,30 +2322,11 @@ export class GitWorkspaceService implements WorkspaceService {
       return digest.digest("hex")
     }
     let seeded: string
-    // Only the worktree's index itself being absent means there is none
-    // (ruling Q295): nothing else that goes missing below does.
-    const seed = await readIndexFile(sharedIndex)
-    if (seed !== undefined) {
-      await writeFile(index, seed)
-      // A split index keeps most entries in a sharedindex.<hash> file, which
-      // Git looks for beside the index it reads. The copy gets those files
-      // too, and is then written whole (ruling Q281): the index published
-      // from it must not name a shared index that lives only here. Git
-      // removes expired ones on its own, so one that vanishes meanwhile is
-      // passed over; if it was the one the index needs, rewriting the copy
-      // whole fails, and so does the checkpoint.
-      const shared = (await readdir(dirname(sharedIndex))).filter((name) => /^sharedindex\.[0-9a-f]+$/u.test(name))
-      for (const name of shared) {
-        await copyFile(join(dirname(sharedIndex), name), join(isolated.gitDirectory, name)).catch((error: NodeJS.ErrnoException) => {
-          if (error.code !== "ENOENT") throw error
-        })
-      }
-      if (shared.length > 0) await isolated.run(["update-index", "--no-split-index"], { index, signal })
+    if (await seedPrivateIndex(isolated, sharedIndex, index, head, signal)) {
       seeded = await entries(index)
     } else {
       // No index lists no entry: the digest of nothing.
       seeded = createHash("sha256").digest("hex")
-      if (head !== undefined) await isolated.run(["read-tree", head], { index, signal })
     }
     if (head !== undefined) await isolated.setHead(head)
     await isolated.run(["add", "--all"], { index, signal })

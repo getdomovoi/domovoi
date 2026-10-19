@@ -11218,6 +11218,7 @@ export class DomovoiDaemon {
                 sessionId: session.id,
                 message: params.message,
                 expectedHead: params.expectedHead,
+                expectedChangesDigest: params.expectedChangesDigest,
               }, signal)
               return running
             },

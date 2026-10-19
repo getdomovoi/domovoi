@@ -1,13 +1,15 @@
 import { execFile, spawnSync } from "node:child_process"
-import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { readRepositoryProviderConfig } from "./repository-provider-config.js"
+import { projectRootRead } from "./repository-trust-apply.js"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { GitWorkspaceService, SessionCommitRefusedError, type GitWorkspaceServiceOptions } from "./workspace.js"
+import { GitWorkspaceService, SessionCommitRefusedError, WorkspaceEvidenceUnstableError, type GitWorkspaceServiceOptions } from "./workspace.js"
 
 // Walk finding F10 (ruled 2026-10-18): the agent's sandbox cannot write a
 // linked worktree's Git metadata, so Domovoi commits the session's work when
@@ -49,6 +51,264 @@ async function refusal(promise: Promise<unknown>): Promise<SessionCommitRefusedE
 }
 
 describe("GitWorkspaceService.commit", () => {
+  it("does not retain file contents in the repository object store when reading evidence", async () => {
+    const { service, workspace } = await sessionWorktree("domovoi-commit-private-objects-")
+    const contents = "uncommitted evidence fixture\n"
+    await writeFile(join(workspace.path, "new.txt"), contents)
+    const blob = spawnSync("git", ["-C", workspace.path, "hash-object", "--stdin"], { input: contents, encoding: "utf8" }).stdout.trim()
+    await expect(git(workspace.path, "cat-file", "-e", blob)).rejects.toThrow()
+    expect((await service.evidence(workspace.path)).changesDigest).toMatch(/^sha256:[a-f0-9]{64}$/u)
+    await expect(git(workspace.path, "cat-file", "-e", blob)).rejects.toThrow()
+  })
+
+  it.each([
+    ["checkpoint", "default"], ["commit", "default"],
+    ["checkpoint", "custom"], ["commit", "custom"],
+  ] as const)("discards evidence LFS payloads but retains %s payloads in the %s store", async (operation, store) => {
+    const { scratch, repositoryPath, workspace, sessionId } = await sessionWorktree("domovoi-commit-lfs-storage-")
+    const home = join(scratch, "home")
+    await mkdir(home)
+    vi.stubEnv("HOME", home)
+    vi.stubEnv("XDG_CONFIG_HOME", join(home, ".config"))
+    const script = join(scratch, "fake-clean.sh").replaceAll("\\", "/")
+    const observations = join(scratch, "storage-observations").replaceAll("\\", "/")
+    await writeFile(script, [
+      'set -eu',
+      'lfs_store=$(git config --get lfs.storage)',
+      'mkdir -p "$lfs_store"',
+      'cat > "$lfs_store/payload"',
+      'printf "%s\\n" "$lfs_store" >> "$1"',
+      'cat "$lfs_store/payload"',
+      '',
+    ].join("\n"))
+    // Checkpoints can run reviewed repository filters. A person's commit
+    // accepts only filters from the person's global/system configuration.
+    const scope = operation === "commit" ? ["--global"] : []
+    await git(repositoryPath, "config", ...scope, "filter.fixture.clean", `sh "${script}" "${observations}"`)
+    await git(repositoryPath, "config", ...scope, "filter.fixture.required", "true")
+    const common = await git(workspace.path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    const persistentStore = store === "custom" ? join(scratch, "custom-lfs") : join(common, "lfs")
+    if (store === "custom") await git(repositoryPath, "config", "--global", "lfs.storage", persistentStore)
+    const config = await readRepositoryProviderConfig(repositoryPath, projectRootRead)
+    if (operation === "checkpoint") expect(config.gitFilters?.reviewDigest).toBeDefined()
+    const grant = {
+      projectId: "project-lfs", trustedDigest: config.configDigest, trustedAt: "2026-10-19T00:00:00.000Z",
+      trustedBy: { client: "desktop" as const },
+      ...(config.gitFilters?.reviewDigest === undefined ? {} : { gitFilterReviewDigest: config.gitFilters.reviewDigest }),
+    }
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), {
+      repositoryTrust: () => ({ projectId: grant.projectId, projectPath: repositoryPath, grant: () => grant, generation: () => 0 }),
+    })
+    await writeFile(join(workspace.path, ".gitattributes"), "object.bin filter=fixture\n")
+    await writeFile(join(workspace.path, "object.bin"), "payload bytes\n")
+    const shown = await service.evidence(workspace.path)
+    expect(shown.changesDigest).toMatch(/^sha256:[a-f0-9]{64}$/u)
+    const seen = (await readFile(observations, "utf8")).trim().split("\n")
+    expect(seen.length).toBeGreaterThanOrEqual(2)
+    await expect(lstat(persistentStore)).rejects.toMatchObject({ code: "ENOENT" })
+    for (const storage of seen) {
+      expect(storage).toContain("domovoi-checkout-")
+      await expect(lstat(storage)).rejects.toMatchObject({ code: "ENOENT" })
+    }
+    const made = operation === "checkpoint"
+      ? await service.checkpoint(workspace.path, "retain LFS payload")
+      : await service.commit(workspace.path, {
+          repositoryPath, sessionId, message: "feat: retain payload", expectedHead: shown.baseCommit, expectedChangesDigest: shown.changesDigest!,
+        })
+    expect(await readFile(join(persistentStore, "payload"), "utf8")).toBe("payload bytes\n")
+    expect((await readFile(observations, "utf8")).trim().split("\n").at(-1)).toBe(persistentStore)
+    expect(await git(workspace.path, "show", `${made.commit}:object.bin`)).toBe("payload bytes")
+  })
+
+  it("keeps evidence readable without a commit digest when submodule config makes staging unsafe", async () => {
+    const { repositoryPath, service, workspace } = await sessionWorktree("domovoi-commit-submodule-filter-")
+    await git(workspace.path, "-c", "protocol.file.allow=always", "submodule", "add", repositoryPath, "library")
+    await git(join(workspace.path, "library"), "config", "filter.unsafe.clean", "domovoi-test-filter-must-not-run")
+    const shown = await service.evidence(workspace.path)
+    expect(shown.files.some((file) => file.path === "library")).toBe(true)
+    expect(shown.changesDigest).toBeUndefined()
+  })
+
+  it.each(["depth", "unreadable-config"])("withholds the digest when the submodule guard fails for %s", async (reason) => {
+    const { repositoryPath, service, workspace } = await sessionWorktree("domovoi-commit-submodule-guard-")
+    let parent = workspace.path
+    for (let depth = 0; depth < (reason === "depth" ? 9 : 2); depth += 1) {
+      const child = join(parent, "library")
+      await git(parent, "clone", "--local", repositoryPath, child)
+      await git(parent, "update-index", "--add", "--cacheinfo", `160000,${workspace.baseCommit},library`)
+      parent = child
+    }
+    if (reason === "unreadable-config") await writeFile(join(parent, ".git", "config"), "[invalid\n")
+    const shown = await service.evidence(workspace.path)
+    expect(shown.files.some((file) => file.path === "library")).toBe(true)
+    expect(shown.changesDigest).toBeUndefined()
+  })
+
+  it("keeps evidence readable without a digest when sparse staging refuses a path", async () => {
+    const { service, workspace } = await sessionWorktree("domovoi-commit-sparse-evidence-")
+    await git(workspace.path, "sparse-checkout", "set", "--no-cone", "/README.md")
+    await writeFile(join(workspace.path, "outside.txt"), "outside\n")
+    const shown = await service.evidence(workspace.path)
+    expect(shown.files.some((file) => file.path === "outside.txt")).toBe(true)
+    expect(shown.changesDigest).toBeUndefined()
+  })
+
+  it("binds all files beyond the displayed 200", async () => {
+    const { repositoryPath, service, workspace, sessionId } = await sessionWorktree("domovoi-commit-many-")
+    await Promise.all(Array.from({ length: 201 }, (_, index) => writeFile(join(workspace.path, `file-${String(index).padStart(3, "0")}.txt`), "shown\n")))
+    const shown = await service.evidence(workspace.path)
+    expect(shown.files).toHaveLength(200)
+    expect(shown.totalChangedFiles).toBe(201)
+    await writeFile(join(workspace.path, "file-200.txt"), "not shown\n")
+    expect((await refusal(service.commit(workspace.path, {
+      repositoryPath, sessionId, message: "feat: all", expectedHead: shown.baseCommit, expectedChangesDigest: shown.changesDigest!,
+    }))).reason).toBe("changes-moved")
+    expect(await git(workspace.path, "rev-parse", "HEAD")).toBe(shown.baseCommit)
+  })
+
+  it("does not accept a missing digest from an internal caller", async () => {
+    const { repositoryPath, service, workspace, sessionId } = await sessionWorktree("domovoi-commit-missing-")
+    await writeFile(join(workspace.path, "README.md"), "after\n")
+    const error = await refusal(service.commit(workspace.path, {
+      repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit,
+      expectedChangesDigest: undefined as unknown as string,
+    }))
+    expect(error.reason).toBe("changes-moved")
+    expect(await git(workspace.path, "rev-parse", "HEAD")).toBe(workspace.baseCommit)
+  })
+
+  it.skipIf(process.platform === "win32")("binds executable modes and symlink targets", async () => {
+    const { repositoryPath, service, workspace, sessionId } = await sessionWorktree("domovoi-commit-modes-")
+    await git(repositoryPath, "config", "core.filemode", "true")
+    await writeFile(join(workspace.path, "README.md"), "shown\n")
+    await symlink("README.md", join(workspace.path, "link"))
+    const shown = await service.evidence(workspace.path)
+    await chmod(join(workspace.path, "README.md"), 0o755)
+    const mode = await service.evidence(workspace.path)
+    expect(mode.changesDigest).not.toBe(shown.changesDigest)
+    await rm(join(workspace.path, "link"))
+    await symlink("old.txt", join(workspace.path, "link"))
+    const target = await service.evidence(workspace.path)
+    expect(target.changesDigest).not.toBe(mode.changesDigest)
+    expect((await refusal(service.commit(workspace.path, {
+      repositoryPath, sessionId, message: "feat: mode", expectedHead: shown.baseCommit, expectedChangesDigest: mode.changesDigest!,
+    }))).reason).toBe("changes-moved")
+  })
+
+  it("hashes raw path bytes even when decoded names look identical", async () => {
+    const { service, workspace } = await sessionWorktree("domovoi-commit-raw-")
+    const digest = async (byte: number) => {
+      await git(workspace.path, "read-tree", workspace.baseCommit)
+      const name = Buffer.concat([Buffer.from("library-"), Buffer.from([byte])])
+      const record = Buffer.concat([Buffer.from(`160000 ${workspace.baseCommit}\t`), name, Buffer.from([0])])
+      expect(spawnSync("git", ["-C", workspace.path, "update-index", "-z", "--index-info"], { input: record }).status).toBe(0)
+      expect(spawnSync("git", ["-C", workspace.path, "update-index", "--skip-worktree", "-z", "--stdin"], { input: Buffer.concat([name, Buffer.from([0])]) }).status).toBe(0)
+      return service.evidence(workspace.path)
+    }
+    const first = await digest(0xff)
+    const second = await digest(0xfe)
+    expect(first.files.map((file) => file.path)).toEqual(second.files.map((file) => file.path))
+    expect(first.changesDigest).toMatch(/^sha256:[a-f0-9]{64}$/u)
+    expect(second.changesDigest).not.toBe(first.changesDigest)
+  })
+
+  it("retries evidence when only untracked content changes during the read", async () => {
+    let path = ""
+    let observations = 0
+    const { service, workspace } = await sessionWorktree("domovoi-commit-read-race-", "session-commit", {
+      afterEvidenceObservation: async () => {
+        observations += 1
+        if (observations === 1) await writeFile(join(path, "new.txt"), "later\n")
+      },
+    })
+    path = workspace.path
+    await writeFile(join(path, "new.txt"), "earlier\n")
+    const shown = await service.evidence(path)
+    expect(observations).toBe(2)
+    expect(shown.changesDigest).toBe((await service.evidence(path)).changesDigest)
+  })
+
+  it("keeps evidence readable without a digest when only untracked bytes never stabilize", async () => {
+    let path = ""
+    let observations = 0
+    const { service, workspace } = await sessionWorktree("domovoi-commit-unstable-", "session-commit", {
+      afterEvidenceObservation: async () => { await writeFile(join(path, "new.txt"), `change ${++observations}\n`) },
+    })
+    path = workspace.path
+    await writeFile(join(path, "new.txt"), "earlier\n")
+    const shown = await service.evidence(path)
+    expect(observations).toBe(3)
+    expect(shown.files.map((file) => file.path)).toEqual(["new.txt"])
+    expect(shown.changesDigest).toBeUndefined()
+  })
+
+  it("still refuses evidence when tracked content never stabilizes", async () => {
+    let path = ""
+    let observations = 0
+    const { service, workspace } = await sessionWorktree("domovoi-commit-tracked-unstable-", "session-commit", {
+      afterEvidenceObservation: async () => { await writeFile(join(path, "README.md"), `change ${++observations}\n`) },
+    })
+    path = workspace.path
+    await expect(service.evidence(path)).rejects.toBeInstanceOf(WorkspaceEvidenceUnstableError)
+    expect(observations).toBe(3)
+  })
+
+  it("compares the staged contents, not a later worktree write", async () => {
+    let path = ""
+    const { repositoryPath, service, workspace, sessionId } = await sessionWorktree("domovoi-commit-staged-race-", "session-commit", {
+      afterCheckpointStaging: async () => { if (path) await writeFile(join(path, "README.md"), "later\n") },
+    })
+    path = workspace.path
+    await writeFile(join(path, "README.md"), "shown\n")
+    const shown = await service.evidence(path)
+    const made = await service.commit(path, {
+      repositoryPath, sessionId, message: "feat: shown", expectedHead: shown.baseCommit, expectedChangesDigest: shown.changesDigest!,
+    })
+    expect(await git(path, "show", `${made.commit}:README.md`)).toBe("shown")
+    expect(await readFile(join(path, "README.md"), "utf8")).toBe("later\n")
+  })
+
+  it("commits an unchanged staged gitlink even when the submodule is unpopulated and configured to be ignored", async () => {
+    const { repositoryPath, service, workspace, sessionId } = await sessionWorktree("domovoi-commit-gitlink-")
+    await writeFile(join(workspace.path, ".gitmodules"), '[submodule "library"]\n path = library\n url = ./library\n ignore = all\n')
+    await git(workspace.path, "add", ".gitmodules")
+    await git(workspace.path, "update-index", "--add", "--cacheinfo", `160000,${workspace.baseCommit},library`)
+    await mkdir(join(workspace.path, "library"))
+    const shown = await service.evidence(workspace.path)
+    expect(shown.files.some((file) => file.path === "library")).toBe(true)
+    const made = await service.commit(workspace.path, {
+      repositoryPath, sessionId, message: "feat: library", expectedHead: shown.baseCommit, expectedChangesDigest: shown.changesDigest!,
+    })
+    expect(made.changedFiles).toContain("library")
+  })
+
+  it.each(["content", "add", "delete", "rename", "untracked-content"])("refuses %s changed after the card read without writing the index or refs", async (change) => {
+    const { repositoryPath, service, workspace, sessionId } = await sessionWorktree("domovoi-commit-stale-")
+    await writeFile(join(workspace.path, "README.md"), "shown\n")
+    await git(workspace.path, "add", "README.md")
+    await writeFile(join(workspace.path, "new.txt"), "shown new\n")
+    const shown = await service.evidence(workspace.path)
+    if (change === "content") await writeFile(join(workspace.path, "README.md"), "not shown\n")
+    if (change === "add") await writeFile(join(workspace.path, "extra.txt"), "not shown\n")
+    if (change === "delete") await rm(join(workspace.path, "old.txt"))
+    if (change === "rename") await rename(join(workspace.path, "old.txt"), join(workspace.path, "renamed.txt"))
+    if (change === "untracked-content") await writeFile(join(workspace.path, "new.txt"), "not shown\n")
+    const indexPath = await git(workspace.path, "rev-parse", "--path-format=absolute", "--git-path", "index")
+    const beforeIndex = await readFile(indexPath)
+    const beforeStatus = await git(workspace.path, "status", "--porcelain=v2")
+    const beforeDiff = await git(workspace.path, "diff", "HEAD")
+    const error = await refusal(service.commit(workspace.path, {
+      repositoryPath, sessionId, message: "feat: reviewed", expectedHead: shown.baseCommit,
+      expectedChangesDigest: shown.changesDigest!,
+    }))
+    expect(error.reason).toBe("changes-moved")
+    expect(error.message).toContain("Refresh and review the changes again")
+    expect(await readFile(indexPath)).toEqual(beforeIndex)
+    expect(await git(workspace.path, "rev-parse", "HEAD")).toBe(shown.baseCommit)
+    expect(await git(workspace.path, "status", "--porcelain=v2")).toBe(beforeStatus)
+    expect(await git(workspace.path, "diff", "HEAD")).toBe(beforeDiff)
+  })
+
   it("commits every change in the worktree on the session branch with the person's message", async () => {
     const { repositoryPath, service, workspace, sessionId } = await sessionWorktree("domovoi-commit-")
     await git(repositoryPath, "config", "user.name", "Dana Person")
@@ -60,7 +320,7 @@ describe("GitWorkspaceService.commit", () => {
     const mainBefore = await git(repositoryPath, "rev-parse", "main")
 
     const made = await service.commit(workspace.path, {
-      repositoryPath, sessionId, message: "feat(readme): say after\n\nThe body stays.", expectedHead: workspace.baseCommit,
+      repositoryPath, sessionId, message: "feat(readme): say after\n\nThe body stays.", expectedHead: workspace.baseCommit, expectedChangesDigest: (await service.evidence(workspace.path)).changesDigest!,
     })
 
     expect(made.branch).toBe(`domovoi/${sessionId}`)
@@ -90,7 +350,7 @@ describe("GitWorkspaceService.commit", () => {
     await writeFile(join(workspace.path, "README.md"), "after\n")
     const mainBefore = await git(repositoryPath, "rev-parse", "main")
 
-    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit }))
+    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit, expectedChangesDigest: `sha256:${"0".repeat(64)}` }))
 
     expect(error.reason).toBe("not-session-branch")
     expect(error.message).toContain(`domovoi/${sessionId}`)
@@ -105,7 +365,7 @@ describe("GitWorkspaceService.commit", () => {
     await git(workspace.path, "switch", "-q", "--detach")
     await writeFile(join(workspace.path, "README.md"), "after\n")
 
-    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit }))
+    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit, expectedChangesDigest: `sha256:${"0".repeat(64)}` }))
 
     expect(error.reason).toBe("not-session-branch")
     expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(workspace.baseCommit)
@@ -117,7 +377,7 @@ describe("GitWorkspaceService.commit", () => {
     const moved = (await service.checkpoint(workspace.path, "in between")).commit
     await writeFile(join(workspace.path, "README.md"), "later\n")
 
-    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit }))
+    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit, expectedChangesDigest: `sha256:${"0".repeat(64)}` }))
 
     expect(error.reason).toBe("head-moved")
     expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(moved)
@@ -130,10 +390,10 @@ describe("GitWorkspaceService.commit", () => {
     await writeFile(join(repositoryPath, "README.md"), "after\n")
 
     // Another session's worktree under this session's id.
-    expect((await refusal(service.commit(other.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit }))).reason)
+    expect((await refusal(service.commit(other.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit, expectedChangesDigest: `sha256:${"0".repeat(64)}` }))).reason)
       .toBe("not-session-worktree")
     // The person's own checkout, as an adopted session would record it.
-    expect((await refusal(service.commit(repositoryPath, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit }))).reason)
+    expect((await refusal(service.commit(repositoryPath, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit, expectedChangesDigest: `sha256:${"0".repeat(64)}` }))).reason)
       .toBe("not-session-worktree")
     expect(await git(repositoryPath, "rev-parse", "main")).toBe(workspace.baseCommit)
     expect(await git(repositoryPath, "rev-parse", "domovoi/session-other")).toBe(other.baseCommit)
@@ -147,7 +407,7 @@ describe("GitWorkspaceService.commit", () => {
     await git(workspace.path, "symbolic-ref", `refs/heads/domovoi/${sessionId}`, "refs/heads/elsewhere")
     await writeFile(join(workspace.path, "README.md"), "after\n")
 
-    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit }))
+    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit, expectedChangesDigest: `sha256:${"0".repeat(64)}` }))
 
     expect(error.reason).toBe("not-session-branch")
     expect(await git(repositoryPath, "rev-parse", "refs/heads/elsewhere")).toBe(workspace.baseCommit)
@@ -166,7 +426,7 @@ describe("GitWorkspaceService.commit", () => {
 
     // Against the repository it was cloned from, and against itself.
     for (const project of [repositoryPath, path]) {
-      const error = await refusal(service.commit(path, { repositoryPath: project, sessionId, message: "feat: x", expectedHead: head }))
+      const error = await refusal(service.commit(path, { repositoryPath: project, sessionId, message: "feat: x", expectedHead: head, expectedChangesDigest: `sha256:${"0".repeat(64)}` }))
       expect(error.reason).toBe("not-session-worktree")
     }
     expect(await git(path, "rev-parse", `domovoi/${sessionId}`)).toBe(head)
@@ -178,7 +438,7 @@ describe("GitWorkspaceService.commit", () => {
     vi.stubEnv("GIT_COMMITTER_DATE", "2026-10-18T12:00:00Z")
     const { repositoryPath, service, workspace, sessionId } = await sessionWorktree("domovoi-commit-checkpoint-symref-")
     await writeFile(join(workspace.path, "README.md"), "after\n")
-    const request = { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit }
+    const request = { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit, expectedChangesDigest: (await service.evidence(workspace.path)).changesDigest! }
     const first = await service.commit(workspace.path, request)
     // Back to the start with the same files, and the ref the same commit
     // will be retained under made a symbolic ref to another branch.
@@ -206,7 +466,7 @@ describe("GitWorkspaceService.commit", () => {
     await writeFile(join(workspace.path, "README.md"), "after\n")
     const otherIndex = await git(other.path, "ls-files", "--stage")
 
-    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit }))
+    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit, expectedChangesDigest: `sha256:${"0".repeat(64)}` }))
 
     expect(error.reason).toBe("not-session-worktree")
     expect(await git(other.path, "ls-files", "--stage")).toBe(otherIndex)
@@ -223,7 +483,7 @@ describe("GitWorkspaceService.commit", () => {
     await writeFile(join(workspace.path, "README.md"), "after\n")
     const indexBefore = await git(workspace.path, "ls-files", "--stage")
 
-    const made = await service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit })
+    const made = await service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit, expectedChangesDigest: (await service.evidence(workspace.path)).changesDigest! })
 
     expect(made.afterCommitError).toContain("left domovoi/session-commit")
     expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(made.commit)
@@ -241,7 +501,7 @@ describe("GitWorkspaceService.commit", () => {
     await git(submodule, "config", "remote.origin.promisor", "true")
     await git(workspace.path, "update-index", "--add", "--cacheinfo", `160000,${await git(submodule, "rev-parse", "HEAD")},private/.env`)
 
-    const error = await service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit })
+    const error = await service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit, expectedChangesDigest: `sha256:${"0".repeat(64)}` })
       .then(() => undefined, (cause: unknown) => cause as Error)
 
     expect(error).toBeInstanceOf(Error)
@@ -274,7 +534,7 @@ describe("GitWorkspaceService.commit", () => {
       const config = join(made.repositoryPath, ".git", "config")
       const append = async (lines: string) => { await writeFile(config, `${await readFile(config, "utf8")}${lines}`) }
       const commit = () => refusal(made.service.commit(made.workspace.path, {
-        repositoryPath: made.repositoryPath, sessionId: made.sessionId, message: "feat: notes", expectedHead: made.workspace.baseCommit,
+        repositoryPath: made.repositoryPath, sessionId: made.sessionId, message: "feat: notes", expectedHead: made.workspace.baseCommit, expectedChangesDigest: `sha256:${"0".repeat(64)}`,
       }))
       const untouched = async () => {
         await expect(readFile(marker, "utf8")).rejects.toThrow()
@@ -366,7 +626,7 @@ describe("GitWorkspaceService.commit", () => {
       await writeFile(join(workspace.path, "README.md"), "after\r\nwith crlf\r\n")
       armed.staged = async () => { await git(repositoryPath, "config", "--unset", "core.autocrlf") }
 
-      const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit }))
+      const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit, expectedChangesDigest: `sha256:${"0".repeat(64)}` }))
 
       expect(error.reason).toBe("held-back-config")
       expect(error.message).toContain("core.autocrlf")
@@ -377,13 +637,16 @@ describe("GitWorkspaceService.commit", () => {
     // turns it on; a file outside the patterns is never committed.
     it("keeps the sparse-checkout patterns when core.sparseCheckout is written as 1", async () => {
       const { repositoryPath, service, workspace, sessionId } = await sessionWorktree("domovoi-commit-sparse-")
-      await git(workspace.path, "sparse-checkout", "set", "--no-cone", "/README.md", "/old.txt", "/.gitignore")
-      await git(workspace.path, "config", "--worktree", "core.sparseCheckout", "1")
       await writeFile(join(workspace.path, "README.md"), "after\n")
       await writeFile(join(workspace.path, "new-outside.txt"), "outside\n")
+      // Authorize the full set first, so this test still detects staging
+      // outside sparse patterns rather than merely a digest mismatch.
+      const shown = await service.evidence(workspace.path)
+      await git(workspace.path, "sparse-checkout", "set", "--no-cone", "/README.md", "/old.txt", "/.gitignore")
+      await git(workspace.path, "config", "--worktree", "core.sparseCheckout", "1")
       const head = await git(workspace.path, "rev-parse", "HEAD")
 
-      await service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: head }).catch(() => undefined)
+      await service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: head, expectedChangesDigest: shown.changesDigest! }).catch(() => undefined)
 
       expect(await git(workspace.path, "ls-tree", "-r", "--name-only", `domovoi/${sessionId}`)).not.toContain("new-outside.txt")
     })
@@ -398,7 +661,7 @@ describe("GitWorkspaceService.commit", () => {
       ] as const) await git(repositoryPath, "config", key, value)
       await writeFile(join(workspace.path, "README.md"), "after\n")
 
-      const made = await service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit })
+      const made = await service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit, expectedChangesDigest: (await service.evidence(workspace.path)).changesDigest! })
 
       expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(made.commit)
     })
@@ -414,7 +677,7 @@ describe("GitWorkspaceService.commit", () => {
     await mkdir(join(workspace.path, "id_rsa"))
     await writeFile(join(workspace.path, "README.md"), "after\n")
 
-    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit }))
+    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit, expectedChangesDigest: `sha256:${"0".repeat(64)}` }))
 
     expect(error.reason).toBe("secret-paths")
     expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(workspace.baseCommit)
@@ -431,7 +694,7 @@ describe("GitWorkspaceService.commit", () => {
     await writeFile(join(workspace.path, path), contents)
     const indexBefore = await git(workspace.path, "ls-files", "--stage")
 
-    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit }))
+    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit, expectedChangesDigest: `sha256:${"0".repeat(64)}` }))
 
     expect(error.reason).toBe("secret-paths")
     expect(error.message).toContain("1 file")
@@ -446,7 +709,7 @@ describe("GitWorkspaceService.commit", () => {
     await writeFile(join(workspace.path, "README.md"), "after\n")
 
     const error = await refusal(service.commit(workspace.path, {
-      repositoryPath, sessionId, message: "chore: rotate\n\nNPM_TOKEN=message-secret-fixture", expectedHead: workspace.baseCommit,
+      repositoryPath, sessionId, message: "chore: rotate\n\nNPM_TOKEN=message-secret-fixture", expectedHead: workspace.baseCommit, expectedChangesDigest: `sha256:${"0".repeat(64)}`,
     }))
 
     expect(error.reason).toBe("secret-message")
@@ -469,7 +732,7 @@ describe("GitWorkspaceService.commit", () => {
     const head = await git(workspace.path, "rev-parse", "HEAD")
     await writeFile(join(workspace.path, "README.md"), "after\n")
 
-    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: head }))
+    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: head, expectedChangesDigest: `sha256:${"0".repeat(64)}` }))
 
     expect(error.reason).toBe("unreadable-paths")
     expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(head)
@@ -482,7 +745,7 @@ describe("GitWorkspaceService.commit", () => {
     const head = await git(workspace.path, "rev-parse", "HEAD")
     await rm(join(workspace.path, ".env"))
 
-    const made = await service.commit(workspace.path, { repositoryPath, sessionId, message: "chore: drop the env file", expectedHead: head })
+    const made = await service.commit(workspace.path, { repositoryPath, sessionId, message: "chore: drop the env file", expectedHead: head, expectedChangesDigest: (await service.evidence(workspace.path)).changesDigest! })
 
     expect(made.changedFiles).toEqual([".env"])
     await expect(git(workspace.path, "show", `${made.commit}:.env`)).rejects.toThrow()
@@ -492,7 +755,7 @@ describe("GitWorkspaceService.commit", () => {
     const { repositoryPath, service, workspace, sessionId } = await sessionWorktree("domovoi-commit-empty-")
     await writeFile(join(workspace.path, "ignored.log"), "ignored\n")
 
-    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit }))
+    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit, expectedChangesDigest: `sha256:${"0".repeat(64)}` }))
 
     expect(error.reason).toBe("nothing-to-commit")
     expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(workspace.baseCommit)
@@ -515,7 +778,7 @@ describe("GitWorkspaceService.commit", () => {
     const head = await git(workspace.path, "rev-parse", "HEAD")
     await writeFile(join(workspace.path, "README.md"), "after\n")
 
-    await service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: head })
+    await service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: head, expectedChangesDigest: (await service.evidence(workspace.path)).changesDigest! })
 
     await expect(readFile(markerPath, "utf8")).rejects.toThrow()
   })

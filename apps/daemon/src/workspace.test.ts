@@ -4130,7 +4130,7 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     const ran = await markers()
 
     await expect(trusted.commit(workspace.path, {
-      repositoryPath, sessionId: "session-trusted-commit", message: "feat: change the victim", expectedHead: workspace.baseCommit,
+      repositoryPath, sessionId: "session-trusted-commit", message: "feat: change the victim", expectedHead: workspace.baseCommit, expectedChangesDigest: `sha256:${"0".repeat(64)}`,
     })).rejects.toMatchObject({ name: "SessionCommitRefusedError", reason: "repository-filters" })
 
     expect(await markers()).toEqual(ran)

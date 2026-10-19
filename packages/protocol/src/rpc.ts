@@ -789,7 +789,11 @@ export const changedFileEvidenceSchema = z.object({
   }
 })
 
+const changesDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/u)
+
 export const workspaceEvidenceSchema = z.object({
+  // Older or unstageable evidence remains readable, but cannot authorize a commit.
+  changesDigest: changesDigestSchema.optional(),
   baseCommit: commitShaSchema,
   diff: z.string().check(utf16MaxLength(maximumSessionEvidenceDiffLength)),
   diffTruncated: z.boolean(),
@@ -1406,6 +1410,7 @@ export const sessionCommitParamsSchema = z.object({
   message: z.string().trim().min(1).check(utf16MaxLength(maximumCommitMessageLength))
     .refine((message) => !message.includes("\0"), "A commit message cannot hold a NUL character"),
   expectedHead: commitShaSchema,
+  expectedChangesDigest: changesDigestSchema,
   client: clientKindSchema,
 }).strict()
 
