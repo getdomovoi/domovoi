@@ -897,6 +897,11 @@ describe("withNotification", () => {
     expect(output(output(watchFrom(watched()), "\u001b[?"), "2C").pieces).toBe(0)
     expect(output(output(watchFrom(watched()), "\u001b["), "2C").pieces).toBe(1)
     expect(output(watchFrom(watched()), "\u001b[31m").pieces).toBe(0)
+    // A move between rows can start a line or move along a wrapped one.
+    for (const move of ["\u001b[A", "\u001b[B", "\u001b[2E", "\u001b[F"]) {
+      expect(output(watchFrom(watched()), move).pieces).toBe(1)
+    }
+    expect(output(watchFrom(watched()), "\u001b[?1B").pieces).toBe(0)
   })
 
   it("moves the claimant line when the claim moves", () => {

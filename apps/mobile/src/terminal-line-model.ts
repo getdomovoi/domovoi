@@ -663,8 +663,10 @@ export function nextLineStart(text: string, from: number, reach: number): number
 // a private one stays private.
 export type ReaderState = State | "csiDropped" | "csiPrivate"
 
-// The control sequences that change a line, as dispatch acts on them.
-const lineFinals = new Set(["K", "C", "a", "D", "G", "`", "X", "P", "@"])
+// The control sequences that change a line, as dispatch acts on them, and
+// the moves between rows, which at the holder's grid move along a wrapped
+// line or start the next one.
+const lineFinals = new Set(["K", "C", "a", "D", "G", "`", "X", "P", "@", "A", "B", "E", "F"])
 
 // What one piece of output draws, read on from where the last one left the
 // reader: the line breaks the terminal draws in it, whether it draws or moves
