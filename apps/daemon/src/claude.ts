@@ -953,8 +953,10 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         }
       }
       const failed = message.is_error === true || message.subtype !== "success"
+      // Read before the wait: an interrupt meanwhile can trim the set.
+      const partial = turnUsage.partial || session.interruptedTurnIds.has(turnId)
       const context = failed ? {} : await claudeContextOccupancy(session.query)
-      this.#emitTurnUsage(session, turnId, { ...turnUsage.payload, ...context }, turnUsage.partial)
+      this.#emitTurnUsage(session, turnId, { ...turnUsage.payload, ...context }, partial)
       const stderr = session.stderr.take()
       const error = failed ? resultError(message, session.assistantError, stderr) : undefined
       delete session.assistantError
@@ -981,7 +983,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   // the ledger records the turn as partly reported rather than complete. So is
   // every count for an interrupted turn: its prompt and steering can come back
   // as separate results, before or after the next turn starts, or one can be
-  // dropped, and the ledger keeps one count per turn. Exact counting is task 127.
+  // dropped, and the ledger keeps one count per turn.
   #emitTurnUsage(session: Session, turnId: string, payload: Record<string, unknown>, partial: boolean): void {
     try {
       const usage = normalizeProviderUsage(payload)

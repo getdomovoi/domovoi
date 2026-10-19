@@ -3031,7 +3031,7 @@ describe("a result that arrives after its turn was interrupted", () => {
       ledger.finish(dispatch, status)
       return ledger.session(dispatch.sessionId)
     }
-    return { adapter, ledger, events, issued, threadId, model, result, record }
+    return { adapter, ledger, events, issued, calls, threadId, model, result, record }
   }
 
   it("keeps a turn's count complete when nobody interrupted it", async () => {
@@ -3082,6 +3082,33 @@ describe("a result that arrives after its turn was interrupted", () => {
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "usage", turnId: early })))
 
     expect(record(early, "failed")).toMatchObject({ coverage: { complete: 0, partial: 1 } })
+    ledger.close()
+    await adapter.close()
+  })
+
+  // A successful result waits on the context read before its usage goes out.
+  // A turn interrupted meanwhile must not trim the waiting turn's interruption.
+  it("keeps an interrupted turn partial while its usage waits on the context read", async () => {
+    const { adapter, ledger, events, calls, threadId, model, result, record } = await afterOneTurn()
+    for (let turn = 1; turn <= 63; turn += 1) {
+      const held = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: `Held ${turn}`, runtime: runtime("build") })
+      await adapter.interruptTurn(threadId, held)
+    }
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Waiting", runtime: runtime("build") })
+    await adapter.interruptTurn(threadId, turnId)
+    const query = calls[0]!.query
+    let release: (value: unknown) => void = () => {}
+    query.getContextUsage.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    const reads = query.getContextUsage.mock.calls.length
+
+    result(turnId, model(1_400, 140))
+    await waitForDaemon(() => expect(query.getContextUsage.mock.calls.length).toBeGreaterThan(reads))
+    const next = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    await adapter.interruptTurn(threadId, next)
+    release({})
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "usage", turnId })))
+
+    expect(record(turnId, "completed")).toMatchObject({ totalTokens: 440, coverage: { complete: 0, partial: 1 } })
     ledger.close()
     await adapter.close()
   })
