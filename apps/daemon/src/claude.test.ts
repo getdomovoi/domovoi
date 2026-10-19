@@ -2994,6 +2994,77 @@ describe("a result that arrives after its turn was interrupted", () => {
     await adapter.close()
   })
 
+  // These tests open with one finished turn, so the turn under test counts
+  // from running totals a result has already moved. An interrupted turn's
+  // count is partial whichever path its results take; a turn nobody
+  // interrupted keeps a complete count.
+  async function afterOneTurn() {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+      "44444444-4444-4444-8444-444444444444",
+      "55555555-5555-4555-8555-555555555555",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const ledger = new UsageLedger()
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const model = (input: number, output: number) => ({
+      inputTokens: input, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, outputTokens: output,
+      webSearchRequests: 0, costUSD: 0, contextWindow: 200_000, maxOutputTokens: 32_000,
+    })
+    const result = (id: string, usage: ReturnType<typeof model>, failed = false) => calls[0]!.query.emit({
+      type: "result", subtype: failed ? "error_during_execution" : "success", session_id: threadId, is_error: failed,
+      user_message_uuid: id, user_message_uuids: [id],
+      modelUsage: { "claude-opus-5": usage },
+    } as ClaudeSdkMessage)
+    const opening = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Zero", runtime: runtime("build") })
+    result(opening, model(1_000, 100))
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "turn-completed", params: expect.objectContaining({ turnId: opening }) })))
+    // Feeds a turn's usage to the ledger and ends it, as the server does.
+    const record = (turnId: string, status: "completed" | "failed") => {
+      const dispatch = { sessionId: `session-${turnId}`, provider: "claude", threadId, turnId, model: "claude-opus-5" }
+      ledger.begin(dispatch)
+      for (const event of events) if (event.type === "usage" && event.turnId === turnId) ledger.observe(dispatch, event)
+      ledger.finish(dispatch, status)
+      return ledger.session(dispatch.sessionId)
+    }
+    return { adapter, ledger, events, ids, threadId, model, result, record }
+  }
+
+  it("keeps a turn's count complete when nobody interrupted it", async () => {
+    const { adapter, ledger, events, threadId, model, result, record } = await afterOneTurn()
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    result(turnId, model(1_400, 140))
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "turn-completed", params: expect.objectContaining({ turnId }) })))
+
+    expect(record(turnId, "completed")).toMatchObject({ totalTokens: 440, coverage: { complete: 1, partial: 0 } })
+    ledger.close()
+    await adapter.close()
+  })
+
+  it("records an interrupted turn partial when its result comes before the next turn and a steer result comes late", async () => {
+    const { adapter, ledger, events, ids, threadId, model, result, record } = await afterOneTurn()
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    const steering = ids[0]!
+    await adapter.steerTurn(threadId, turnId, "And this")
+    await adapter.interruptTurn(threadId, turnId)
+
+    // The prompt's result arrives while the turn still holds the slot.
+    result(turnId, model(1_400, 140), true)
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "turn-completed", params: expect.objectContaining({ turnId }) })))
+    // The steer's result comes after the turn ended and no turn holds the slot.
+    result(steering, model(1_900, 180), true)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(record(turnId, "failed")).toMatchObject({ totalTokens: 440, coverage: { complete: 0, partial: 1 } })
+    ledger.close()
+    await adapter.close()
+  })
+
   // A result may name a uuid the SDK made itself (a compaction, a merged
   // queue). Only a result naming an interrupted turn's messages is dropped.
   it("completes the turn on a result naming a message the SDK made itself", async () => {

@@ -203,6 +203,9 @@ type Session = {
   // dropped: a result naming a uuid the SDK made itself (a compaction, a
   // merged queue) ends the turn. A dropped result's usage is that turn's.
   interruptedMessageIds: Map<string, string>
+  // Turns that were interrupted. Their results can come back as several, by
+  // different paths, or not at all, so no count for one is ever final.
+  interruptedTurnIds: Set<string>
   assistantError?: string
   // The query's running usage as of its last result; see claudeTurnUsage.
   // Absent, or a part absent, while unknown.
@@ -437,6 +440,11 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const session = this.#requireSession(threadId)
     if (session.activeTurnId !== turnId) return
     for (const id of session.turnMessageIds) session.interruptedMessageIds.set(id, turnId)
+    session.interruptedTurnIds.add(turnId)
+    for (const id of session.interruptedTurnIds) {
+      if (session.interruptedTurnIds.size <= maximumInterruptedMessageIds) break
+      session.interruptedTurnIds.delete(id)
+    }
     // Bounded: a result that never comes must not hold its uuids forever.
     while (session.interruptedMessageIds.size > maximumInterruptedMessageIds) {
       const oldest = session.interruptedMessageIds.keys().next().value
@@ -667,6 +675,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       screenedReads: new Map(),
       turnMessageIds: new Set(),
       interruptedMessageIds: new Map(),
+      interruptedTurnIds: new Set(),
       // A fresh query counts from zero. A resumed one continues from totals
       // its transcript saved, which Domovoi cannot see until the first result.
       ...(resume ? {} : { runningUsage: { tokens: { input: 0, read: 0, write: 0, output: 0, thinking: 0 }, cost: 0 } }),
@@ -928,9 +937,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       // Every result moves the running totals on, a dropped one too, and a
       // dropped result's usage is counted against the interrupted turn, so the
       // next turn is not charged with its requests. An interrupted turn's
-      // messages can come back as several results, and the ledger keeps one
-      // count per turn, so that count is marked partial: a total that
-      // includes it says it may be low.
+      // count is partial however its results arrive; see #emitTurnUsage.
       const turnUsage = claudeTurnUsage(message, session.runningUsage)
       session.runningUsage = turnUsage.running
       const answered = resultMessageIds(message)
@@ -938,7 +945,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         const interruptedTurnId = answered.map((id) => session.interruptedMessageIds.get(id)).find((id) => id !== undefined)
         for (const id of answered) session.interruptedMessageIds.delete(id)
         if (!answered.some((id) => session.turnMessageIds.has(id))) {
-          if (interruptedTurnId) this.#emitTurnUsage(session, interruptedTurnId, turnUsage.payload, true)
+          if (interruptedTurnId) this.#emitTurnUsage(session, interruptedTurnId, turnUsage.payload, turnUsage.partial)
           return
         }
       }
@@ -968,14 +975,17 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   // is an accounting problem, not a failed turn, so the usage is dropped and
   // the turn is delivered as what it was.
   // A partial count (result.usage, the main loop only) is marked not final, so
-  // the ledger records the turn as partly reported rather than complete.
+  // the ledger records the turn as partly reported rather than complete. So is
+  // every count for an interrupted turn: its prompt and steering can come back
+  // as separate results, before or after the next turn starts, or one can be
+  // dropped, and the ledger keeps one count per turn. Exact counting is task 127.
   #emitTurnUsage(session: Session, turnId: string, payload: Record<string, unknown>, partial: boolean): void {
     try {
       const usage = normalizeProviderUsage(payload)
       if (usage) {
         this.#emit({
           type: "usage", threadId: session.threadId, turnId, usage,
-          ...(partial ? { source: { kind: "turn" as const, tokens: "reported" as const, final: false } } : {}),
+          ...(partial || session.interruptedTurnIds.has(turnId) ? { source: { kind: "turn" as const, tokens: "reported" as const, final: false } } : {}),
         })
       }
     } catch {
