@@ -441,15 +441,18 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     if (session.activeTurnId !== turnId) return
     for (const id of session.turnMessageIds) session.interruptedMessageIds.set(id, turnId)
     session.interruptedTurnIds.add(turnId)
-    for (const id of session.interruptedTurnIds) {
-      if (session.interruptedTurnIds.size <= maximumInterruptedMessageIds) break
-      session.interruptedTurnIds.delete(id)
-    }
     // Bounded: a result that never comes must not hold its uuids forever.
     while (session.interruptedMessageIds.size > maximumInterruptedMessageIds) {
       const oldest = session.interruptedMessageIds.keys().next().value
       if (oldest === undefined) break
       session.interruptedMessageIds.delete(oldest)
+    }
+    // A turn a held uuid still names can still receive usage, so it stays.
+    // Those are at most the bound, so the set stays within it.
+    const attributable = new Set(session.interruptedMessageIds.values())
+    for (const id of session.interruptedTurnIds) {
+      if (session.interruptedTurnIds.size <= maximumInterruptedMessageIds) break
+      if (!attributable.has(id)) session.interruptedTurnIds.delete(id)
     }
     await session.query.interrupt()
   }

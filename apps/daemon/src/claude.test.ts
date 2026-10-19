@@ -1,5 +1,6 @@
 import { waitForDaemon } from "./test-wait-for.js"
 import { execFileSync, spawn as nodeSpawn, type ChildProcess } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, sep } from "node:path"
@@ -3000,14 +3001,12 @@ describe("a result that arrives after its turn was interrupted", () => {
   // interrupted keeps a complete count.
   async function afterOneTurn() {
     const { calls, factory } = factoryHarness()
-    const ids: ClaudeMessageId[] = [
-      "11111111-1111-4111-8111-111111111111",
-      "22222222-2222-4222-8222-222222222222",
-      "33333333-3333-4333-8333-333333333333",
-      "44444444-4444-4444-8444-444444444444",
-      "55555555-5555-4555-8555-555555555555",
-    ]
-    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const issued: ClaudeMessageId[] = []
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => {
+      const id = randomUUID()
+      issued.push(id)
+      return id
+    })
     const ledger = new UsageLedger()
     const events: AgentEvent[] = []
     adapter.onEvent((event) => events.push(event))
@@ -3032,7 +3031,7 @@ describe("a result that arrives after its turn was interrupted", () => {
       ledger.finish(dispatch, status)
       return ledger.session(dispatch.sessionId)
     }
-    return { adapter, ledger, events, ids, threadId, model, result, record }
+    return { adapter, ledger, events, issued, threadId, model, result, record }
   }
 
   it("keeps a turn's count complete when nobody interrupted it", async () => {
@@ -3047,10 +3046,10 @@ describe("a result that arrives after its turn was interrupted", () => {
   })
 
   it("records an interrupted turn partial when its result comes before the next turn and a steer result comes late", async () => {
-    const { adapter, ledger, events, ids, threadId, model, result, record } = await afterOneTurn()
+    const { adapter, ledger, events, issued, threadId, model, result, record } = await afterOneTurn()
     const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
-    const steering = ids[0]!
     await adapter.steerTurn(threadId, turnId, "And this")
+    const steering = issued.at(-1)!
     await adapter.interruptTurn(threadId, turnId)
 
     // The prompt's result arrives while the turn still holds the slot.
@@ -3061,6 +3060,28 @@ describe("a result that arrives after its turn was interrupted", () => {
     await new Promise((resolve) => setTimeout(resolve, 20))
 
     expect(record(turnId, "failed")).toMatchObject({ totalTokens: 440, coverage: { complete: 0, partial: 1 } })
+    ledger.close()
+    await adapter.close()
+  })
+
+  // The interrupted turns are bounded, but never past a turn whose uuid is
+  // still held: that turn can still receive its result.
+  it("keeps an interrupted turn partial after more interrupted turns than the bound", async () => {
+    const { adapter, ledger, events, threadId, model, result, record } = await afterOneTurn()
+    const early = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Early", runtime: runtime("build") })
+    await adapter.interruptTurn(threadId, early)
+    for (let turn = 1; turn <= 65; turn += 1) {
+      const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: `Turn ${turn}`, runtime: runtime("build") })
+      await adapter.interruptTurn(threadId, turnId)
+      result(turnId, model(1_000 + turn * 10, 100 + turn), true)
+      await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "turn-completed", params: expect.objectContaining({ turnId }) })))
+    }
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Last", runtime: runtime("build") })
+
+    result(early, model(5_000, 500), true)
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "usage", turnId: early })))
+
+    expect(record(early, "failed")).toMatchObject({ coverage: { complete: 0, partial: 1 } })
     ledger.close()
     await adapter.close()
   })
