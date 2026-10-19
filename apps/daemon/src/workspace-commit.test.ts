@@ -169,6 +169,65 @@ describe("GitWorkspaceService.commit", () => {
     expect((await readdir(common)).filter((name) => name.startsWith("domovoi-checkout-"))).toEqual([])
   })
 
+  it.each(["global", "reviewed repository"])("withholds a digest when a %s clean filter changes output on every run", async (scope) => {
+    const { scratch, repositoryPath, workspace } = await sessionWorktree("domovoi-evidence-filter-state-")
+    const home = join(scratch, "home")
+    await mkdir(home)
+    vi.stubEnv("HOME", home)
+    vi.stubEnv("XDG_CONFIG_HOME", join(home, ".config"))
+    const script = join(scratch, "changing-clean.sh").replaceAll("\\", "/")
+    const counter = join(scratch, "counter").replaceAll("\\", "/")
+    await writeFile(script, [
+      'set -eu',
+      'count=0',
+      'if test -f "$1"; then read -r count < "$1"; fi',
+      'count=$((count + 1))',
+      'printf "%s\\n" "$count" > "$1"',
+      'cat',
+      'printf "%s\\n" "$count"',
+      '',
+    ].join("\n"))
+    await git(repositoryPath, "config", ...(scope === "global" ? ["--global"] : []), "filter.changing.clean", `sh "${script}" "${counter}"`)
+    const config = await readRepositoryProviderConfig(repositoryPath, projectRootRead)
+    const grant = {
+      projectId: "project-changing-filter", trustedDigest: config.configDigest, trustedAt: "2026-10-19T00:00:00.000Z",
+      trustedBy: { client: "desktop" as const },
+      ...(config.gitFilters?.reviewDigest === undefined ? {} : { gitFilterReviewDigest: config.gitFilters.reviewDigest }),
+    }
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), scope === "global" ? {} : {
+      repositoryTrust: () => ({ projectId: grant.projectId, projectPath: repositoryPath, grant: () => grant, generation: () => 0 }),
+    })
+    await writeFile(join(workspace.path, ".gitattributes"), "new.txt filter=changing\n")
+    await writeFile(join(workspace.path, "new.txt"), "unchanged bytes\n")
+    const shown = await service.evidence(workspace.path)
+    expect(shown.files.map((file) => file.path)).toContain("new.txt")
+    expect(shown.changesDigest).toBeUndefined()
+    expect(Number(await readFile(counter, "utf8"))).toBeGreaterThanOrEqual(2)
+    expect(await readFile(join(workspace.path, "new.txt"), "utf8")).toBe("unchanged bytes\n")
+  })
+
+  it.each(["clean", "process"])("conservatively re-stages with a global %s driver even without a matching path", async (command) => {
+    const { scratch, repositoryPath, service, workspace } = await sessionWorktree("domovoi-evidence-filter-driver-")
+    const home = join(scratch, "home")
+    await mkdir(home)
+    vi.stubEnv("HOME", home)
+    vi.stubEnv("XDG_CONFIG_HOME", join(home, ".config"))
+    await git(repositoryPath, "config", "--global", `filter.unused.${command}`, "unused-filter-must-not-run")
+    await writeFile(join(workspace.path, "new.txt"), "new\n")
+    const original = await vi.importActual<typeof import("./isolated-checkout.js")>("./isolated-checkout.js")
+    let stages = 0
+    vi.mocked(openIsolatedGit).mockImplementationOnce(async (input) => {
+      const isolated = await original.openIsolatedGit(input)
+      const run = isolated.run.bind(isolated)
+      return { ...isolated, run: async (args, options) => {
+        if (args[0] === "add") stages += 1
+        return run(args, options)
+      } }
+    })
+    expect((await service.evidence(workspace.path)).changesDigest).toBeDefined()
+    expect(stages).toBe(2)
+  })
+
   it("does not turn caller cancellation into readable evidence", async () => {
     const { service, workspace } = await sessionWorktree("domovoi-evidence-cancel-")
     const controller = new AbortController()
@@ -248,8 +307,8 @@ describe("GitWorkspaceService.commit", () => {
     const shown = await service.evidence(workspace.path)
     expect(shown.changesDigest).toMatch(/^sha256:[a-f0-9]{64}$/u)
     const seen = (await readFile(observations, "utf8")).trim().split("\n")
-    // One clean pass supplies both stable observations and the digest.
-    expect(seen).toHaveLength(1)
+    // Filters may depend on external state, so Git must stage both observations.
+    expect(seen).toHaveLength(2)
     await expect(lstat(persistentStore)).rejects.toMatchObject({ code: "ENOENT" })
     for (const storage of seen) {
       expect(storage).toContain("domovoi-checkout-")
