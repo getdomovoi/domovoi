@@ -59,11 +59,22 @@ describe("GitWorkspaceService.commit", () => {
     await expect(git(workspace.path, "cat-file", "-e", blob)).rejects.toThrow()
   })
 
-  it("refuses unsafe submodule config before evidence stages", async () => {
+  it("keeps evidence readable without a commit digest when submodule config makes staging unsafe", async () => {
     const { repositoryPath, service, workspace } = await sessionWorktree("domovoi-commit-submodule-filter-")
     await git(workspace.path, "-c", "protocol.file.allow=always", "submodule", "add", repositoryPath, "library")
     await git(join(workspace.path, "library"), "config", "filter.unsafe.clean", "domovoi-test-filter-must-not-run")
-    await expect(service.evidence(workspace.path)).rejects.toMatchObject({ name: "SubmoduleFilterRefusedError" })
+    const shown = await service.evidence(workspace.path)
+    expect(shown.files.some((file) => file.path === "library")).toBe(true)
+    expect(shown.changesDigest).toBeUndefined()
+  })
+
+  it("keeps evidence readable without a digest when sparse staging refuses a path", async () => {
+    const { service, workspace } = await sessionWorktree("domovoi-commit-sparse-evidence-")
+    await git(workspace.path, "sparse-checkout", "set", "--no-cone", "/README.md")
+    await writeFile(join(workspace.path, "outside.txt"), "outside\n")
+    const shown = await service.evidence(workspace.path)
+    expect(shown.files.some((file) => file.path === "outside.txt")).toBe(true)
+    expect(shown.changesDigest).toBeUndefined()
   })
 
   it("binds all files beyond the displayed 200", async () => {

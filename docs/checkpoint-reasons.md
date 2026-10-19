@@ -47,7 +47,9 @@ session's work from the Changes tab instead. The daemon:
   the daemon compares its digest before creating a commit. A mismatch leaves the
   shared index, worktree and refs untouched and asks the person to refresh and
   review the changes again. Missing request digests are invalid; older evidence
-  without a digest remains readable but cannot authorize a commit;
+  without a digest remains readable but cannot authorize a commit. The daemon
+  also withholds the digest when staging is unsafe or fails, while still showing
+  readable evidence;
 - refuses in Ask and Plan, which run read-only, and while a turn runs. Build allows
   it with or without Auto, since the commit is always the person's own action;
 - stages and commits through the isolated Git directory checkpoints use, so no

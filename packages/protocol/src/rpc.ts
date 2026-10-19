@@ -792,7 +792,7 @@ export const changedFileEvidenceSchema = z.object({
 const changesDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/u)
 
 export const workspaceEvidenceSchema = z.object({
-  // Older evidence remains readable, but cannot authorize session.commit.
+  // Older or unstageable evidence remains readable, but cannot authorize a commit.
   changesDigest: changesDigestSchema.optional(),
   baseCommit: commitShaSchema,
   diff: z.string().check(utf16MaxLength(maximumSessionEvidenceDiffLength)),

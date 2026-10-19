@@ -237,6 +237,7 @@ export type ChangedFileEvidence = {
 }
 
 export type WorkspaceEvidence = {
+  // Absent when the file view is readable but safe staging is unavailable.
   changesDigest?: string
   baseCommit: string
   diff: string
@@ -1292,10 +1293,19 @@ async function seedPrivateIndex(isolated: IsolatedGit, sharedIndex: string, inde
 }
 
 // Observe the complete worktree without publishing an index or moving refs.
-async function evidenceChangesDigest(isolated: IsolatedGit, baseCommit: string, signal?: AbortSignal): Promise<string> {
+async function evidenceChangesDigest(isolated: IsolatedGit, baseCommit: string, signal?: AbortSignal): Promise<string | undefined> {
   const index = join(isolated.gitDirectory, "evidence-index")
   await seedPrivateIndex(isolated, isolated.worktreeIndex, index, baseCommit, signal)
-  await isolated.run(["add", "--all"], { index, signal })
+  try {
+    await isolated.run(["add", "--all"], { index, signal })
+  } catch (error) {
+    signal?.throwIfAborted()
+    // Git add's path refusal (1) or fatal staging failure (128) must not
+    // hide otherwise readable evidence. No digest means no commit authority.
+    const code = (error as { code?: unknown }).code
+    if (code === 1 || code === 128) return undefined
+    throw error
+  }
   return stagedChangesDigest(isolated, baseCommit, index, signal)
 }
 
@@ -1634,9 +1644,9 @@ export class GitWorkspaceService implements WorkspaceService {
     const gate = await this.#gate(anchor, worktree, signal)
     if (refuseRepositoryFilters && gate.filters.length > 0) throw refuseRepositoryFilters()
     if (!gate.open && whenRefused === "refuse") throw new RepositoryFilterRefusedError(gate.filters, { reason: gate.reason, projectId: gate.projectId })
-    // Evidence stages a private index too, so every caller needs the same
-    // submodule guard before Git can inspect a child repository.
-    await refuseSubmoduleConfig(worktree, worktree, signal)
+    // Evidence can still be read without staging an unsafe submodule; its
+    // own guard below withholds the digest in that case.
+    if (whenRefused === "refuse") await refuseSubmoduleConfig(worktree, worktree, signal)
     await this.#afterRepositoryFilterGate?.(worktree)
     const isolated = await openIsolatedGit({
       worktree, temporaryObjects: whenRefused === "filters-off", reviewed: gate.open ? gate.reviewed : [], worktreeIndex: true, beforeCommand: this.#confirm(gate), signal,
@@ -1850,6 +1860,13 @@ export class GitWorkspaceService implements WorkspaceService {
 
   async #evidence(worktreePath: string, isolated: IsolatedGit, signal: AbortSignal | undefined, includeRevertTargets: boolean): Promise<WorkspaceEvidence> {
     const diffSettings = await diffBinarySettings(worktreePath, signal)
+    let canStage = true
+    try {
+      await refuseSubmoduleConfig(worktreePath, worktreePath, signal)
+    } catch (error) {
+      if (!(error instanceof SubmoduleFilterRefusedError || error instanceof SubmodulePromisorRefusedError)) throw error
+      canStage = false
+    }
     for (let attempt = 0; attempt < maximumEvidenceAttempts; attempt += 1) {
       // Every observation compares against this commit; the fingerprints
       // read the worktree's HEAD again, so one that moved meanwhile retries.
@@ -1857,7 +1874,7 @@ export class GitWorkspaceService implements WorkspaceService {
       await isolated.setHead(baseCommit)
       const fingerprintBefore = await workspaceEvidenceFingerprint(worktreePath, isolated, baseCommit, diffSettings, signal)
       if (fingerprintBefore.headCommit !== baseCommit) continue
-      const changesDigest = await evidenceChangesDigest(isolated, baseCommit, signal)
+      const changesDigest = canStage ? await evidenceChangesDigest(isolated, baseCommit, signal) : undefined
       const status = (await isolated.run([
         "--no-optional-locks",
         "status",
@@ -1898,7 +1915,7 @@ export class GitWorkspaceService implements WorkspaceService {
         ),
         includeRevertTargets ? pathsAtCommit(isolated, baseCommit, signal) : undefined,
       ])
-      const changesDigestAfter = await evidenceChangesDigest(isolated, baseCommit, signal)
+      const changesDigestAfter = canStage ? await evidenceChangesDigest(isolated, baseCommit, signal) : undefined
       const fingerprintAfter = await workspaceEvidenceFingerprint(worktreePath, isolated, baseCommit, diffSettings, signal)
       if (fingerprintBefore.digest !== fingerprintAfter.digest || changesDigest !== changesDigestAfter) continue
 
@@ -1914,7 +1931,7 @@ export class GitWorkspaceService implements WorkspaceService {
       })
       return {
         baseCommit,
-        changesDigest,
+        ...(changesDigest === undefined ? {} : { changesDigest }),
         diff: diff.output,
         diffTruncated: diff.truncated,
         totalChangedFiles: allFiles.length,
