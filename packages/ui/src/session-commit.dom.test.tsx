@@ -89,14 +89,16 @@ describe("committing from the Changes tab", () => {
     expect(screen.queryByRole("textbox", { name: "Commit message" })).toBeNull()
   })
 
-  it("refuses to submit older evidence without a digest", async () => {
+  it("disables Commit and explains unavailable verification without a digest", async () => {
     const { changesDigest: _digest, ...workspace } = evidence.workspace
     const { onCommit } = show({}, { ...evidence, workspace })
     const user = userEvent.setup()
     await user.click(screen.getByRole("button", { name: "Commit without a pull request" }))
-    await user.click(screen.getByRole("button", { name: "Commit 1" }))
+    const button = screen.getByRole("button", { name: "Commit 1" }) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    expect(screen.getByText("Domovoi cannot verify these changes for a commit. The files may still be changing, or Git may be unable to stage them safely.")).toBeTruthy()
+    await user.click(button)
     expect(onCommit).not.toHaveBeenCalled()
-    expect(screen.getByText("Refresh and review the changes again before committing.")).toBeTruthy()
   })
 
   it("forwards the evidence digest through the panel callback", async () => {

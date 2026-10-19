@@ -67,12 +67,11 @@ export function SessionCommitCard({
   const [message, setMessage] = useState(controls.defaultMessage)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState("")
+  const blocked = controls.blocked ?? (changesDigest === undefined
+    ? "Domovoi cannot verify these changes for a commit. The files may still be changing, or Git may be unable to stage them safely."
+    : undefined)
   const commit = () => {
-    if (pending || controls.blocked !== undefined || !message.trim()) return
-    if (changesDigest === undefined) {
-      setError("Refresh and review the changes again before committing.")
-      return
-    }
+    if (pending || blocked !== undefined || changesDigest === undefined || !message.trim()) return
     setPending(true)
     setError("")
     void controls.onCommit(message, baseCommit, changesDigest).then(
@@ -128,8 +127,8 @@ export function SessionCommitCard({
       <p className="m-0 border-t px-3 py-2 text-[11px] leading-normal text-muted-foreground">
         Built from the worktree as it is now. Your own checkout is never written, and nothing is pushed.
       </p>
-      {controls.blocked !== undefined ? (
-        <p className="m-0 border-t px-3 py-2 text-[11px] leading-normal text-muted-foreground">{controls.blocked}</p>
+      {blocked !== undefined ? (
+        <p className="m-0 border-t px-3 py-2 text-[11px] leading-normal text-muted-foreground">{blocked}</p>
       ) : null}
       {error ? (
         <div className="border-t p-3">
@@ -141,7 +140,7 @@ export function SessionCommitCard({
         </div>
       ) : null}
       <div className="flex flex-wrap items-center gap-2 border-t px-3 py-2">
-        <Button size="xs" disabled={pending || controls.blocked !== undefined || !message.trim()} onClick={commit}>
+        <Button size="xs" disabled={pending || blocked !== undefined || !message.trim()} onClick={commit}>
           <GitCommitHorizontalIcon />
           {pending ? "Committing" : "Commit 1"}
         </Button>

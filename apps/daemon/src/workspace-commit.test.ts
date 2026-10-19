@@ -68,6 +68,21 @@ describe("GitWorkspaceService.commit", () => {
     expect(shown.changesDigest).toBeUndefined()
   })
 
+  it.each(["depth", "unreadable-config"])("withholds the digest when the submodule guard fails for %s", async (reason) => {
+    const { repositoryPath, service, workspace } = await sessionWorktree("domovoi-commit-submodule-guard-")
+    let parent = workspace.path
+    for (let depth = 0; depth < (reason === "depth" ? 9 : 2); depth += 1) {
+      const child = join(parent, "library")
+      await git(parent, "clone", "--local", repositoryPath, child)
+      await git(parent, "update-index", "--add", "--cacheinfo", `160000,${workspace.baseCommit},library`)
+      parent = child
+    }
+    if (reason === "unreadable-config") await writeFile(join(parent, ".git", "config"), "[invalid\n")
+    const shown = await service.evidence(workspace.path)
+    expect(shown.files.some((file) => file.path === "library")).toBe(true)
+    expect(shown.changesDigest).toBeUndefined()
+  })
+
   it("keeps evidence readable without a digest when sparse staging refuses a path", async () => {
     const { service, workspace } = await sessionWorktree("domovoi-commit-sparse-evidence-")
     await git(workspace.path, "sparse-checkout", "set", "--no-cone", "/README.md")
@@ -152,7 +167,7 @@ describe("GitWorkspaceService.commit", () => {
     expect(shown.changesDigest).toBe((await service.evidence(path)).changesDigest)
   })
 
-  it("refuses evidence that never stabilizes even if only untracked bytes change", async () => {
+  it("keeps evidence readable without a digest when only untracked bytes never stabilize", async () => {
     let path = ""
     let observations = 0
     const { service, workspace } = await sessionWorktree("domovoi-commit-unstable-", "session-commit", {
@@ -160,7 +175,21 @@ describe("GitWorkspaceService.commit", () => {
     })
     path = workspace.path
     await writeFile(join(path, "new.txt"), "earlier\n")
+    const shown = await service.evidence(path)
+    expect(observations).toBe(3)
+    expect(shown.files.map((file) => file.path)).toEqual(["new.txt"])
+    expect(shown.changesDigest).toBeUndefined()
+  })
+
+  it("still refuses evidence when tracked content never stabilizes", async () => {
+    let path = ""
+    let observations = 0
+    const { service, workspace } = await sessionWorktree("domovoi-commit-tracked-unstable-", "session-commit", {
+      afterEvidenceObservation: async () => { await writeFile(join(path, "README.md"), `change ${++observations}\n`) },
+    })
+    path = workspace.path
     await expect(service.evidence(path)).rejects.toBeInstanceOf(WorkspaceEvidenceUnstableError)
+    expect(observations).toBe(3)
   })
 
   it("compares the staged contents, not a later worktree write", async () => {

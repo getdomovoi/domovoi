@@ -1863,8 +1863,10 @@ export class GitWorkspaceService implements WorkspaceService {
     let canStage = true
     try {
       await refuseSubmoduleConfig(worktreePath, worktreePath, signal)
-    } catch (error) {
-      if (!(error instanceof SubmoduleFilterRefusedError || error instanceof SubmodulePromisorRefusedError)) throw error
+    } catch {
+      signal?.throwIfAborted()
+      // This guard authorizes staging, not the read-only file view. Any
+      // failure withholds commit authorization while preserving that view.
       canStage = false
     }
     for (let attempt = 0; attempt < maximumEvidenceAttempts; attempt += 1) {
@@ -1917,7 +1919,11 @@ export class GitWorkspaceService implements WorkspaceService {
       ])
       const changesDigestAfter = canStage ? await evidenceChangesDigest(isolated, baseCommit, signal) : undefined
       const fingerprintAfter = await workspaceEvidenceFingerprint(worktreePath, isolated, baseCommit, diffSettings, signal)
-      if (fingerprintBefore.digest !== fingerprintAfter.digest || changesDigest !== changesDigestAfter) continue
+      if (fingerprintBefore.digest !== fingerprintAfter.digest) continue
+      const digestStable = changesDigest === changesDigestAfter
+      if (!digestStable && attempt + 1 < maximumEvidenceAttempts) continue
+      // Untracked bytes are not shown in the diff. If only those keep
+      // changing, the view remains readable but cannot authorize a commit.
 
       const stats = parseNumstat(numstat)
       const allFiles: ChangedFileEvidence[] = parseStatus(status).map((file) => {
@@ -1931,7 +1937,7 @@ export class GitWorkspaceService implements WorkspaceService {
       })
       return {
         baseCommit,
-        ...(changesDigest === undefined ? {} : { changesDigest }),
+        ...(changesDigest === undefined || !digestStable ? {} : { changesDigest }),
         diff: diff.output,
         diffTruncated: diff.truncated,
         totalChangedFiles: allFiles.length,

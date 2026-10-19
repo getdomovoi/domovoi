@@ -980,7 +980,9 @@ export async function openIsolatedGit(input: {
   environment.GIT_WORK_TREE = worktree
   environment.GIT_OBJECT_DIRECTORY = input.temporaryObjects ? join(gitDirectory, "objects") : join(commonDirectory, "objects")
   if (input.temporaryObjects) {
-    // Git accepts a C-quoted alternate path, including separators and spaces.
+    // JSON quoting handles separators, spaces, quotes and backslashes here.
+    // Limitation: JSON's \uXXXX control-character escapes are not Git C
+    // quoting, so repository paths requiring those escapes are unsupported.
     environment.GIT_ALTERNATE_OBJECT_DIRECTORIES = JSON.stringify(join(commonDirectory, "objects"))
   }
   if (input.worktreeIndex) environment.GIT_INDEX_FILE = index
