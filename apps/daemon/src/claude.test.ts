@@ -31,6 +31,7 @@ import { readRepositoryProviderConfig, type RepositoryProviderConfig } from "./r
 import { repositoryEntryHeldBack } from "./repository-trust-apply.js"
 import { claudeSpawnOptions, fakeClaudeChild, fakeClaudePid } from "./test-claude-process.js"
 import { removeScratchDirectories } from "./test-scratch.js"
+import { UsageLedger } from "./usage.js"
 
 const scratchDirectories: string[] = []
 afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
@@ -2936,6 +2937,60 @@ describe("a result that arrives after its turn was interrupted", () => {
     expect(events.filter((event) => event.type === "turn-completed")).toEqual([
       expect.objectContaining({ params: expect.objectContaining({ turnId: second }) }),
     ])
+    await adapter.close()
+  })
+
+  // An interrupted turn's prompt and steering can come back as separate
+  // results, and the ledger keeps one turn observation, so the turn's count
+  // can be short. It is recorded partial, so totals that include it say so.
+  it("records an interrupted turn's usage as partial when its results arrive separately", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+      "44444444-4444-4444-8444-444444444444",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const ledger = new UsageLedger()
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    const steering = ids[0]!
+    await adapter.steerTurn(threadId, first, "And this")
+    await adapter.interruptTurn(threadId, first)
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+    const dispatch = { sessionId: "session-1", provider: "claude", threadId, turnId: first, model: "claude-opus-5" }
+    ledger.begin(dispatch)
+    const model = (input: number, output: number) => ({
+      inputTokens: input, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, outputTokens: output,
+      webSearchRequests: 0, costUSD: 0, contextWindow: 200_000, maxOutputTokens: 32_000,
+    })
+
+    calls[0]!.query.emit({
+      type: "result", subtype: "error_during_execution", session_id: threadId, is_error: true,
+      user_message_uuid: first, user_message_uuids: [first],
+      modelUsage: { "claude-opus-5": model(9_000, 300) },
+    } as ClaudeSdkMessage)
+    calls[0]!.query.emit({
+      type: "result", subtype: "error_during_execution", session_id: threadId, is_error: true,
+      user_message_uuid: steering, user_message_uuids: [steering],
+      modelUsage: { "claude-opus-5": model(9_500, 330) },
+    } as ClaudeSdkMessage)
+    calls[0]!.query.emit({
+      type: "result", subtype: "success", session_id: threadId, is_error: false,
+      user_message_uuid: second, user_message_uuids: [second],
+      modelUsage: { "claude-opus-5": model(9_900, 350) },
+    } as ClaudeSdkMessage)
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "usage", turnId: second })))
+    const interrupted = events.filter((event) => event.type === "usage" && event.turnId === first)
+    expect(interrupted).toHaveLength(2)
+    for (const event of interrupted) if (event.type === "usage") ledger.observe(dispatch, event)
+    ledger.finish(dispatch, "interrupted")
+
+    expect(ledger.session("session-1")).toMatchObject({ coverage: { complete: 0, partial: 1 } })
+    ledger.close()
     await adapter.close()
   })
 

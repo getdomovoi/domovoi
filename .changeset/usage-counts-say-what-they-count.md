@@ -11,3 +11,5 @@ today after the turn, so a session total is never below its own turn, and the
 chip and rows say what each number counts: context, or the session's running
 total.
 A session or today total that includes a running turn says it may be low too.
+An interrupted Claude turn whose results arrive separately is recorded as partly
+reported, so totals that include it say they may be low.

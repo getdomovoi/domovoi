@@ -927,7 +927,10 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       // at all, ends the active turn as before.
       // Every result moves the running totals on, a dropped one too, and a
       // dropped result's usage is counted against the interrupted turn, so the
-      // next turn is not charged with its requests and none go uncounted.
+      // next turn is not charged with its requests. An interrupted turn's
+      // messages can come back as several results, and the ledger keeps one
+      // count per turn, so that count is marked partial: a total that
+      // includes it says it may be low.
       const turnUsage = claudeTurnUsage(message, session.runningUsage)
       session.runningUsage = turnUsage.running
       const answered = resultMessageIds(message)
@@ -935,7 +938,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         const interruptedTurnId = answered.map((id) => session.interruptedMessageIds.get(id)).find((id) => id !== undefined)
         for (const id of answered) session.interruptedMessageIds.delete(id)
         if (!answered.some((id) => session.turnMessageIds.has(id))) {
-          if (interruptedTurnId) this.#emitTurnUsage(session, interruptedTurnId, turnUsage.payload, turnUsage.partial)
+          if (interruptedTurnId) this.#emitTurnUsage(session, interruptedTurnId, turnUsage.payload, true)
           return
         }
       }
