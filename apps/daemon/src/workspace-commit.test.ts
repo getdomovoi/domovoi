@@ -1,5 +1,6 @@
 import { execFile, spawnSync } from "node:child_process"
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { createHash } from "node:crypto"
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, truncate, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -51,6 +52,73 @@ async function refusal(promise: Promise<unknown>): Promise<SessionCommitRefusedE
 }
 
 describe("GitWorkspaceService.commit", () => {
+  it("lists an oversized untracked file without authorizing a commit", async () => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-large-")
+    const file = join(workspace.path, "large.bin")
+    await writeFile(file, "")
+    await truncate(file, 500_000_000)
+    const shown = await service.evidence(workspace.path)
+    expect(shown.files.map((entry) => entry.path)).toEqual(["large.bin"])
+    expect(shown.changesDigest).toBeUndefined()
+  })
+
+  it("keeps the canonical digest identical to fresh staging", async () => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-canonical-")
+    await writeFile(join(workspace.path, "README.md"), "modified\n")
+    await writeFile(join(workspace.path, "new.txt"), "new\n")
+    await rm(join(workspace.path, "old.txt"))
+    const shown = await service.evidence(workspace.path)
+    await git(workspace.path, "add", "--all")
+    const raw = spawnSync("git", ["-C", workspace.path, "diff", "--cached", "--raw", "-z", "--no-abbrev", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", shown.baseCommit, "--"])
+    expect(raw.status).toBe(0)
+    const expected = createHash("sha256").update("domovoi.commit-changes.v1\0").update(shown.baseCommit).update("\0").update(raw.stdout).digest("hex")
+    expect(shown.changesDigest).toBe(`sha256:${expected}`)
+    expect((await service.evidence(workspace.path)).changesDigest).toBe(shown.changesDigest)
+  })
+
+  it("keeps untracked evidence readable when a clean filter exceeds the staging budget", async () => {
+    const { scratch, repositoryPath, workspace } = await sessionWorktree("domovoi-evidence-budget-")
+    const home = join(scratch, "home")
+    await mkdir(home)
+    vi.stubEnv("HOME", home)
+    vi.stubEnv("XDG_CONFIG_HOME", join(home, ".config"))
+    const script = join(scratch, "slow-clean.sh").replaceAll("\\", "/")
+    await writeFile(script, "sleep 2\ncat\n")
+    await git(repositoryPath, "config", "--global", "filter.slow.clean", `sh "${script}"`)
+    await writeFile(join(workspace.path, ".gitattributes"), "new.txt filter=slow\n")
+    await writeFile(join(workspace.path, "new.txt"), "untracked\n")
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), { evidenceStagingBudgetMs: 1_000 })
+    const shown = await service.evidence(workspace.path)
+    expect(shown.files.map((file) => file.path)).toContain("new.txt")
+    expect(shown.changesDigest).toBeUndefined()
+  })
+
+  it("does not turn caller cancellation into readable evidence", async () => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-cancel-")
+    const controller = new AbortController()
+    controller.abort(new Error("caller cancelled"))
+    await expect(service.evidence(workspace.path, controller.signal)).rejects.toThrow()
+  })
+
+  it("does not reuse a digest after same-size bytes change with restored mtime", async () => {
+    let path = ""
+    let observations = 0
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-stat-race-", "session-commit", {
+      afterEvidenceObservation: async () => {
+        if (++observations !== 1) return
+        const file = join(path, "new.txt")
+        const before = await lstat(file)
+        await writeFile(file, "later\n")
+        await utimes(file, before.atime, before.mtime)
+      },
+    })
+    path = workspace.path
+    await writeFile(join(path, "new.txt"), "prior\n")
+    const shown = await service.evidence(path)
+    expect(observations).toBe(2)
+    expect(shown.changesDigest).toBe((await service.evidence(path)).changesDigest)
+  })
+
   it("does not retain file contents in the repository object store when reading evidence", async () => {
     const { service, workspace } = await sessionWorktree("domovoi-commit-private-objects-")
     const contents = "uncommitted evidence fixture\n"
@@ -104,7 +172,8 @@ describe("GitWorkspaceService.commit", () => {
     const shown = await service.evidence(workspace.path)
     expect(shown.changesDigest).toMatch(/^sha256:[a-f0-9]{64}$/u)
     const seen = (await readFile(observations, "utf8")).trim().split("\n")
-    expect(seen.length).toBeGreaterThanOrEqual(2)
+    // One clean pass supplies both stable observations and the digest.
+    expect(seen).toHaveLength(1)
     await expect(lstat(persistentStore)).rejects.toMatchObject({ code: "ENOENT" })
     for (const storage of seen) {
       expect(storage).toContain("domovoi-checkout-")
