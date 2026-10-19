@@ -115,11 +115,17 @@ function turnRow(turn: SessionTurn | undefined): UsageChipRow | undefined {
 // Claude query's first turn leaves its subagents out), an unreported one
 // counted nothing, and a legacy row predates the ledger's evidence and may
 // hold an older count (a Codex turn's last request alone, a Claude turn's main
-// loop alone). A sum over any of them can only be low, and the row says so.
+// loop alone). A running turn's requests are absent or counted so far. A sum
+// over any of them can only be low, and the row says so.
 function partlyReported(coverage: UsageWindow["coverage"] | undefined): string | undefined {
+  const running = coverage?.pending ?? 0
   const short = (coverage?.partial ?? 0) + (coverage?.unavailable ?? 0) + (coverage?.legacy ?? 0)
-  if (short === 0) return undefined
-  return `${short === 1 ? "1 turn was" : `${short} turns were`} reported in part or not at all, so the count may be low`
+  const parts = [
+    running === 0 ? undefined : `${running === 1 ? "1 turn is" : `${running} turns are`} still running`,
+    short === 0 ? undefined : `${short === 1 ? "1 turn was" : `${short} turns were`} reported in part or not at all`,
+  ].filter((part): part is string => Boolean(part))
+  if (parts.length === 0) return undefined
+  return `${parts.join(" and ")}, so the count may be low`
 }
 
 function sessionRow(usage: SessionUsage): UsageChipRow {

@@ -132,6 +132,19 @@ describe("usage chip", () => {
     )
   })
 
+  // A running turn's requests are absent from the total or counted so far,
+  // so a total that includes one is not yet every model request.
+  it("says a count may be low while a turn is still running", () => {
+    const running: SessionUsage = { ...usage, coverage: { pending: 1, complete: 8, partial: 0, unavailable: 0, legacy: 0 } }
+    expect(usageChipRows({ usage: running, turn: undefined, today: null })[0]?.note).toBe(
+      `Input and output of every model request, cached input included: the same count as This turn and Today. 1 turn is still running, so the count may be low. ${unreportedCostNote}`,
+    )
+    const day: UsageWindow = { ...today, coverage: { pending: 2, complete: 24, partial: 1, unavailable: 0, legacy: 0 } }
+    expect(usageChipRows({ usage: null, turn: undefined, today: day })[0]?.note).toBe(
+      `27 turns started on this machine today, in 3 sessions · 2 turns are still running and 1 turn was reported in part or not at all, so the count may be low · Domovoi's count, not the provider's limit · ${unreportedCostNote}`,
+    )
+  })
+
   // A legacy row predates the ledger's evidence and may hold an older count
   // (a Codex turn's last request alone, a Claude turn's main loop alone).
   it("counts legacy turns among those that may be low", () => {
