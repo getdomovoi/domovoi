@@ -460,6 +460,14 @@ describe("terminalLines at the holder's grid", () => {
     ])
     expect(terminalLineCount(record)).toBe(6)
   })
+
+  // A record whose start was dropped skips its uncertain first line up to the
+  // next line the terminal starts, and a move down past the line starts one.
+  it("skips a dropped record's first line up to a move down that starts the next", () => {
+    const record = watchFrom(watched({ cols: 40, buffer: "partial\u001b[B\rresult", earlierOutputDropped: true }))
+    expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["result"])
+    expect(terminalLineCount(record)).toBe(1)
+  })
 })
 
 // Strings a terminal reads and never draws: a Device Control String such as

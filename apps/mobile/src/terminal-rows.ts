@@ -215,8 +215,9 @@ function bounded(record: TerminalRecord): TerminalRecord {
 
 // Where the drawn text starts when it began partway through a line: past the
 // rest of a window title it began inside, then past the rest of that line
-// when the terminal draws a line break near. Without one the line is drawn
-// as it stands rather than dropping a long run of output. A line break
+// when the terminal draws a line break near, or a move down past the line
+// at the holder's grid starts the next one near. Without either the line is
+// drawn as it stands rather than dropping a long run of output. A line break
 // inside a control string's payload is not one to start after.
 function drawnStart(record: TerminalRecord): number {
   if (!record.startsMidLine) return 0
@@ -227,7 +228,11 @@ function drawnStart(record: TerminalRecord): number {
   // title that began before the text did.
   // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
   if (titleEnd && !/[\u001b\n]/.test(record.text.slice(0, titleEnd.index))) start = titleEnd.index + titleEnd[0].length
-  return nextLineStart(record.text, start, lineBreakReach) ?? start
+  const lineBreak = nextLineStart(record.text, start, lineBreakReach)
+  const rowBreak = drawn(record.text, record.summary.cols).rowBreaks.find((at) => at > start)
+  const nearRowBreak = rowBreak !== undefined && rowBreak - start <= lineBreakReach ? rowBreak : undefined
+  if (lineBreak === undefined) return nearRowBreak ?? start
+  return nearRowBreak === undefined ? lineBreak : Math.min(lineBreak, nearRowBreak)
 }
 
 // Each change to a record is drawn by more than one view, the thread's block
