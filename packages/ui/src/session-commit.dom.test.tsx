@@ -101,6 +101,25 @@ describe("committing from the Changes tab", () => {
     expect(onCommit).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ["size", "Domovoi cannot verify these changes for a commit because changed files exceed the 64 MiB staging limit. Commit in your own checkout, or ignore or remove large files from these changes."],
+    ["paths", "Domovoi cannot verify these changes for a commit because there are more than 10,000 changed paths. Commit in your own checkout, or ignore or remove files to reduce the changed path count."],
+    ["time", "Domovoi could not verify these changes within the 5 s staging allowance. Refresh to try again; a retry may succeed. You can also commit in your own checkout."],
+  ] as const)("names the %s staging limit and keeps Commit disabled", async (limit, reason) => {
+    const { changesDigest: _digest, ...workspace } = evidence.workspace
+    const { onCommit } = show({}, {
+      ...evidence, workspace: { ...workspace, commitUnavailableReason: { kind: "staging-limit", limit } },
+    })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Commit without a pull request" }))
+    expect(screen.getByText(reason)).toBeTruthy()
+    expect(screen.getByRole("list", { name: "Files in this commit" }).textContent).toContain("src/webhook.ts")
+    const button = screen.getByRole("button", { name: "Commit 1" }) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    await user.click(button)
+    expect(onCommit).not.toHaveBeenCalled()
+  })
+
   it("forwards the evidence digest through the panel callback", async () => {
     const onCommit = vi.fn(async () => {})
     render(<SessionEvidencePanel connected sessionId="session-1" onLoad={vi.fn(async () => evidence)} onCommit={onCommit} commitFacts={{ defaultMessage: "Retry", machine: "mac-mini" }} />)
