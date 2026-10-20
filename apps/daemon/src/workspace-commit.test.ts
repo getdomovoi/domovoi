@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 
+import { maximumEvidenceStagingBytes, maximumEvidenceStagingPaths } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { openIsolatedGit, type IsolatedGit } from "./isolated-checkout.js"
@@ -68,7 +69,7 @@ describe("GitWorkspaceService.commit", () => {
     const { service, workspace } = await sessionWorktree("domovoi-evidence-large-")
     const file = join(workspace.path, "large.bin")
     await writeFile(file, "")
-    await truncate(file, 500_000_000)
+    await truncate(file, maximumEvidenceStagingBytes + 1)
     const shown = await service.evidence(workspace.path)
     expect(shown.files.map((entry) => entry.path)).toEqual(["large.bin"])
     expect(shown.changesDigest).toBeUndefined()
@@ -79,12 +80,13 @@ describe("GitWorkspaceService.commit", () => {
 
   it("bounds the number of changed paths before staging", async () => {
     const { service, workspace } = await sessionWorktree("domovoi-evidence-many-", "session-commit", { evidenceStagingBudgetMs: 30_000 })
-    for (let start = 0; start < 10_001; start += 64) {
-      await Promise.all(Array.from({ length: Math.min(64, 10_001 - start) }, (_, offset) =>
+    const changedPaths = maximumEvidenceStagingPaths + 1
+    for (let start = 0; start < changedPaths; start += 64) {
+      await Promise.all(Array.from({ length: Math.min(64, changedPaths - start) }, (_, offset) =>
         writeFile(join(workspace.path, `new-${start + offset}.txt`), "small\n")))
     }
     const shown = await service.evidence(workspace.path)
-    expect(shown.totalChangedFiles).toBe(10_001)
+    expect(shown.totalChangedFiles).toBe(changedPaths)
     expect(shown.changesDigest).toBeUndefined()
     expect(shown.commitUnavailableReason).toEqual({ kind: "staging-limit", limit: "paths" })
     const common = await git(workspace.path, "rev-parse", "--path-format=absolute", "--git-common-dir")

@@ -5,7 +5,10 @@ import { chmod, copyFile, lstat, mkdir, open, readdir, readFile, readlink, realp
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 
-import { maximumPreviewSourceBytes, type RepositoryGitFilterScope, type SessionEvidence } from "@getdomovoi/protocol"
+import {
+  evidenceStagingBudgetMs, maximumEvidenceStagingBytes, maximumEvidenceStagingPaths,
+  maximumPreviewSourceBytes, type RepositoryGitFilterScope, type SessionEvidence,
+} from "@getdomovoi/protocol"
 
 import { gitCommand } from "./git-command.js"
 import {
@@ -254,14 +257,6 @@ export type WorkspaceEvidence = {
 export const maximumEvidenceFiles = 200
 export const maximumEvidenceDiffBytes = 256 * 1_024
 const maximumEvidenceAttempts = 3
-// Evidence is interactive. Larger staging inputs remain visible but cannot
-// authorize Commit. This bounds compression work before Git opens an index
-// lock. The staging deadline is checked between Git steps; only the caller's
-// signal may stop running Git, which must otherwise finish and release locks.
-const maximumEvidenceStagingBytes = 64 * 1_024 * 1_024
-// Includes deletions reported by --modified, even though they need no hashing.
-const maximumEvidenceStagingPaths = 10_000
-const evidenceStagingBudgetMs = 5_000
 const maximumGitOutputBytes = 32 * 1_024 * 1_024
 const restoreClaimIoTimeoutMs = 10_000
 
@@ -1304,6 +1299,8 @@ async function seedPrivateIndex(isolated: IsolatedGit, sharedIndex: string, inde
 }
 
 // Observe the complete worktree without publishing an index or moving refs.
+// Check the staging deadline between Git steps. Only the caller's signal may
+// stop running Git, which must otherwise finish and release its index locks.
 async function evidenceChangesDigest(isolated: IsolatedGit, baseCommit: string, deadline: OperationDeadline, signal?: AbortSignal): Promise<{ changesDigest?: string; stagingLimit?: "time" }> {
   const index = join(isolated.gitDirectory, "evidence-index")
   try {

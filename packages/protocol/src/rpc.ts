@@ -791,6 +791,13 @@ export const changedFileEvidenceSchema = z.object({
 
 const changesDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/u)
 
+// Shared interactive staging limits: the daemon enforces them and clients name
+// them when Commit is unavailable. They do not limit commit-time recomputation.
+export const maximumEvidenceStagingBytes = 64 * 1_024 * 1_024
+// Includes changed paths that need no hashing, such as deletions.
+export const maximumEvidenceStagingPaths = 10_000
+export const evidenceStagingBudgetMs = 5_000
+
 export const workspaceEvidenceSchema = z.object({
   // Older or unstageable evidence remains readable, but cannot authorize a commit.
   changesDigest: changesDigestSchema.optional(),

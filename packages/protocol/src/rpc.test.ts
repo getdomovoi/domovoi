@@ -20,6 +20,9 @@ import {
   isRefusedWithoutPersistence,
   rpcMethodAuthorizations,
   maximumJsonValueDepth,
+  maximumEvidenceStagingBytes,
+  maximumEvidenceStagingPaths,
+  evidenceStagingBudgetMs,
   persistenceRecoveryRpcMethods,
   maximumTerminalReplayCharacters,
   phoneAndTabletPromise,
@@ -1154,6 +1157,12 @@ describe("session evidence", () => {
       runsTruncated: true,
     },
   }
+
+  it("publishes the staging limits shared by the daemon and commit copy", () => {
+    expect(maximumEvidenceStagingBytes).toBe(64 * 1_024 * 1_024)
+    expect(maximumEvidenceStagingPaths).toBe(10_000)
+    expect(evidenceStagingBudgetMs).toBe(5_000)
+  })
 
   it("accepts bounded Git and observed command-run evidence", () => {
     expect(sessionEvidenceSchema.parse(evidence)).toEqual(evidence)
