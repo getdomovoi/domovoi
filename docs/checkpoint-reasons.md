@@ -52,6 +52,13 @@ session's work from the Changes tab instead. The daemon:
   also withholds the digest when staging is unsafe or fails, or when untracked
   contents keep changing through the retries while the view remains stable.
   Such evidence stays readable, with Commit disabled;
+- reports `workspace.commitUnavailableReason` with `kind: "staging-limit"` and
+  `limit: "size"`, `"paths"`, or `"time"` when interactive staging exceeds
+  64 MiB of changed input, 10,000 changed paths, or its 5 s allowance.
+  Size and path limits require reducing the changes or committing in the person's
+  own checkout. A time-limit retry can succeed. Unsafe or unstable staging keeps
+  the generic verification reason. These evidence limits do not replace the
+  commit-time recomputation or its refusal;
 - refuses in Ask and Plan, which run read-only, and while a turn runs. Build allows
   it with or without Auto, since the commit is always the person's own action;
 - stages and commits through the isolated Git directory checkpoints use, so no

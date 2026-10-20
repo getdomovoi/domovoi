@@ -72,6 +72,7 @@ describe("GitWorkspaceService.commit", () => {
     const shown = await service.evidence(workspace.path)
     expect(shown.files.map((entry) => entry.path)).toEqual(["large.bin"])
     expect(shown.changesDigest).toBeUndefined()
+    expect(shown.commitUnavailableReason).toEqual({ kind: "staging-limit", limit: "size" })
     const common = await git(workspace.path, "rev-parse", "--path-format=absolute", "--git-common-dir")
     expect((await readdir(common)).filter((name) => name.startsWith("domovoi-checkout-"))).toEqual([])
   })
@@ -85,6 +86,7 @@ describe("GitWorkspaceService.commit", () => {
     const shown = await service.evidence(workspace.path)
     expect(shown.totalChangedFiles).toBe(10_001)
     expect(shown.changesDigest).toBeUndefined()
+    expect(shown.commitUnavailableReason).toEqual({ kind: "staging-limit", limit: "paths" })
     const common = await git(workspace.path, "rev-parse", "--path-format=absolute", "--git-common-dir")
     expect((await readdir(common)).filter((name) => name.startsWith("domovoi-checkout-"))).toEqual([])
   }, 30_000)
@@ -165,6 +167,7 @@ describe("GitWorkspaceService.commit", () => {
     const shown = await service.evidence(workspace.path)
     expect(shown.files.map((file) => file.path)).toContain("new.txt")
     expect(shown.changesDigest).toBeUndefined()
+    expect(shown.commitUnavailableReason).toEqual({ kind: "staging-limit", limit: "time" })
     const common = await git(workspace.path, "rev-parse", "--path-format=absolute", "--git-common-dir")
     expect((await readdir(common)).filter((name) => name.startsWith("domovoi-checkout-"))).toEqual([])
   })
@@ -202,6 +205,7 @@ describe("GitWorkspaceService.commit", () => {
     const shown = await service.evidence(workspace.path)
     expect(shown.files.map((file) => file.path)).toContain("new.txt")
     expect(shown.changesDigest).toBeUndefined()
+    expect(shown.commitUnavailableReason).toBeUndefined()
     expect(Number(await readFile(counter, "utf8"))).toBeGreaterThanOrEqual(2)
     expect(await readFile(join(workspace.path, "new.txt"), "utf8")).toBe("unchanged bytes\n")
   })
@@ -371,6 +375,7 @@ describe("GitWorkspaceService.commit", () => {
     const shown = await service.evidence(workspace.path)
     expect(shown.files.some((file) => file.path === "library")).toBe(true)
     expect(shown.changesDigest).toBeUndefined()
+    expect(shown.commitUnavailableReason).toBeUndefined()
   })
 
   it.each(["depth", "unreadable-config"])("withholds the digest when the submodule guard fails for %s", async (reason) => {
@@ -395,6 +400,7 @@ describe("GitWorkspaceService.commit", () => {
     const shown = await service.evidence(workspace.path)
     expect(shown.files.some((file) => file.path === "outside.txt")).toBe(true)
     expect(shown.changesDigest).toBeUndefined()
+    expect(shown.commitUnavailableReason).toBeUndefined()
   })
 
   it("binds all files beyond the displayed 200", async () => {
