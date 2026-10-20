@@ -103,12 +103,13 @@ const snapshot = (scale = 1): JsonRpcMessage => ({
 })
 const completed = (): JsonRpcMessage => ({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } } })
 const reported = (events: AgentEvent[]) => events.filter((event) => event.type === "usage" && event.source?.tokens === "reported")
+const capturedChild = () => structuredClone(codexUsageCaptures.subagent!.filter((message) => message.params?.threadId === "thread-2"))
 
 describe("Codex receipt accounting", () => {
   it.each([
     ["multi", 720, 2], ["overflow", 360, 1], ["interrupt-after", 360, 1],
     ["interrupt-final", 360, 1], ["auto", 720, 1], ["manual", 360, 2],
-    ["overflow-auto", 960, 1], ["subagent", 360, 1],
+    ["overflow-auto", 960, 1], ["subagent", 720, 1],
     ["stream-drop", 240, 1], ["failed-retry", 240, 1], ["http-retry", 240, 1],
     ["raw-optout", 120, 1],
   ] as const)("replays %s with every observed receipt and partial coverage", async (name, totalTokens, turns) => {
@@ -176,11 +177,145 @@ describe("Codex receipt accounting", () => {
     const child = codexUsageCaptures.subagent!.filter((m) => m.params?.threadId === "thread-2")
     h.transport.receive(receipt())
     for (const message of child) h.transport.receive(message)
-    expect(h.ledger.session("session")).toMatchObject({ totalTokens: 120, coverage: { pending: 1 } })
+    expect(h.ledger.session("session")).toMatchObject({ totalTokens: 480, coverage: { pending: 1 } })
     h.transport.receive(receipt("response-2"))
     h.transport.receive(completed())
-    expect(h.ledger.session("session")).toMatchObject({ totalTokens: 240, byRuntime: [{ turns: 1 }], coverage: { partial: 1 } })
+    expect(h.ledger.session("session")).toMatchObject({ totalTokens: 600, byRuntime: [{ turns: 1 }], coverage: { partial: 1 } })
     expect(reported(h.events).every((event) => event.type === "usage" && event.threadId === "thread-1")).toBe(true)
+  })
+
+  it.each([false, true])("counts child receipts after parent completion (child starts late: %s)", async (lateStart) => {
+    const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {})
+    const h = await setup()
+    await h.start()
+    const child = capturedChild()
+    const start = child.find((message) => message.method === "turn/started")!
+    if (!lateStart) h.transport.receive(start)
+    h.transport.receive(receipt())
+    h.transport.receive(completed())
+    if (lateStart) h.transport.receive(start)
+    for (const message of child.filter((message) => message.method !== "turn/started")) h.transport.receive(message)
+    expect(h.ledger.session("session")).toMatchObject({ totalTokens: 480, byRuntime: [{ turns: 1 }], coverage: { partial: 1, pending: 0, complete: 0 } })
+    expect(reported(h.events).at(-1)).toMatchObject({ threadId: "thread-1", turnId: "turn-1", source: { final: false } })
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it.each([undefined, "unknown-root"])("does not attribute a child with rootTurnId %s", async (rootTurnId) => {
+    const h = await setup()
+    await h.start()
+    h.transport.receive(receipt())
+    for (const message of capturedChild()) {
+      if (message.method === "turn/started") (message.params!.turn as Record<string, unknown>).rootTurnId = rootTurnId
+      h.transport.receive(message)
+    }
+    h.transport.receive(completed())
+    expect(h.ledger.session("session")).toMatchObject({ totalTokens: 120, coverage: { partial: 1 } })
+  })
+
+  it.each([{ resume: true }, { rejectRaw: true }])("never adds child receipts to a fallback-only root: %j", async (options) => {
+    const h = await setup(options)
+    await h.start()
+    h.transport.receive(snapshot())
+    for (const message of capturedChild()) h.transport.receive(message)
+    h.transport.receive(completed())
+    expect(h.ledger.session("session")).toMatchObject({ totalTokens: 120, contextTokens: 120, coverage: { partial: 1 } })
+  })
+
+  it("ignores child snapshots for root context and fallback", async () => {
+    const h = await setup()
+    await h.start()
+    h.transport.receive(snapshot(2))
+    for (const message of capturedChild().filter((message) => message.method !== "rawResponse/completed")) h.transport.receive(message)
+    h.transport.receive(completed())
+    expect(h.ledger.session("session")).toMatchObject({ totalTokens: 240, contextTokens: 240, coverage: { partial: 1 } })
+  })
+
+  it("deduplicates full child identities and resolves nested spawns to the chain root", async () => {
+    const h = await setup()
+    await h.start()
+    h.transport.receive(receipt("resp_3"))
+    for (const [threadId, turnId] of [["thread-2", "turn-2"], ["thread-3", "turn-2"], ["thread-2", "turn-3"]]) {
+      for (const message of capturedChild()) {
+        message.params!.threadId = threadId
+        if (message.params!.turn) (message.params!.turn as Record<string, unknown>).id = turnId
+        else message.params!.turnId = turnId
+        h.transport.receive(message)
+        h.transport.receive(message)
+      }
+    }
+    h.transport.receive(completed())
+    expect(h.ledger.session("session")).toMatchObject({ totalTokens: 1200, byRuntime: [{ turns: 1 }], coverage: { partial: 1 } })
+  })
+
+  it("drops child attribution on transport clear", async () => {
+    const h = await setup()
+    await h.start()
+    const child = capturedChild()
+    h.transport.receive(child.find((message) => message.method === "turn/started")!)
+    h.transport.receive(child.find((message) => message.method === "rawResponse/completed")!)
+    expect(h.ledger.session("session").totalTokens).toBe(360)
+    h.transport.receive(completed())
+    await h.adapter.resetConnection()
+    await h.adapter.connect()
+    const late = child.find((message) => message.method === "rawResponse/completed")!
+    late.params!.responseId = "late-child"
+    h.transport.receive(late)
+    expect(h.ledger.session("session")).toMatchObject({ totalTokens: 360, coverage: { partial: 1 } })
+  })
+
+  it("bounds child turns without evicting their deduplication identities", () => {
+    let last: AgentEvent | undefined
+    const usage = new CodexUsage((event) => { last = event })
+    usage.opened("thread-1", true)
+    usage.expect("thread-1")
+    usage.started("thread-1", "turn-1")
+    for (let index = 0; index < 258; index++) {
+      usage.started(`child-${index}`, "child-turn", "turn-1")
+      usage.receipt({ ...receipt().params, threadId: `child-${index}`, turnId: "child-turn" })
+    }
+    expect(last).toMatchObject({ usage: { totalTokens: 256 * 120 } })
+    usage.receipt({ ...receipt().params, threadId: "child-0", turnId: "child-turn" })
+    expect(last).toMatchObject({ usage: { totalTokens: 256 * 120 } })
+  })
+
+  it("shares the receipt bound across root and child turns", () => {
+    const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {})
+    let last: AgentEvent | undefined
+    const usage = new CodexUsage((event) => { last = event })
+    usage.opened("thread-1", true)
+    usage.expect("thread-1")
+    usage.started("thread-1", "turn-1")
+    usage.started("child", "child-turn", "turn-1")
+    for (let index = 0; index < 16_383; index++) usage.receipt(receipt(`response-${index}`).params!)
+    usage.receipt({ ...receipt().params, threadId: "child", turnId: "child-turn" })
+    expect(last).toMatchObject({ usage: { totalTokens: 16_384 * 120 } })
+    usage.receipt(receipt("over-limit").params!)
+    usage.receipt({ ...receipt("over-limit").params, threadId: "child", turnId: "child-turn" })
+    expect(last).toMatchObject({ usage: { totalTokens: 16_384 * 120 }, source: { final: false } })
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]?.[1]).toEqual({ code: "CODEX_USAGE_RECEIPT_LIMIT" })
+  })
+
+  it("drops child mappings when their sealed root is evicted", () => {
+    let last: AgentEvent | undefined
+    const usage = new CodexUsage((event) => { last = event })
+    usage.opened("thread-1", true)
+    usage.expect("thread-1")
+    usage.started("thread-1", "turn-1")
+    usage.started("child", "child-turn", "turn-1")
+    usage.receipt({ ...receipt().params, threadId: "child", turnId: "child-turn" })
+    expect(last).toMatchObject({ usage: { totalTokens: 120 } })
+    usage.complete("thread-1", "turn-1")
+    for (let index = 0; index < 128; index++) {
+      usage.expect("thread-1")
+      usage.started("thread-1", `later-${index}`)
+      usage.complete("thread-1", `later-${index}`)
+    }
+    last = undefined
+    usage.started("new-child", "child-turn", "turn-1")
+    usage.receipt({ ...receipt("late").params, threadId: "child", turnId: "child-turn" })
+    usage.receipt({ ...receipt("late").params, threadId: "new-child", turnId: "child-turn" })
+    expect(last).toBeUndefined()
   })
 
   it("accepts notifications before the turn/start reply without losing or doubling receipts", async () => {

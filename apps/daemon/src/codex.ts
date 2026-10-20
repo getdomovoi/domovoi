@@ -971,7 +971,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     } else if (message.method === "rawResponse/completed") {
       this.#usage.receipt(params)
     } else if (message.method === "turn/started") {
-      this.#usage.started(params.threadId, nestedId(params, "turn"))
+      this.#usage.started(params.threadId, nestedId(params, "turn"), asRecord(params.turn)?.rootTurnId)
     } else if (message.method === "item/agentMessage/delta" && typeof params.delta === "string") {
       this.#emit({
         type: "text-delta",

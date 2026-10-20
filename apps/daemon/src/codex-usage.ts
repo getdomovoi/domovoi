@@ -3,6 +3,7 @@ import type { NormalizedUsage } from "./usage.js"
 
 const counters = ["inputTokens", "cachedInputTokens", "outputTokens", "reasoningTokens", "totalTokens"] as const
 const maximumReceiptsPerTurn = 16_384
+const maximumChildTurnsPerRoot = 256
 const empty = (): NormalizedUsage => ({
   inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0,
   totalTokens: 0, costSource: "unavailable",
@@ -36,6 +37,7 @@ type Turn = {
   rawEligible: boolean
   rawSeen: boolean
   receipts: Set<string>
+  children: Set<string>
   sum: NormalizedUsage | undefined
   fallback: NormalizedUsage | undefined
   context: Pick<NormalizedUsage, "contextTokens" | "contextWindowTokens">
@@ -49,6 +51,7 @@ export class CodexUsage {
   #expected = new Set<string>()
   #active = new Map<string, Turn>()
   #sealed = new Map<string, Turn>()
+  #children = new Map<string, Turn>()
   constructor(private readonly emit: (event: AgentEvent) => void) {}
 
   opened(threadId: string, rawEligible: boolean): void {
@@ -65,22 +68,42 @@ export class CodexUsage {
   expect(threadId: string): void { this.#expected.add(threadId) }
   cancel(threadId: string): void { this.#expected.delete(threadId) }
 
-  started(threadId: unknown, turnId: unknown): void {
-    if (!id(threadId) || !id(turnId) || !this.#expected.delete(threadId)) return
+  started(threadId: unknown, turnId: unknown, rootTurnId?: unknown): void {
+    if (!id(threadId) || !id(turnId)) return
+    const expected = this.#expected.delete(threadId)
     const identity = key(threadId, turnId)
-    if (this.#active.has(identity) || this.#sealed.has(identity) || this.#active.size >= 256) return
+    if (this.#active.has(identity) || this.#sealed.has(identity) || this.#children.has(identity)) return
+    if (!expected) {
+      if (!id(rootTurnId)) return
+      let root: Turn | undefined
+      // rootTurnId names the chain root even for nested spawns. It has no
+      // thread ID, so refuse ambiguous matches instead of guessing attribution.
+      for (const candidate of [...this.#active.values(), ...this.#sealed.values()]) {
+        if (candidate.turnId !== rootTurnId) continue
+        if (root) return
+        root = candidate
+      }
+      if (!root?.rawEligible || root.children.size >= maximumChildTurnsPerRoot) return
+      root.children.add(identity)
+      this.#children.set(identity, root)
+      return
+    }
+    if (this.#active.size >= 256) return
     this.#active.set(identity, { threadId, turnId, rawEligible: this.#rawThreads.has(threadId),
-      rawSeen: false, receipts: new Set(), sum: undefined, fallback: undefined, context: {}, warned: false })
+      rawSeen: false, receipts: new Set(), children: new Set(), sum: undefined, fallback: undefined, context: {}, warned: false })
   }
 
   receipt(params: Record<string, unknown>): void {
     const { threadId, turnId, responseId } = params
     if (!id(threadId) || !id(turnId)) return
     const identity = key(threadId, turnId)
-    const turn = this.#active.get(identity)
+    const receiptIdentity = id(responseId) ? JSON.stringify([threadId, turnId, responseId]) : undefined
+    // Child work can finish after its root. Retain its attribution with the
+    // sealed root and publish onto the same ledger observation, still partial.
+    const turn = this.#active.get(identity) ?? this.#children.get(identity)
     if (!turn) {
       const sealed = this.#sealed.get(identity)
-      if (sealed && id(responseId) && !sealed.receipts.has(responseId) && !sealed.warned) {
+      if (sealed && receiptIdentity && !sealed.receipts.has(receiptIdentity) && !sealed.warned) {
         sealed.warned = true
         process.emitWarning("Codex reported new usage after turn completion; the count remains partial.", { code: "CODEX_LATE_USAGE_RECEIPT" })
       }
@@ -90,9 +113,9 @@ export class CodexUsage {
     // Its live fallback is already published: do not mix accounting modes.
     if (!turn.rawEligible) return
     turn.rawSeen = true
-    if (!id(responseId) || turn.receipts.has(responseId) || turn.receipts.size >= maximumReceiptsPerTurn) return
+    if (!receiptIdentity || turn.receipts.has(receiptIdentity) || turn.receipts.size >= maximumReceiptsPerTurn) return
     // Retain invalid IDs too: a conflicting replay cannot change prior evidence.
-    turn.receipts.add(responseId)
+    turn.receipts.add(receiptIdentity)
     // No keys are evicted, so reaching capacity diagnoses this turn exactly once.
     if (turn.receipts.size === maximumReceiptsPerTurn) {
       process.emitWarning("Codex reached the per-turn usage receipt limit; further receipts will not be counted.", { code: "CODEX_USAGE_RECEIPT_LIMIT" })
@@ -135,7 +158,11 @@ export class CodexUsage {
     this.#active.delete(identity)
     // Evict entire sealed identities, never active receipt IDs. An evicted
     // identity cannot be recreated by unsolicited usage or lifecycle messages.
-    if (this.#sealed.size >= 128) this.#sealed.delete(this.#sealed.keys().next().value!)
+    if (this.#sealed.size >= 128) {
+      const oldest = this.#sealed.keys().next().value!
+      for (const child of this.#sealed.get(oldest)!.children) this.#children.delete(child)
+      this.#sealed.delete(oldest)
+    }
     this.#sealed.set(identity, turn)
   }
 
@@ -143,6 +170,7 @@ export class CodexUsage {
     for (const turn of this.#active.values()) this.#publish(turn, true)
     this.#active.clear()
     this.#sealed.clear()
+    this.#children.clear()
     this.#expected.clear()
     this.#rawThreads.clear()
   }
