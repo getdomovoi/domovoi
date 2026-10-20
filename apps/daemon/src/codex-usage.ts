@@ -112,7 +112,8 @@ export class CodexUsage {
     const last = record(tokenUsage?.last)
     const contextTokens = last?.totalTokens
     const contextWindowTokens = tokenUsage?.modelContextWindow
-    if (count(contextTokens) && count(contextWindowTokens) && contextWindowTokens > 0) {
+    if (count(contextTokens) && count(contextWindowTokens)
+      && contextWindowTokens > 0 && contextTokens <= contextWindowTokens) {
       turn.context = { contextTokens, contextWindowTokens }
     }
     const fallback = expenditure(last)

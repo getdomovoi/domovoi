@@ -67,7 +67,7 @@ async function setup(options: { resume?: boolean; rejectRaw?: boolean; rejectOpt
     }
     if (event.type === "provider-disconnected") for (const dispatch of dispatches.values()) ledger.finish(dispatch, "interrupted")
   })
-  cleanups.push(async () => { await adapter.close(); ledger.close() })
+  cleanups.push(async () => { try { await adapter.close() } finally { ledger.close() } })
   await adapter.connect()
   if (options.resume) await adapter.resumeThread({ threadId: "thread-1", cwd: "/worktree", runtime })
   else await adapter.startThread({ cwd: "/worktree", runtime })
@@ -311,6 +311,20 @@ describe("Codex receipt accounting", () => {
     expect(() => h.transport.receive(reset)).not.toThrow()
     h.transport.receive(completed())
     expect(h.ledger.session("session")).toMatchObject({ totalTokens: Number.MAX_SAFE_INTEGER, contextTokens: 42, contextWindowTokens: 200, coverage: { partial: 1 } })
+  })
+
+  it("preserves valid context when a later snapshot exceeds its window", async () => {
+    const h = await setup()
+    await h.start()
+    h.transport.receive(receipt())
+    h.transport.receive(snapshot())
+    const invalid = snapshot()
+    invalid.params!.tokenUsage = { last: { totalTokens: 201 }, modelContextWindow: 200 }
+    expect(() => h.transport.receive(invalid)).not.toThrow()
+    h.transport.receive(completed())
+    expect(h.ledger.session("session")).toMatchObject({
+      totalTokens: 120, contextTokens: 120, contextWindowTokens: 258_400, coverage: { partial: 1 },
+    })
   })
 
   it("does not evict deduplication keys and recount receipts at the storage bound", async () => {
