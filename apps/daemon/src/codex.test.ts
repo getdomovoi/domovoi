@@ -2286,7 +2286,7 @@ describe("CodexAppServerAdapter", () => {
     transport.receive({ id: 1, result: {} })
     await connecting
     const turning = adapter.startTurn({ threadId: "thread-1", cwd: "/worktree", prompt: "Count", runtime: runtime("ask", false) })
-    await vi.waitFor(() => expect(transport.sent.at(-1)?.method).toBe("turn/start"))
+    await vi.waitFor(() => expect(transport.sent.at(-1)?.method).toBe("turn/start"), { timeout: 5_000 })
     transport.receive({ id: 2, result: { turn: { id: "turn-1" } } })
     await turning
 
@@ -2368,7 +2368,7 @@ describe("CodexAppServerAdapter", () => {
     transport.receive({ id: 1, result: {} })
     await connecting
     const turning = adapter.startTurn({ threadId: "thread-1", cwd: "/worktree", prompt: "Count", runtime: runtime("ask", false) })
-    await vi.waitFor(() => expect(transport.sent.at(-1)?.method).toBe("turn/start"))
+    await vi.waitFor(() => expect(transport.sent.at(-1)?.method).toBe("turn/start"), { timeout: 5_000 })
     transport.receive({ id: 2, result: { turn: { id: "turn-1" } } })
     await turning
     const counters = { totalTokens: 128_000, inputTokens: 120_000, cachedInputTokens: 90_000, outputTokens: 8_000, reasoningOutputTokens: 5_000 }
