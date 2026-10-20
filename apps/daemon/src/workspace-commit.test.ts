@@ -1,11 +1,13 @@
 import { execFile, spawnSync } from "node:child_process"
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { createHash } from "node:crypto"
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, truncate, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { openIsolatedGit, type IsolatedGit } from "./isolated-checkout.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
 import { projectRootRead } from "./repository-trust-apply.js"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -20,7 +22,18 @@ import { GitWorkspaceService, SessionCommitRefusedError, WorkspaceEvidenceUnstab
 const execute = promisify(execFile)
 const scratchDirectories: string[] = []
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>()
+  return { ...original, lstat: vi.fn(original.lstat) }
+})
+
+vi.mock("./isolated-checkout.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./isolated-checkout.js")>()
+  return { ...original, openIsolatedGit: vi.fn(original.openIsolatedGit) }
+})
+
 afterEach(async () => {
+  vi.clearAllMocks()
   vi.unstubAllEnvs()
   await removeScratchDirectories(scratchDirectories)
 })
@@ -51,6 +64,236 @@ async function refusal(promise: Promise<unknown>): Promise<SessionCommitRefusedE
 }
 
 describe("GitWorkspaceService.commit", () => {
+  it("lists an oversized untracked file without authorizing a commit", async () => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-large-")
+    const file = join(workspace.path, "large.bin")
+    await writeFile(file, "")
+    await truncate(file, 500_000_000)
+    const shown = await service.evidence(workspace.path)
+    expect(shown.files.map((entry) => entry.path)).toEqual(["large.bin"])
+    expect(shown.changesDigest).toBeUndefined()
+    const common = await git(workspace.path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    expect((await readdir(common)).filter((name) => name.startsWith("domovoi-checkout-"))).toEqual([])
+  })
+
+  it("bounds the number of changed paths before staging", async () => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-many-", "session-commit", { evidenceStagingBudgetMs: 30_000 })
+    for (let start = 0; start < 10_001; start += 64) {
+      await Promise.all(Array.from({ length: Math.min(64, 10_001 - start) }, (_, offset) =>
+        writeFile(join(workspace.path, `new-${start + offset}.txt`), "small\n")))
+    }
+    const shown = await service.evidence(workspace.path)
+    expect(shown.totalChangedFiles).toBe(10_001)
+    expect(shown.changesDigest).toBeUndefined()
+    const common = await git(workspace.path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    expect((await readdir(common)).filter((name) => name.startsWith("domovoi-checkout-"))).toEqual([])
+  }, 30_000)
+
+  it("does not stat unchanged tracked files to reuse staged evidence", async () => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-stat-cost-")
+    await writeFile(join(workspace.path, "new.txt"), "new\n")
+    vi.mocked(lstat).mockClear()
+    expect((await service.evidence(workspace.path)).changesDigest).toBeDefined()
+    const paths = vi.mocked(lstat).mock.calls.map(([path]) => path.toString())
+    expect(paths).toContain(join(workspace.path, "new.txt"))
+    expect(paths).not.toContain(join(workspace.path, "README.md"))
+    expect(paths).not.toContain(join(workspace.path, "old.txt"))
+  })
+
+  it.each([false, true])("streams large index listings and split gitlink entries (gitlink: %s)", async (gitlink) => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-index-stream-")
+    await writeFile(join(workspace.path, "new.txt"), "new\n")
+    const original = await vi.importActual<typeof import("./isolated-checkout.js")>("./isolated-checkout.js")
+    let stages = 0
+    const stopped: boolean[] = []
+    vi.mocked(openIsolatedGit).mockImplementationOnce(async (input) => {
+      const isolated = await original.openIsolatedGit(input)
+      const run = isolated.run.bind(isolated)
+      const stream = isolated.stream.bind(isolated)
+      const scan: IsolatedGit["stream"] = async (args, onStdout, options) => {
+        if (args[0] !== "ls-files" || !args.includes("--stage")) return stream(args, onStdout, options)
+        let stop = false
+        const emit = (chunk: Buffer) => { if (!stop) onStdout(chunk, () => { stop = true }) }
+        // A path containing the mode text must not count as a gitlink.
+        const entry = `100644 ${"a".repeat(40)} 0\t160000 ordinary-file\0`
+        if (gitlink) {
+          // Every boundary, including the mode prefix and NUL, splits a chunk.
+          for (const byte of Buffer.from(`${entry}160000 ${"b".repeat(40)} 0\tmodule\0`)) emit(Buffer.from([byte]))
+        } else {
+          const chunk = Buffer.from(entry.repeat(16_384))
+          for (let i = 0; i < 33; i += 1) emit(chunk)
+        }
+        stopped.push(stop)
+        return { code: stop ? null : 0, signal: stop ? "SIGTERM" : null, stderr: "" }
+      }
+      return { ...isolated, stream: scan, run: async (args, options) => {
+        if (args[0] === "add") stages += 1
+        return run(args, options)
+      } }
+    })
+    expect((await service.evidence(workspace.path)).changesDigest).toBeDefined()
+    expect(stages).toBe(gitlink ? 2 : 1)
+    expect(stopped).toEqual([gitlink, gitlink])
+  })
+
+  it("keeps the canonical digest identical to fresh staging", async () => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-canonical-")
+    await writeFile(join(workspace.path, "README.md"), "modified\n")
+    await writeFile(join(workspace.path, "new.txt"), "new\n")
+    await rm(join(workspace.path, "old.txt"))
+    const shown = await service.evidence(workspace.path)
+    await git(workspace.path, "add", "--all")
+    const raw = spawnSync("git", ["-C", workspace.path, "diff", "--cached", "--raw", "-z", "--no-abbrev", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", shown.baseCommit, "--"])
+    expect(raw.status).toBe(0)
+    const expected = createHash("sha256").update("domovoi.commit-changes.v1\0").update(shown.baseCommit).update("\0").update(raw.stdout).digest("hex")
+    expect(shown.changesDigest).toBe(`sha256:${expected}`)
+    expect((await service.evidence(workspace.path)).changesDigest).toBe(shown.changesDigest)
+  })
+
+  it("keeps untracked evidence readable when a clean filter exceeds the staging budget", async () => {
+    const { scratch, repositoryPath, workspace } = await sessionWorktree("domovoi-evidence-budget-")
+    const home = join(scratch, "home")
+    await mkdir(home)
+    vi.stubEnv("HOME", home)
+    vi.stubEnv("XDG_CONFIG_HOME", join(home, ".config"))
+    const script = join(scratch, "slow-clean.sh").replaceAll("\\", "/")
+    await writeFile(script, "sleep 2\ncat\n")
+    await git(repositoryPath, "config", "--global", "filter.slow.clean", `sh "${script}"`)
+    await writeFile(join(workspace.path, ".gitattributes"), "new.txt filter=slow\n")
+    await writeFile(join(workspace.path, "new.txt"), "untracked\n")
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), { evidenceStagingBudgetMs: 1_000 })
+    const shown = await service.evidence(workspace.path)
+    expect(shown.files.map((file) => file.path)).toContain("new.txt")
+    expect(shown.changesDigest).toBeUndefined()
+    const common = await git(workspace.path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    expect((await readdir(common)).filter((name) => name.startsWith("domovoi-checkout-"))).toEqual([])
+  })
+
+  it.each(["global", "reviewed repository"])("withholds a digest when a %s clean filter changes output on every run", async (scope) => {
+    const { scratch, repositoryPath, workspace } = await sessionWorktree("domovoi-evidence-filter-state-")
+    const home = join(scratch, "home")
+    await mkdir(home)
+    vi.stubEnv("HOME", home)
+    vi.stubEnv("XDG_CONFIG_HOME", join(home, ".config"))
+    const script = join(scratch, "changing-clean.sh").replaceAll("\\", "/")
+    const counter = join(scratch, "counter").replaceAll("\\", "/")
+    await writeFile(script, [
+      'set -eu',
+      'count=0',
+      'if test -f "$1"; then read -r count < "$1"; fi',
+      'count=$((count + 1))',
+      'printf "%s\\n" "$count" > "$1"',
+      'cat',
+      'printf "%s\\n" "$count"',
+      '',
+    ].join("\n"))
+    await git(repositoryPath, "config", ...(scope === "global" ? ["--global"] : []), "filter.changing.clean", `sh "${script}" "${counter}"`)
+    const config = await readRepositoryProviderConfig(repositoryPath, projectRootRead)
+    const grant = {
+      projectId: "project-changing-filter", trustedDigest: config.configDigest, trustedAt: "2026-10-19T00:00:00.000Z",
+      trustedBy: { client: "desktop" as const },
+      ...(config.gitFilters?.reviewDigest === undefined ? {} : { gitFilterReviewDigest: config.gitFilters.reviewDigest }),
+    }
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), scope === "global" ? {} : {
+      repositoryTrust: () => ({ projectId: grant.projectId, projectPath: repositoryPath, grant: () => grant, generation: () => 0 }),
+    })
+    await writeFile(join(workspace.path, ".gitattributes"), "new.txt filter=changing\n")
+    await writeFile(join(workspace.path, "new.txt"), "unchanged bytes\n")
+    const shown = await service.evidence(workspace.path)
+    expect(shown.files.map((file) => file.path)).toContain("new.txt")
+    expect(shown.changesDigest).toBeUndefined()
+    expect(Number(await readFile(counter, "utf8"))).toBeGreaterThanOrEqual(2)
+    expect(await readFile(join(workspace.path, "new.txt"), "utf8")).toBe("unchanged bytes\n")
+  })
+
+  it.each(["clean", "process"])("reuses staging with an unused global %s driver", async (command) => {
+    const { scratch, repositoryPath, service, workspace } = await sessionWorktree("domovoi-evidence-filter-driver-")
+    const home = join(scratch, "home")
+    await mkdir(home)
+    vi.stubEnv("HOME", home)
+    vi.stubEnv("XDG_CONFIG_HOME", join(home, ".config"))
+    await git(repositoryPath, "config", "--global", `filter.unused.${command}`, "unused-filter-must-not-run")
+    await writeFile(join(workspace.path, "new.txt"), "new\n")
+    const original = await vi.importActual<typeof import("./isolated-checkout.js")>("./isolated-checkout.js")
+    let stages = 0
+    vi.mocked(openIsolatedGit).mockImplementationOnce(async (input) => {
+      const isolated = await original.openIsolatedGit(input)
+      const run = isolated.run.bind(isolated)
+      return { ...isolated, run: async (args, options) => {
+        if (args[0] === "add") stages += 1
+        return run(args, options)
+      } }
+    })
+    expect((await service.evidence(workspace.path)).changesDigest).toBeDefined()
+    expect(stages).toBe(1)
+  })
+
+  it.each([
+    ["", 1], ["-filter", 1], ["filter", 2], ["filter=", 2], ["filter=unknown", 2],
+  ] as const)("uses the changed path's filter attribute %s to choose %s staging passes", async (attribute, expected) => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-filter-attribute-")
+    const path = "new file.txt"
+    if (attribute) await writeFile(join(workspace.path, ".gitattributes"), `"${path}" ${attribute}\n`)
+    await writeFile(join(workspace.path, path), "new\n")
+    const original = await vi.importActual<typeof import("./isolated-checkout.js")>("./isolated-checkout.js")
+    let stages = 0
+    vi.mocked(openIsolatedGit).mockImplementationOnce(async (input) => {
+      const isolated = await original.openIsolatedGit(input)
+      const run = isolated.run.bind(isolated)
+      return { ...isolated, run: async (args, options) => {
+        if (args[0] === "add") stages += 1
+        return run(args, options)
+      } }
+    })
+    expect((await service.evidence(workspace.path)).changesDigest).toBeDefined()
+    expect(stages).toBe(expected)
+  })
+
+  it.each(["failed", "truncated", "wrong path"])("withholds the digest after a %s filter attribute query", async (failure) => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-filter-query-")
+    await writeFile(join(workspace.path, "new.txt"), "new\n")
+    const original = await vi.importActual<typeof import("./isolated-checkout.js")>("./isolated-checkout.js")
+    vi.mocked(openIsolatedGit).mockImplementationOnce(async (input) => {
+      const isolated = await original.openIsolatedGit(input)
+      const stream = isolated.stream.bind(isolated)
+      return { ...isolated, stream: async (args, onStdout, options) => {
+        if (args[0] !== "check-attr") return stream(args, onStdout, options)
+        if (failure === "truncated") onStdout(Buffer.from("new.txt\0filter\0"), () => {})
+        if (failure === "wrong path") onStdout(Buffer.from("other.txt\0filter\0unspecified\0"), () => {})
+        return { code: failure === "failed" ? 1 : 0, signal: null, stderr: "" }
+      } }
+    })
+    const evidence = await service.evidence(workspace.path)
+    expect(evidence.files.some((file) => file.path === "new.txt")).toBe(true)
+    expect(evidence.changesDigest).toBeUndefined()
+  })
+
+  it("does not turn caller cancellation into readable evidence", async () => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-cancel-")
+    const controller = new AbortController()
+    controller.abort(new Error("caller cancelled"))
+    await expect(service.evidence(workspace.path, controller.signal)).rejects.toThrow()
+  })
+
+  it("does not reuse a digest after same-size bytes change with restored mtime", async () => {
+    let path = ""
+    let observations = 0
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-stat-race-", "session-commit", {
+      afterEvidenceObservation: async () => {
+        if (++observations !== 1) return
+        const file = join(path, "new.txt")
+        const before = await lstat(file)
+        await writeFile(file, "later\n")
+        await utimes(file, before.atime, before.mtime)
+      },
+    })
+    path = workspace.path
+    await writeFile(join(path, "new.txt"), "prior\n")
+    const shown = await service.evidence(path)
+    expect(observations).toBe(2)
+    expect(shown.changesDigest).toBe((await service.evidence(path)).changesDigest)
+  })
+
   it("does not retain file contents in the repository object store when reading evidence", async () => {
     const { service, workspace } = await sessionWorktree("domovoi-commit-private-objects-")
     const contents = "uncommitted evidence fixture\n"
@@ -104,7 +347,8 @@ describe("GitWorkspaceService.commit", () => {
     const shown = await service.evidence(workspace.path)
     expect(shown.changesDigest).toMatch(/^sha256:[a-f0-9]{64}$/u)
     const seen = (await readFile(observations, "utf8")).trim().split("\n")
-    expect(seen.length).toBeGreaterThanOrEqual(2)
+    // Filters may depend on external state, so Git must stage both observations.
+    expect(seen).toHaveLength(2)
     await expect(lstat(persistentStore)).rejects.toMatchObject({ code: "ENOENT" })
     for (const storage of seen) {
       expect(storage).toContain("domovoi-checkout-")

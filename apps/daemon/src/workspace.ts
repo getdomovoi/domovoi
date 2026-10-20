@@ -253,6 +253,14 @@ export type WorkspaceEvidence = {
 export const maximumEvidenceFiles = 200
 export const maximumEvidenceDiffBytes = 256 * 1_024
 const maximumEvidenceAttempts = 3
+// Evidence is interactive. Larger staging inputs remain visible but cannot
+// authorize Commit. This bounds compression work before Git opens an index
+// lock. The staging deadline is checked between Git steps; only the caller's
+// signal may stop running Git, which must otherwise finish and release locks.
+const maximumEvidenceStagingBytes = 64 * 1_024 * 1_024
+// Includes deletions reported by --modified, even though they need no hashing.
+const maximumEvidenceStagingPaths = 10_000
+const evidenceStagingBudgetMs = 5_000
 const maximumGitOutputBytes = 32 * 1_024 * 1_024
 const restoreClaimIoTimeoutMs = 10_000
 
@@ -923,6 +931,8 @@ export class WorkspaceEvidenceUnstableError extends Error {
 }
 
 export type GitWorkspaceServiceOptions = {
+  // Interactive staging allowance; configurable for deadline tests.
+  evidenceStagingBudgetMs?: number
   afterEvidenceObservation?: (observation: "status") => void | Promise<void>
   afterCheckpointStaging?: () => void | Promise<void>
   afterIgnoredArtifactValidation?: () => void | Promise<void>
@@ -1293,20 +1303,136 @@ async function seedPrivateIndex(isolated: IsolatedGit, sharedIndex: string, inde
 }
 
 // Observe the complete worktree without publishing an index or moving refs.
-async function evidenceChangesDigest(isolated: IsolatedGit, baseCommit: string, signal?: AbortSignal): Promise<string | undefined> {
+async function evidenceChangesDigest(isolated: IsolatedGit, baseCommit: string, deadline: OperationDeadline, signal?: AbortSignal): Promise<string | undefined> {
   const index = join(isolated.gitDirectory, "evidence-index")
-  await seedPrivateIndex(isolated, isolated.worktreeIndex, index, baseCommit, signal)
   try {
+    if (deadline.remainingMs() === 0) return undefined
+    await seedPrivateIndex(isolated, isolated.worktreeIndex, index, baseCommit, signal)
+    if (deadline.remainingMs() === 0) return undefined
     await isolated.run(["add", "--all"], { index, signal })
+    if (deadline.remainingMs() === 0) return undefined
+    const digest = await stagedChangesDigest(isolated, baseCommit, index, signal)
+    return deadline.remainingMs() === 0 ? undefined : digest
   } catch (error) {
     signal?.throwIfAborted()
+    if (isolated.indexLocksLeft.length > 0) throw error
     // Git add's path refusal (1) or fatal staging failure (128) must not
     // hide otherwise readable evidence. No digest means no commit authority.
     const code = (error as { code?: unknown }).code
     if (code === 1 || code === 128) return undefined
     throw error
   }
-  return stagedChangesDigest(isolated, baseCommit, index, signal)
+}
+
+// Only the seven-byte mode prefix can identify a gitlink. Carry that prefix
+// across chunks and discard the rest of each NUL-delimited entry. An index
+// with many unchanged files must not spend the changed-path output budget.
+async function evidenceHasGitlinks(isolated: IsolatedGit, signal?: AbortSignal): Promise<boolean> {
+  let prefix = ""
+  let found = false
+  const result = await isolated.stream(["ls-files", "--stage", "-z"], (chunk, stop) => {
+    let offset = 0
+    while (offset < chunk.length && !found) {
+      const nul = chunk.indexOf(0, offset)
+      const end = nul === -1 ? chunk.length : nul
+      prefix += chunk.toString("ascii", offset, Math.min(end, offset + 7 - prefix.length))
+      if (prefix === "160000 ") { found = true; stop(); return }
+      if (nul === -1) return
+      prefix = ""
+      offset = nul + 1
+    }
+  }, { signal })
+  signal?.throwIfAborted()
+  if (found) return true
+  if (result.code !== 0) throw new Error(result.stderr || "Git could not list evidence index entries")
+  return false
+}
+
+// Query only the bounded changed-path list. An unused driver in global or
+// system config does not affect staging. Any filter attribute value, even an
+// unknown driver, keeps Git's second pass to observe changing filter output.
+async function evidenceHasStagingFilters(isolated: IsolatedGit, paths: string[], signal?: AbortSignal): Promise<boolean> {
+  if (paths.length === 0) return false
+  const chunks: Buffer[] = []
+  let bytes = 0
+  const result = await isolated.stream(["check-attr", "-z", "--stdin", "filter"], (chunk, stop) => {
+    bytes += chunk.length
+    if (bytes > maximumGitOutputBytes) { stop(); return }
+    chunks.push(chunk)
+  }, { signal, input: Buffer.from(`${paths.join("\0")}\0`, "binary") })
+  signal?.throwIfAborted()
+  if (bytes > maximumGitOutputBytes || result.code !== 0) throw new Error("Git could not read evidence filter attributes")
+  const fields = Buffer.concat(chunks).toString("binary").split("\0")
+  if (fields.length !== paths.length * 3 + 1 || fields.at(-1) !== "") throw new Error("Git returned incomplete evidence filter attributes")
+  let filtered = false
+  for (let i = 0; i < paths.length; i += 1) {
+    if (fields[i * 3] !== paths[i] || fields[i * 3 + 1] !== "filter") throw new Error("Git returned unexpected evidence filter attributes")
+    const value = fields[i * 3 + 2]
+    if (value !== "unspecified" && value !== "unset") filtered = true
+  }
+  return filtered
+}
+
+// Reuse only within one observation, never at commit time. Include raw path
+// bytes, the shared index and changed paths' ctime as well as mtime. A tracked
+// file changed between observations enters the modified list. On filesystems
+// with 1 s timestamps, a same-size rewrite can pass this stat check; the fresh
+// commit-time recompute and refusal remain the backstop.
+// Gitlinks and filters need Git's own second staging pass to observe nested
+// HEADs and filter output. Unreadable metadata withholds authority, not the view.
+async function evidenceStagingState(worktree: string, isolated: IsolatedGit, signal?: AbortSignal): Promise<{
+  fingerprint?: string; tooLarge: boolean
+}> {
+  const list = async (args: string[]) => {
+    const chunks: Buffer[] = []
+    let bytes = 0
+    const result = await isolated.stream(["ls-files", ...args, "-z"], (chunk, stop) => {
+      bytes += chunk.length
+      if (bytes > maximumGitOutputBytes) { stop(); return }
+      chunks.push(chunk)
+    }, { signal })
+    if (bytes > maximumGitOutputBytes) throw new Error("Git printed more evidence paths than Domovoi reads")
+    if (result.code !== 0) throw new Error(result.stderr || "Git could not list evidence paths")
+    return [...new Set(Buffer.concat(chunks).toString("binary").split("\0").filter(Boolean))].sort()
+  }
+  try {
+    const [paths, hasGitlinks, index] = await Promise.all([
+      list(["--modified", "--others", "--exclude-standard"]), evidenceHasGitlinks(isolated, signal), readIndexFile(isolated.worktreeIndex),
+    ])
+    if (paths.length > maximumEvidenceStagingPaths) return { tooLarge: true }
+    const hash = createHash("sha256").update(index ?? "no-index")
+    let bytes = 0n
+    let reusable = !hasGitlinks
+    // Bound outstanding filesystem calls even for very large worktrees.
+    for (let start = 0; start < paths.length; start += 64) {
+      signal?.throwIfAborted()
+      const batch = await Promise.all(paths.slice(start, start + 64).map(async (path) => {
+        const raw = Buffer.from(path, "binary")
+        const candidate = Buffer.concat([Buffer.from(`${worktree}${sep}`), raw])
+        const stat = await lstat(candidate, { bigint: true }).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT" || error.code === "ENOTDIR") return undefined
+          throw error
+        })
+        return { raw, stat }
+      }))
+      for (const { raw, stat } of batch) {
+        hashField(hash, raw)
+        if (!stat) { hashField(hash, "missing"); continue }
+        if (!stat.isFile() && !stat.isSymbolicLink()) reusable = false
+        if (stat.isFile()) bytes += stat.size
+        hashField(hash, `${stat.dev}:${stat.ino}:${stat.mode}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`)
+      }
+    }
+    if (bytes > BigInt(maximumEvidenceStagingBytes)) return { tooLarge: true }
+    if (await evidenceHasStagingFilters(isolated, paths, signal)) reusable = false
+    return {
+      ...(reusable ? { fingerprint: hash.digest("hex") } : {}),
+      tooLarge: false,
+    }
+  } catch {
+    signal?.throwIfAborted()
+    return { tooLarge: true }
+  }
 }
 
 // The `diff.<driver>.binary` settings Git reads in the worktree, as `-c`
@@ -1591,8 +1717,10 @@ export class GitWorkspaceService implements WorkspaceService {
   readonly #repositoryTrust?: GitWorkspaceServiceOptions["repositoryTrust"]
   readonly #gitVersion: () => Promise<string | undefined>
   readonly #sessionRefTransferTimeoutMs: number
+  readonly #evidenceStagingBudgetMs: number
 
   constructor(worktreeRoot: string, options: GitWorkspaceServiceOptions = {}) {
+    this.#evidenceStagingBudgetMs = options.evidenceStagingBudgetMs ?? evidenceStagingBudgetMs
     this.#sessionRefTransferTimeoutMs = options.sessionRefTransferTimeoutMs ?? sessionRefTransferTimeoutMs
     this.worktreeRoot = resolve(worktreeRoot)
     this.#afterEvidenceObservation = options.afterEvidenceObservation
@@ -1855,10 +1983,17 @@ export class GitWorkspaceService implements WorkspaceService {
   // file view may show a filtered file as changed. Under a grant the reviewed
   // filters read the files as a checkpoint would store them.
   async evidence(worktreePath: string, signal?: AbortSignal, includeRevertTargets = false): Promise<WorkspaceEvidence> {
-    return this.#isolated(worktreePath, worktreePath, signal, (isolated) => this.#evidence(worktreePath, isolated, signal, includeRevertTargets), "filters-off")
+    let deadline: OperationDeadline | undefined
+    // One budget across attempts, starting only when staging first begins.
+    const stagingDeadline = () => deadline ??= OperationDeadline.start(this.#evidenceStagingBudgetMs)
+    try {
+      return await this.#isolated(worktreePath, worktreePath, signal, (isolated) => this.#evidence(worktreePath, isolated, stagingDeadline, signal, includeRevertTargets), "filters-off")
+    } finally {
+      deadline?.clear()
+    }
   }
 
-  async #evidence(worktreePath: string, isolated: IsolatedGit, signal: AbortSignal | undefined, includeRevertTargets: boolean): Promise<WorkspaceEvidence> {
+  async #evidence(worktreePath: string, isolated: IsolatedGit, stagingDeadline: () => OperationDeadline, signal: AbortSignal | undefined, includeRevertTargets: boolean): Promise<WorkspaceEvidence> {
     const diffSettings = await diffBinarySettings(worktreePath, signal)
     let canStage = true
     try {
@@ -1876,7 +2011,9 @@ export class GitWorkspaceService implements WorkspaceService {
       await isolated.setHead(baseCommit)
       const fingerprintBefore = await workspaceEvidenceFingerprint(worktreePath, isolated, baseCommit, diffSettings, signal)
       if (fingerprintBefore.headCommit !== baseCommit) continue
-      const changesDigest = canStage ? await evidenceChangesDigest(isolated, baseCommit, signal) : undefined
+      const stagingBefore = canStage ? await evidenceStagingState(worktreePath, isolated, signal) : undefined
+      const changesDigest = stagingBefore && !stagingBefore.tooLarge
+        ? await evidenceChangesDigest(isolated, baseCommit, stagingDeadline(), signal) : undefined
       const status = (await isolated.run([
         "--no-optional-locks",
         "status",
@@ -1917,7 +2054,15 @@ export class GitWorkspaceService implements WorkspaceService {
         ),
         includeRevertTargets ? pathsAtCommit(isolated, baseCommit, signal) : undefined,
       ])
-      const changesDigestAfter = canStage ? await evidenceChangesDigest(isolated, baseCommit, signal) : undefined
+      const stagingAfter = changesDigest === undefined ? undefined : await evidenceStagingState(worktreePath, isolated, signal)
+      let changesDigestAfter: string | undefined
+      if (changesDigest !== undefined && !stagingAfter?.tooLarge) {
+        if (stagingBefore?.fingerprint === undefined) {
+          changesDigestAfter = await evidenceChangesDigest(isolated, baseCommit, stagingDeadline(), signal)
+        } else if (stagingBefore.fingerprint === stagingAfter?.fingerprint) {
+          changesDigestAfter = changesDigest
+        }
+      }
       const fingerprintAfter = await workspaceEvidenceFingerprint(worktreePath, isolated, baseCommit, diffSettings, signal)
       if (fingerprintBefore.digest !== fingerprintAfter.digest) continue
       const digestStable = changesDigest === changesDigestAfter
