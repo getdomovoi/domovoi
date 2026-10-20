@@ -1348,18 +1348,29 @@ async function evidenceHasGitlinks(isolated: IsolatedGit, signal?: AbortSignal):
   return false
 }
 
-// The isolated config snapshot includes global and allowed repository filters.
-// Any clean/process command may depend on external state, so conservatively
-// keep the second staging pass even when its driver has no matching path.
-async function evidenceHasStagingFilters(isolated: IsolatedGit, signal?: AbortSignal): Promise<boolean> {
-  try {
-    await isolated.run(["config", "--name-only", "--get-regexp", String.raw`^filter\..*\.(clean|process)$`, "."], { signal })
-    return true
-  } catch (error) {
-    signal?.throwIfAborted()
-    if ((error as { code?: unknown }).code === 1) return false
-    throw error
+// Query only the bounded changed-path list. An unused driver in global or
+// system config does not affect staging. Any filter attribute value, even an
+// unknown driver, keeps Git's second pass to observe changing filter output.
+async function evidenceHasStagingFilters(isolated: IsolatedGit, paths: string[], signal?: AbortSignal): Promise<boolean> {
+  if (paths.length === 0) return false
+  const chunks: Buffer[] = []
+  let bytes = 0
+  const result = await isolated.stream(["check-attr", "-z", "--stdin", "filter"], (chunk, stop) => {
+    bytes += chunk.length
+    if (bytes > maximumGitOutputBytes) { stop(); return }
+    chunks.push(chunk)
+  }, { signal, input: Buffer.from(`${paths.join("\0")}\0`, "binary") })
+  signal?.throwIfAborted()
+  if (bytes > maximumGitOutputBytes || result.code !== 0) throw new Error("Git could not read evidence filter attributes")
+  const fields = Buffer.concat(chunks).toString("binary").split("\0")
+  if (fields.length !== paths.length * 3 + 1 || fields.at(-1) !== "") throw new Error("Git returned incomplete evidence filter attributes")
+  let filtered = false
+  for (let i = 0; i < paths.length; i += 1) {
+    if (fields[i * 3] !== paths[i] || fields[i * 3 + 1] !== "filter") throw new Error("Git returned unexpected evidence filter attributes")
+    const value = fields[i * 3 + 2]
+    if (value !== "unspecified" && value !== "unset") filtered = true
   }
+  return filtered
 }
 
 // Reuse only within one observation, never at commit time. Include raw path
@@ -1369,7 +1380,7 @@ async function evidenceHasStagingFilters(isolated: IsolatedGit, signal?: AbortSi
 // commit-time recompute and refusal remain the backstop.
 // Gitlinks and filters need Git's own second staging pass to observe nested
 // HEADs and filter output. Unreadable metadata withholds authority, not the view.
-async function evidenceStagingState(worktree: string, isolated: IsolatedGit, canReuseFilterOutput: boolean, signal?: AbortSignal): Promise<{
+async function evidenceStagingState(worktree: string, isolated: IsolatedGit, signal?: AbortSignal): Promise<{
   fingerprint?: string; tooLarge: boolean
 }> {
   const list = async (args: string[]) => {
@@ -1391,7 +1402,7 @@ async function evidenceStagingState(worktree: string, isolated: IsolatedGit, can
     if (paths.length > maximumEvidenceStagingPaths) return { tooLarge: true }
     const hash = createHash("sha256").update(index ?? "no-index")
     let bytes = 0n
-    let reusable = canReuseFilterOutput && !hasGitlinks
+    let reusable = !hasGitlinks
     // Bound outstanding filesystem calls even for very large worktrees.
     for (let start = 0; start < paths.length; start += 64) {
       signal?.throwIfAborted()
@@ -1412,9 +1423,11 @@ async function evidenceStagingState(worktree: string, isolated: IsolatedGit, can
         hashField(hash, `${stat.dev}:${stat.ino}:${stat.mode}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`)
       }
     }
+    if (bytes > BigInt(maximumEvidenceStagingBytes)) return { tooLarge: true }
+    if (await evidenceHasStagingFilters(isolated, paths, signal)) reusable = false
     return {
       ...(reusable ? { fingerprint: hash.digest("hex") } : {}),
-      tooLarge: bytes > BigInt(maximumEvidenceStagingBytes),
+      tooLarge: false,
     }
   } catch {
     signal?.throwIfAborted()
@@ -1983,13 +1996,8 @@ export class GitWorkspaceService implements WorkspaceService {
   async #evidence(worktreePath: string, isolated: IsolatedGit, stagingDeadline: () => OperationDeadline, signal: AbortSignal | undefined, includeRevertTargets: boolean): Promise<WorkspaceEvidence> {
     const diffSettings = await diffBinarySettings(worktreePath, signal)
     let canStage = true
-    let canReuseFilterOutput = false
     try {
-      // Isolation freezes the effective config for this call, so query it once.
-      const [, hasStagingFilters] = await Promise.all([
-        refuseSubmoduleConfig(worktreePath, worktreePath, signal), evidenceHasStagingFilters(isolated, signal),
-      ])
-      canReuseFilterOutput = !hasStagingFilters
+      await refuseSubmoduleConfig(worktreePath, worktreePath, signal)
     } catch {
       signal?.throwIfAborted()
       // This guard authorizes staging, not the read-only file view. Any
@@ -2003,7 +2011,7 @@ export class GitWorkspaceService implements WorkspaceService {
       await isolated.setHead(baseCommit)
       const fingerprintBefore = await workspaceEvidenceFingerprint(worktreePath, isolated, baseCommit, diffSettings, signal)
       if (fingerprintBefore.headCommit !== baseCommit) continue
-      const stagingBefore = canStage ? await evidenceStagingState(worktreePath, isolated, canReuseFilterOutput, signal) : undefined
+      const stagingBefore = canStage ? await evidenceStagingState(worktreePath, isolated, signal) : undefined
       const changesDigest = stagingBefore && !stagingBefore.tooLarge
         ? await evidenceChangesDigest(isolated, baseCommit, stagingDeadline(), signal) : undefined
       const status = (await isolated.run([
@@ -2046,7 +2054,7 @@ export class GitWorkspaceService implements WorkspaceService {
         ),
         includeRevertTargets ? pathsAtCommit(isolated, baseCommit, signal) : undefined,
       ])
-      const stagingAfter = changesDigest === undefined ? undefined : await evidenceStagingState(worktreePath, isolated, canReuseFilterOutput, signal)
+      const stagingAfter = changesDigest === undefined ? undefined : await evidenceStagingState(worktreePath, isolated, signal)
       let changesDigestAfter: string | undefined
       if (changesDigest !== undefined && !stagingAfter?.tooLarge) {
         if (stagingBefore?.fingerprint === undefined) {

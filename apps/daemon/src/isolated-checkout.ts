@@ -326,6 +326,7 @@ export function runGitProcess(args: readonly string[], options: {
   // The Git binary to run; gitCommand(env) when not given.
   command?: string | undefined
   signal?: AbortSignal | undefined
+  input?: Buffer | undefined
   onStdout?: (chunk: Buffer, stop: () => void) => void
   // Runs once, just before a running command is killed.
   beforeKill?: () => void
@@ -336,7 +337,7 @@ export function runGitProcess(args: readonly string[], options: {
   const child = spawn(options.command ?? gitCommand(options.env), [...args], {
     cwd: options.cwd,
     env: options.env,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     detached: posix,
     windowsHide: true,
   })
@@ -346,6 +347,7 @@ export function runGitProcess(args: readonly string[], options: {
   let errorBytes = 0
   let settled = false
   let killing = false
+  let inputError: Error | undefined
   let teardown: NodeJS.Timeout | undefined
   let settle: (outcome: { error: unknown } | { result: GitProcessResult }) => void = () => {}
   const stderrText = () => Buffer.concat(errors).toString("utf8").trim()
@@ -367,10 +369,12 @@ export function runGitProcess(args: readonly string[], options: {
     }
     teardown ??= setTimeout(() => {
       if (settled) return
-      child.stdout.destroy()
-      child.stderr.destroy()
+      child.stdin?.destroy()
+      child.stdout?.destroy()
+      child.stderr?.destroy()
       settle(signal?.aborted
         ? { error: abortError(signal) }
+        : inputError ? { error: inputError }
         : { result: { code: child.exitCode, signal: child.signalCode ?? "SIGKILL", stderr: stderrText() } })
     }, gitTeardownTimeoutMs)
   }
@@ -385,8 +389,8 @@ export function runGitProcess(args: readonly string[], options: {
     }
     signal?.addEventListener("abort", end, { once: true })
     if (signal?.aborted) end()
-    child.stdout.on("data", (chunk: Buffer) => options.onStdout?.(chunk, end))
-    child.stderr.on("data", (chunk: Buffer) => {
+    child.stdout?.on("data", (chunk: Buffer) => options.onStdout?.(chunk, end))
+    child.stderr?.on("data", (chunk: Buffer) => {
       if (errorBytes >= 16_384) return
       const captured = chunk.subarray(0, 16_384 - errorBytes)
       errors.push(captured)
@@ -394,8 +398,10 @@ export function runGitProcess(args: readonly string[], options: {
     })
     child.once("error", (error) => settle({ error }))
     child.once("close", (code, closeSignal) => {
-      settle(signal?.aborted ? { error: abortError(signal) } : { result: { code, signal: closeSignal, stderr: stderrText() } })
+      settle(signal?.aborted ? { error: abortError(signal) } : inputError ? { error: inputError } : { result: { code, signal: closeSignal, stderr: stderrText() } })
     })
+    child.stdin?.once("error", (error: Error) => { inputError = error; end() })
+    if (options.input !== undefined) child.stdin?.end(options.input)
   }) as PromiseWithChild<GitProcessResult>
   promise.child = child
   return promise
@@ -412,6 +418,8 @@ function gitFailure(result: GitProcessResult): Error {
 }
 
 export type IsolatedGitRun = {
+  // Bounded command input, preserving raw Git path bytes.
+  input?: Buffer | undefined
   // An index file other than the one this isolated directory uses.
   index?: string | undefined
   // The command's own signal, or null to run it with none (a cleanup that
@@ -1058,7 +1066,7 @@ export async function openIsolatedGit(input: {
     let result: GitProcessResult
     try {
       result = await trackRestoreCommand(() => runGitProcess([...inertRepositoryConfig, ...args], {
-        command: git.command, env, cwd: worktree, signal: commandSignal, onStdout, beforeKill,
+        command: git.command, env, cwd: worktree, signal: commandSignal, input: options.input, onStdout, beforeKill,
       }))
     } catch (error) {
       if (killed || commandSignal?.aborted === true) {

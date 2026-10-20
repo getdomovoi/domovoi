@@ -206,7 +206,7 @@ describe("GitWorkspaceService.commit", () => {
     expect(await readFile(join(workspace.path, "new.txt"), "utf8")).toBe("unchanged bytes\n")
   })
 
-  it.each(["clean", "process"])("conservatively re-stages with a global %s driver even without a matching path", async (command) => {
+  it.each(["clean", "process"])("reuses staging with an unused global %s driver", async (command) => {
     const { scratch, repositoryPath, service, workspace } = await sessionWorktree("domovoi-evidence-filter-driver-")
     const home = join(scratch, "home")
     await mkdir(home)
@@ -225,7 +225,47 @@ describe("GitWorkspaceService.commit", () => {
       } }
     })
     expect((await service.evidence(workspace.path)).changesDigest).toBeDefined()
-    expect(stages).toBe(2)
+    expect(stages).toBe(1)
+  })
+
+  it.each([
+    ["", 1], ["-filter", 1], ["filter", 2], ["filter=", 2], ["filter=unknown", 2],
+  ] as const)("uses the changed path's filter attribute %s to choose %s staging passes", async (attribute, expected) => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-filter-attribute-")
+    const path = "new file.txt"
+    if (attribute) await writeFile(join(workspace.path, ".gitattributes"), `"${path}" ${attribute}\n`)
+    await writeFile(join(workspace.path, path), "new\n")
+    const original = await vi.importActual<typeof import("./isolated-checkout.js")>("./isolated-checkout.js")
+    let stages = 0
+    vi.mocked(openIsolatedGit).mockImplementationOnce(async (input) => {
+      const isolated = await original.openIsolatedGit(input)
+      const run = isolated.run.bind(isolated)
+      return { ...isolated, run: async (args, options) => {
+        if (args[0] === "add") stages += 1
+        return run(args, options)
+      } }
+    })
+    expect((await service.evidence(workspace.path)).changesDigest).toBeDefined()
+    expect(stages).toBe(expected)
+  })
+
+  it.each(["failed", "truncated", "wrong path"])("withholds the digest after a %s filter attribute query", async (failure) => {
+    const { service, workspace } = await sessionWorktree("domovoi-evidence-filter-query-")
+    await writeFile(join(workspace.path, "new.txt"), "new\n")
+    const original = await vi.importActual<typeof import("./isolated-checkout.js")>("./isolated-checkout.js")
+    vi.mocked(openIsolatedGit).mockImplementationOnce(async (input) => {
+      const isolated = await original.openIsolatedGit(input)
+      const stream = isolated.stream.bind(isolated)
+      return { ...isolated, stream: async (args, onStdout, options) => {
+        if (args[0] !== "check-attr") return stream(args, onStdout, options)
+        if (failure === "truncated") onStdout(Buffer.from("new.txt\0filter\0"), () => {})
+        if (failure === "wrong path") onStdout(Buffer.from("other.txt\0filter\0unspecified\0"), () => {})
+        return { code: failure === "failed" ? 1 : 0, signal: null, stderr: "" }
+      } }
+    })
+    const evidence = await service.evidence(workspace.path)
+    expect(evidence.files.some((file) => file.path === "new.txt")).toBe(true)
+    expect(evidence.changesDigest).toBeUndefined()
   })
 
   it("does not turn caller cancellation into readable evidence", async () => {
