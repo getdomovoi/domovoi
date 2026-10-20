@@ -85,6 +85,7 @@ export type ClaudeSdkMessage = {
   result?: unknown
   tool_use_result?: unknown
   usage?: unknown
+  modelUsage?: unknown
   total_cost_usd?: unknown
   user_message_uuid?: unknown
   user_message_uuids?: unknown
@@ -198,10 +199,17 @@ type Session = {
   // any steering. A result names the messages it answered.
   turnMessageIds: Set<string>
   // The uuids of turns that were interrupted and whose own result has not come
-  // back yet. Only a result naming one of these is dropped: a result naming a
-  // uuid the SDK made itself (a compaction, a merged queue) ends the turn.
-  interruptedMessageIds: Set<string>
+  // back yet, each with its turn. Only a result naming one of these is
+  // dropped: a result naming a uuid the SDK made itself (a compaction, a
+  // merged queue) ends the turn. A dropped result's usage is that turn's.
+  interruptedMessageIds: Map<string, string>
+  // Turns that were interrupted. Their results can come back as several, by
+  // different paths, or not at all, so no count for one is ever final.
+  interruptedTurnIds: Set<string>
   assistantError?: string
+  // The query's running usage as of its last result; see claudeTurnUsage.
+  // Absent, or a part absent, while unknown.
+  runningUsage?: ClaudeRunningUsage
   // Set once a turn has been sent. Claude has no conversation to resume until
   // then, so a reopen before it must start a fresh one.
   started?: true
@@ -431,12 +439,20 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
     const session = this.#requireSession(threadId)
     if (session.activeTurnId !== turnId) return
-    for (const id of session.turnMessageIds) session.interruptedMessageIds.add(id)
+    for (const id of session.turnMessageIds) session.interruptedMessageIds.set(id, turnId)
+    session.interruptedTurnIds.add(turnId)
     // Bounded: a result that never comes must not hold its uuids forever.
     while (session.interruptedMessageIds.size > maximumInterruptedMessageIds) {
-      const oldest = session.interruptedMessageIds.values().next().value
+      const oldest = session.interruptedMessageIds.keys().next().value
       if (oldest === undefined) break
       session.interruptedMessageIds.delete(oldest)
+    }
+    // A turn a held uuid still names can still receive usage, so it stays.
+    // Those are at most the bound, so the set stays within it.
+    const attributable = new Set(session.interruptedMessageIds.values())
+    for (const id of session.interruptedTurnIds) {
+      if (session.interruptedTurnIds.size <= maximumInterruptedMessageIds) break
+      if (!attributable.has(id)) session.interruptedTurnIds.delete(id)
     }
     await session.query.interrupt()
   }
@@ -661,7 +677,11 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       ...(taskStorage.shared ? { sharedTaskDirectory: taskStorage.directory } : {}),
       screenedReads: new Map(),
       turnMessageIds: new Set(),
-      interruptedMessageIds: new Set(),
+      interruptedMessageIds: new Map(),
+      interruptedTurnIds: new Set(),
+      // A fresh query counts from zero. A resumed one continues from totals
+      // its transcript saved, which Domovoi cannot see until the first result.
+      ...(resume ? {} : { runningUsage: { tokens: { input: 0, read: 0, write: 0, output: 0, thinking: 0 }, cost: 0 } }),
       stderr,
       processes,
       ...(repository && settings ? { repositoryTrustApplied: { digest: repository.digest } } : {}),
@@ -942,22 +962,26 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       // an interrupted turn's messages is that turn's, and ends nothing. Any
       // other result, including one naming a uuid the SDK made itself or none
       // at all, ends the active turn as before.
+      // Every result moves the running totals on, a dropped one too, and a
+      // dropped result's usage is counted against the interrupted turn, so the
+      // next turn is not charged with its requests. An interrupted turn's
+      // count is partial however its results arrive; see #emitTurnUsage.
+      const turnUsage = claudeTurnUsage(message, session.runningUsage)
+      session.runningUsage = turnUsage.running
       const answered = resultMessageIds(message)
       if (answered?.some((id) => session.interruptedMessageIds.has(id))) {
+        const interruptedTurnId = answered.map((id) => session.interruptedMessageIds.get(id)).find((id) => id !== undefined)
         for (const id of answered) session.interruptedMessageIds.delete(id)
-        if (!answered.some((id) => session.turnMessageIds.has(id))) return
+        if (!answered.some((id) => session.turnMessageIds.has(id))) {
+          if (interruptedTurnId) this.#emitTurnUsage(session, interruptedTurnId, turnUsage.payload, turnUsage.partial)
+          return
+        }
       }
       const failed = message.is_error === true || message.subtype !== "success"
+      // Read before the wait: an interrupt meanwhile can trim the set.
+      const partial = turnUsage.partial || session.interruptedTurnIds.has(turnId)
       const context = failed ? {} : await claudeContextOccupancy(session.query)
-      // The reply has already reached the person. A counter that does not add
-      // up is an accounting problem, not a failed turn, so the usage is dropped
-      // and the turn is delivered as what it was.
-      try {
-        const usage = normalizeProviderUsage({ ...message, ...context })
-        if (usage) this.#emit({ type: "usage", threadId: session.threadId, turnId, usage })
-      } catch {
-        // Nothing to report to the person: usage is a readout, not the work.
-      }
+      this.#emitTurnUsage(session, turnId, { ...turnUsage.payload, ...context }, partial)
       const stderr = session.stderr.take()
       const error = failed ? resultError(message, session.assistantError, stderr) : undefined
       delete session.assistantError
@@ -974,6 +998,28 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         },
       })
       delete session.activeTurnId
+    }
+  }
+
+  // The reply has already reached the person. A counter that does not add up
+  // is an accounting problem, not a failed turn, so the usage is dropped and
+  // the turn is delivered as what it was.
+  // A partial count (result.usage, the main loop only) is marked not final, so
+  // the ledger records the turn as partly reported rather than complete. So is
+  // every count for an interrupted turn: its prompt and steering can come back
+  // as separate results, before or after the next turn starts, or one can be
+  // dropped, and the ledger keeps one count per turn.
+  #emitTurnUsage(session: Session, turnId: string, payload: Record<string, unknown>, partial: boolean): void {
+    try {
+      const usage = normalizeProviderUsage(payload)
+      if (usage) {
+        this.#emit({
+          type: "usage", threadId: session.threadId, turnId, usage,
+          ...(partial || session.interruptedTurnIds.has(turnId) ? { source: { kind: "turn" as const, tokens: "reported" as const, final: false } } : {}),
+        })
+      }
+    } catch {
+      // Nothing to report to the person: usage is a readout, not the work.
     }
   }
 
@@ -1334,6 +1380,80 @@ function claudeFailureError(error: unknown, stderr: string): Error {
 function claudeFailureDetail(parts: Array<string | undefined>): string {
   const unique = [...new Set(parts.map((part) => part?.trim()).filter((part): part is string => Boolean(part)))]
   return redactDurableText(unique.join(": ")).value
+}
+
+// The SDK's result carries two running totals for the whole query() call:
+// modelUsage (every model call, the main loop, subagents, compaction) and
+// total_cost_usd. Each result repeats the running total so far, so a turn is
+// the difference from the previous result. That needs a known starting point:
+// zero for a fresh query; for a resumed one, the totals its transcript saved,
+// which the first result already includes, so its first turn cannot be told
+// apart. Without a known start (a resumed query's first result, a result after
+// one that carried no running total, or a total smaller than the last, which
+// means the SDK started counting again), the turn's tokens are result.usage,
+// this turn's main loop only (subagents left out), and its cost is not
+// reported. Each result's own totals become the next starting point.
+type ClaudeRunningTokens = { input: number; read: number; write: number; output: number; thinking: number }
+type ClaudeRunningUsage = { tokens?: ClaudeRunningTokens; cost?: number }
+
+function claudeTurnUsage(
+  message: ClaudeSdkMessage,
+  previous: ClaudeRunningUsage | undefined,
+): { payload: Record<string, unknown>; running: ClaudeRunningUsage; partial: boolean } {
+  const tokens = claudeRunningTokens(message.modelUsage)
+  const cost = typeof message.total_cost_usd === "number" && Number.isFinite(message.total_cost_usd) && message.total_cost_usd >= 0
+    ? message.total_cost_usd
+    : undefined
+  const running: ClaudeRunningUsage = {
+    ...(tokens ? { tokens } : {}),
+    ...(cost !== undefined ? { cost } : {}),
+  }
+  const before = previous?.tokens
+  const turnTokens = tokens && before && claudeTokenKeys.every((key) => tokens[key] >= before[key])
+    ? Object.fromEntries(claudeTokenKeys.map((key) => [key, tokens[key] - before[key]])) as ClaudeRunningTokens
+    : undefined
+  const turnCost = cost !== undefined && previous?.cost !== undefined && cost >= previous.cost
+    ? cost - previous.cost
+    : undefined
+  const payload: Record<string, unknown> = turnTokens
+    ? { usage: {
+      input_tokens: turnTokens.input,
+      cache_read_input_tokens: turnTokens.read,
+      cache_creation_input_tokens: turnTokens.write,
+      output_tokens: turnTokens.output,
+      // Thinking is counted inside output; the normalizer splits it out.
+      reasoning_output_tokens: Math.min(turnTokens.thinking, turnTokens.output),
+    } }
+    : { ...(message.usage !== undefined ? { usage: message.usage } : {}) }
+  if (turnCost !== undefined) payload.total_cost_usd = turnCost
+  return { payload, running, partial: !turnTokens }
+}
+
+const claudeTokenKeys = ["input", "read", "write", "output", "thinking"] as const
+
+function claudeRunningTokens(value: unknown): ClaudeRunningTokens | undefined {
+  const models = asRecord(value)
+  if (!models) return undefined
+  const entries = Object.values(models)
+  if (entries.length === 0) return undefined
+  const total: ClaudeRunningTokens = { input: 0, read: 0, write: 0, output: 0, thinking: 0 }
+  for (const entry of entries) {
+    const model = asRecord(entry)
+    const counts = {
+      input: model?.inputTokens,
+      read: model?.cacheReadInputTokens,
+      write: model?.cacheCreationInputTokens,
+      output: model?.outputTokens,
+      thinking: model?.thinkingTokens ?? 0,
+    }
+    for (const key of claudeTokenKeys) {
+      const count = counts[key]
+      if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) return undefined
+      total[key] += count
+      if (!Number.isSafeInteger(total[key])) return undefined
+    }
+  }
+  return total
 }
 
 async function claudeContextOccupancy(

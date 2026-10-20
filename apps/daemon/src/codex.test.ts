@@ -33,6 +33,7 @@ import { ApprovalRequestNotPendingError, type AgentEvent } from "./agents.js"
 import { credentialStores } from "./credential-stores.js"
 import { namesSecretPath } from "./permission-policy.js"
 import { classifyProviderFailure } from "./provider-failures.js"
+import { UsageLedger } from "./usage.js"
 
 class FakeChild extends EventEmitter {
   readonly stdin = new PassThrough()
@@ -2274,7 +2275,9 @@ describe("CodexAppServerAdapter", () => {
     await adapter.close()
   })
 
-  it("emits current context from Codex token-usage notifications", async () => {
+  // `last` is one model request, not the turn, so a Codex turn's count is
+  // only part of what it used, and the ledger must record it as partial.
+  it("emits current context from Codex token-usage notifications, as a partial turn count", async () => {
     const transport = new FakeTransport()
     const event = vi.fn()
     const adapter = new CodexAppServerAdapter(() => transport)
@@ -2322,7 +2325,77 @@ describe("CodexAppServerAdapter", () => {
         contextWindowTokens: 200_000,
         costSource: "unavailable",
       },
+      source: { kind: "turn", tokens: "reported", final: false },
     })
+    await adapter.close()
+  })
+
+  it("drops counters that do not add up instead of ending the transport", async () => {
+    const transport = new FakeTransport()
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    adapter.onEvent(event)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+    const broken = { totalTokens: 10, inputTokens: 10, cachedInputTokens: 20, outputTokens: 0, reasoningOutputTokens: 0 }
+
+    expect(() => transport.receive({
+      method: "thread/tokenUsage/updated",
+      params: { threadId: "thread-1", turnId: "turn-1", tokenUsage: { total: broken, last: broken, modelContextWindow: 200_000 } },
+    })).not.toThrow()
+    expect(event).not.toHaveBeenCalledWith(expect.objectContaining({ type: "usage" }))
+    expect(event).not.toHaveBeenCalledWith(expect.objectContaining({ type: "provider-disconnected" }))
+    await adapter.close()
+  })
+
+  // Codex's Turn carries no usage today, but a turn/completed that did must
+  // not turn a partial count into a complete one in the ledger.
+  it("keeps a Codex turn partial when turn/completed carries usage", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const ledger = new UsageLedger()
+    const dispatch = { sessionId: "session-1", provider: "codex", threadId: "thread-1", turnId: "turn-1", model: "gpt-5.6-sol" }
+    ledger.begin(dispatch)
+    adapter.onEvent((event) => {
+      if (event.type === "usage") ledger.observe(dispatch, event)
+    })
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+    const counters = { totalTokens: 128_000, inputTokens: 120_000, cachedInputTokens: 90_000, outputTokens: 8_000, reasoningOutputTokens: 5_000 }
+
+    transport.receive({
+      method: "thread/tokenUsage/updated",
+      params: { threadId: "thread-1", turnId: "turn-1", tokenUsage: { total: counters, last: counters, modelContextWindow: 200_000 } },
+    })
+    transport.receive({
+      method: "turn/completed",
+      params: { threadId: "thread-1", turnId: "turn-1", turn: { id: "turn-1", status: "completed", usage: counters } },
+    })
+    ledger.finish(dispatch, "completed")
+
+    expect(ledger.session("session-1")).toMatchObject({ totalTokens: 128_000, coverage: { complete: 0, partial: 1 } })
+    ledger.close()
+    await adapter.close()
+  })
+
+  it("completes the turn when turn/completed carries counters that do not add up", async () => {
+    const transport = new FakeTransport()
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    adapter.onEvent(event)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+    const broken = { totalTokens: 10, inputTokens: 10, cachedInputTokens: 20, outputTokens: 0, reasoningOutputTokens: 0 }
+
+    expect(() => transport.receive({
+      method: "turn/completed",
+      params: { threadId: "thread-1", turnId: "turn-1", turn: { id: "turn-1", status: "completed", usage: broken } },
+    })).not.toThrow()
+    expect(event).not.toHaveBeenCalledWith(expect.objectContaining({ type: "usage" }))
+    expect(event).toHaveBeenCalledWith(expect.objectContaining({ type: "turn-completed" }))
     await adapter.close()
   })
 

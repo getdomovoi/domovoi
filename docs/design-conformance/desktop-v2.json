@@ -2353,7 +2353,7 @@
     {
       "id": "composer.usage-chip",
       "since": "2026-10-02",
-      "note": "Q374 A: the TODAY row is an addition the design does not draw and stays; the cost note is reworded without jargon."
+      "note": "Q374 A: the TODAY row is an addition the design does not draw and stays; the cost note is reworded without jargon. Q133 A (2026-10-18, walk F9): the chip keeps the design's bare number for context and labels the running-total fallback the design does not draw (42.1k session); the rows' notes say what each number counts, which the design's notes do not."
     },
     {
       "id": "composer.paste-converted",

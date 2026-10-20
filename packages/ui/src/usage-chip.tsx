@@ -36,33 +36,108 @@ export type UsageChipRow = {
 // Ruled Q374 A: TODAY stays, and the note says this without jargon.
 export const unreportedCostNote = "Cost not shown: Domovoi cannot yet tell whether these turns ran on a subscription or an API key."
 
-// The chip names the context the next turn runs in, because that is the
-// number that decides whether the work continues. The session's own total is
-// a running tally nothing acts on, and the rows below carry it. A provider
-// that reports no context leaves the chip on that tally rather than blank.
+// Two quantities share the chip, and they are not the same kind of number.
+// The context is what the conversation holds now, at most the window. The
+// session's tokens are a running total of every request, which grows past
+// the window. The chip names the context the next turn runs in, because that
+// is the number that decides whether the work continues. A provider that
+// reports no context leaves the chip on the running total, and the chip then
+// says so, so one number never stands in for the other.
 export function usageChipText(usage: SessionUsage): string {
   if (usage.contextTokens !== undefined && usage.contextWindowTokens !== undefined) {
     return formatTokenCount(usage.contextTokens)
   }
-  return formatTokenCount(usage.totalTokens)
+  return missingTokens(usage) ?? `${formatTokenCount(usage.totalTokens)} session`
 }
 
+// The chip's accessible name says what its number counts in every state.
+export function usageChipLabel(usage: SessionUsage | null | undefined, today: UsageWindow | null | undefined): string {
+  if (sessionHasUsage(usage)) {
+    if (usage.contextTokens !== undefined && usage.contextWindowTokens !== undefined) {
+      return `Usage: ${formatTokenCount(usage.contextTokens)} of ${formatTokenCount(usage.contextWindowTokens)} tokens in context`
+    }
+    const missing = missingTokens(usage)
+    if (missing) return `Usage: tokens ${missing} for this session`
+    return `Usage: ${formatTokenCount(usage.totalTokens)} tokens this session, no context reported`
+  }
+  if (today && today.turns > 0) {
+    const missing = missingTokens(today)
+    return missing ? `Usage: tokens ${missing} today` : `Usage: ${formatTokenCount(today.totalTokens)} tokens today`
+  }
+  return "Usage"
+}
+
+// Turns that reported no tokens (an ACP agent reports only its context) or
+// have not reported yet (a running Claude turn reports when it ends) leave no
+// count, which is not the same as a count of zero.
+function missingTokens(totals: { totalTokens: number; coverage?: UsageWindow["coverage"] | undefined }): "not reported" | "not reported yet" | undefined {
+  const coverage = totals.coverage
+  if (totals.totalTokens !== 0 || !coverage || coverage.complete + coverage.partial + coverage.legacy > 0) return undefined
+  if (coverage.unavailable > 0) return "not reported"
+  return coverage.pending > 0 ? "not reported yet" : undefined
+}
+
+// Every token row counts the same thing: each turn's total, which is input
+// (cached input included) and output (reasoning included) of every model
+// request, summed; the session and today are sums of turns. "in" plus "out"
+// is that total unless the provider reported more than it broke down, and
+// then the row shows the total and says which part was broken down.
 function turnRow(turn: SessionTurn | undefined): UsageChipRow | undefined {
   if (!turn) return undefined
   const model = turn.reportedModels.at(-1) ?? turn.requestedModel
   const tools = turn.recordedToolCount === 1 ? "1 tool result" : `${turn.recordedToolCount} tool results`
+  const { usage } = turn
+  const output = usage.outputTokens + usage.reasoningTokens
+  const unreported = turn.coverage === "unavailable"
+  const running = turn.status === "pending"
+  const aggregate = usage.totalTokens > usage.inputTokens + output
+  const value = unreported ? "not reported"
+    : running && usage.totalTokens === 0 ? "none reported yet"
+      : aggregate ? `${usage.totalTokens.toLocaleString("en-US")} tokens`
+        : `${usage.inputTokens.toLocaleString("en-US")} in · ${output.toLocaleString("en-US")} out`
+  const state = unreported ? "The provider reported no usage for this turn"
+    : running ? "Running, counted so far"
+      : turn.coverage === "partial" ? "Partly reported" : undefined
+  const breakdown = !unreported && aggregate
+    ? `${usage.inputTokens.toLocaleString("en-US")} in and ${output.toLocaleString("en-US")} out were broken down; the provider reported the rest only as a total`
+    : undefined
+  const cached = !unreported && usage.cachedInputTokens > 0
+    ? `${usage.cachedInputTokens.toLocaleString("en-US")} of the input was cached`
+    : undefined
   return {
     label: "This turn",
-    value: `${turn.usage.inputTokens.toLocaleString("en-US")} in · ${turn.usage.outputTokens.toLocaleString("en-US")} out`,
-    note: `${model} · ${tools}`,
+    value,
+    note: [state, breakdown, cached, model, tools].filter((part): part is string => Boolean(part)).join(" · "),
   }
 }
 
+// A partly reported turn counted less than every request it made (a resumed
+// Claude query's first turn leaves its subagents out), an unreported one
+// counted nothing, and a legacy row predates the ledger's evidence and may
+// hold an older count (a Codex turn's last request alone, a Claude turn's main
+// loop alone). A running turn's requests are absent or counted so far. A sum
+// over any of them can only be low, and the row says so.
+function partlyReported(coverage: UsageWindow["coverage"] | undefined): string | undefined {
+  const running = coverage?.pending ?? 0
+  const short = (coverage?.partial ?? 0) + (coverage?.unavailable ?? 0) + (coverage?.legacy ?? 0)
+  const parts = [
+    running === 0 ? undefined : `${running === 1 ? "1 turn is" : `${running} turns are`} still running`,
+    short === 0 ? undefined : `${short === 1 ? "1 turn was" : `${short} turns were`} reported in part or not at all`,
+  ].filter((part): part is string => Boolean(part))
+  if (parts.length === 0) return undefined
+  return `${parts.join(" and ")}, so the count may be low`
+}
+
 function sessionRow(usage: SessionUsage): UsageChipRow {
+  const short = partlyReported(usage.coverage)
   return {
     label: "This session",
-    value: `${formatTokenCount(usage.totalTokens)} tokens`,
-    note: unreportedCostNote,
+    value: missingTokens(usage) ?? `${formatTokenCount(usage.totalTokens)} tokens`,
+    note: [
+      "Input and output of every model request, cached input included: the same count as This turn and Today.",
+      short ? `${short}.` : undefined,
+      unreportedCostNote,
+    ].filter((part): part is string => Boolean(part)).join(" "),
   }
 }
 
@@ -71,19 +146,24 @@ function contextRow(usage: SessionUsage): UsageChipRow | undefined {
   return {
     label: "Context",
     value: `${formatTokenCount(usage.contextTokens)} of ${formatTokenCount(usage.contextWindowTokens)}`,
-    note: "The provider compacts near the window's edge, or restart the provider thread for a fresh one.",
+    note: "What the conversation holds at the provider's last report, not a running total. The provider compacts near the window's edge, or restart the provider thread for a fresh one.",
     share: Math.min(100, Math.round((usage.contextTokens / usage.contextWindowTokens) * 100)),
   }
 }
 
+// Today counts the turns that started on this machine today: the ledger
+// stamps a turn when it begins here, and a turn that arrived with a
+// transferred session started elsewhere and carries no stamp. A session that
+// began yesterday, or moved here, can hold more than today does.
 function todayRow(today: UsageWindow | null | undefined): UsageChipRow | undefined {
   if (!today || today.turns <= 0) return undefined
   const turns = today.turns === 1 ? "1 turn" : `${today.turns} turns`
   const sessions = today.sessions === 1 ? "1 session" : `${today.sessions} sessions`
   return {
     label: "Today",
-    value: `${formatTokenCount(today.totalTokens)} tokens`,
-    note: [`${turns} in ${sessions}`, "Domovoi's count, not the provider's limit", unreportedCostNote].join(" · "),
+    value: missingTokens(today) ?? `${formatTokenCount(today.totalTokens)} tokens`,
+    note: [`${turns} started on this machine today, in ${sessions}`, partlyReported(today.coverage), "Domovoi's count, not the provider's limit", unreportedCostNote]
+      .filter((part): part is string => Boolean(part)).join(" · "),
   }
 }
 
@@ -209,6 +289,27 @@ export async function latestTurnFromHistory(
   return undefined
 }
 
+// What the popover draws: the latest turn and the totals read after it. The
+// chip's own totals are read when a turn starts and ends, while the turn is
+// read when the popover opens; side by side, a running turn could outgrow the
+// session total read at its start (walk F9). The daemon's counters only grow,
+// so totals read after the turn are never below it.
+export type UsageReading = {
+  turn: SessionTurn | undefined
+  usage: SessionUsage
+  today: UsageWindow | null
+}
+
+export async function readUsage(load: {
+  turn: () => Promise<SessionTurn | undefined>
+  session: () => Promise<SessionUsage>
+  today: () => Promise<UsageWindow>
+}): Promise<UsageReading> {
+  const turn = await load.turn()
+  const [usage, today] = await Promise.all([load.session(), load.today().catch(() => null)])
+  return { turn, usage, today }
+}
+
 // A session with no recorded turns has nothing to say for itself, but the day
 // may: a fresh session on a busy day still shows today's count. The session
 // rows are left out rather than drawn as zeros.
@@ -218,7 +319,10 @@ export function sessionHasUsage(usage: SessionUsage | null | undefined): usage i
 
 export function usageChipTriggerText(usage: SessionUsage | null | undefined, today: UsageWindow | null | undefined): string | undefined {
   if (sessionHasUsage(usage)) return usageChipText(usage)
-  if (today && today.turns > 0) return `${formatTokenCount(today.totalTokens)} today`
+  if (today && today.turns > 0) {
+    const missing = missingTokens(today)
+    return missing ? `${missing} today` : `${formatTokenCount(today.totalTokens)} today`
+  }
   return undefined
 }
 
@@ -235,38 +339,61 @@ export function usageChipRows(input: {
 export function UsageChip({
   usage,
   today,
-  loadLatestTurn,
+  loadUsageReading,
 }: {
   usage: SessionUsage | null
   today: UsageWindow | null | undefined
   // The latest turn record lives in session history, not on the snapshot, so
-  // the chip asks for it when it opens rather than keeping every turn. Each
-  // open gets its own signal; closing or reopening aborts the read in flight,
-  // and a read that is no longer current cannot overwrite a newer one.
-  loadLatestTurn?: ((signal: AbortSignal) => Promise<SessionTurn | undefined>) | undefined
+  // the chip asks for it, with totals read after it (readUsage), when it opens
+  // rather than keeping every turn. Each open gets its own signal; closing or
+  // reopening aborts the read in flight, and a read that is no longer current
+  // cannot overwrite a newer one. Until a reading arrives, or when it fails,
+  // the popover draws the chip's own totals and no turn.
+  loadUsageReading?: ((signal: AbortSignal) => Promise<UsageReading>) | undefined
 }) {
-  const [turn, setTurn] = useState<SessionTurn>()
+  const [reading, setReading] = useState<UsageReading>()
   const readRef = useRef<AbortController | null>(null)
   useEffect(() => () => readRef.current?.abort(), [])
-  const text = usageChipTriggerText(usage, today)
-  const ring = usageChipRing(usage)
-  if (!text) return null
-  const rows = usageChipRows({ usage, turn, today })
+  // A chip that hides unmounts its menu without a close, so it drops its
+  // reading and any read in flight here; the chip that returns starts from
+  // its own totals.
+  const visible = usageChipTriggerText(usage, today) !== undefined
+  useEffect(() => {
+    if (visible) return
+    readRef.current?.abort()
+    readRef.current = null
+    setReading(undefined)
+  }, [visible])
+  if (!visible) return null
+  // While open, the chip's number, its accessible name, the ring, the note and
+  // the rows all describe one reading: the one taken on open, or the chip's
+  // own until it arrives. Closing drops the reading, and the chip goes back to
+  // its own.
+  const shownUsage = reading ? reading.usage : usage
+  const shownToday = reading ? reading.today : today
+  const readingText = usageChipTriggerText(shownUsage, shownToday)
+  const text = readingText ?? usageChipTriggerText(usage, today)
+  const label = readingText ? usageChipLabel(shownUsage, shownToday) : usageChipLabel(usage, today)
+  const ring = usageChipRing(shownUsage)
+  const rows = reading
+    ? usageChipRows({ usage: reading.usage, turn: reading.turn, today: reading.today })
+    : usageChipRows({ usage, turn: undefined, today })
   return (
     <DropdownMenu onOpenChange={(open) => {
       readRef.current?.abort()
       readRef.current = null
-      if (!open || !loadLatestTurn || !sessionHasUsage(usage)) return
+      setReading(undefined)
+      if (!open || !loadUsageReading || !sessionHasUsage(usage)) return
       const read = new AbortController()
       readRef.current = read
       const current = () => readRef.current === read && !read.signal.aborted
-      loadLatestTurn(read.signal).then(
-        (latest) => { if (current()) setTurn(latest) },
-        () => { if (current()) setTurn(undefined) },
+      loadUsageReading(read.signal).then(
+        (next) => { if (current()) setReading(next) },
+        () => { if (current()) setReading(undefined) },
       )
     }}>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" aria-label="Usage" className="h-7 rounded-full px-2.5 font-machine text-mono-xs text-strong">
+        <Button variant="ghost" size="sm" aria-label={label} className="h-7 rounded-full px-2.5 font-machine text-mono-xs text-strong">
           <ChartLineIcon data-icon="inline-start" className="text-muted-foreground" />
           {text}
           {ring ? (
@@ -290,7 +417,7 @@ export function UsageChip({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" side="top" className="w-[320px] p-0">
         <DropdownMenuLabel className="border-b px-3 py-2 text-eyebrow font-medium tracking-[.13em] text-faint">USAGE</DropdownMenuLabel>
-        <p data-testid="usage-connection-note" className="m-0 border-b px-3 py-2 text-[11px] leading-[1.5] text-muted-foreground">{usageConnectionNote(usage)}</p>
+        <p data-testid="usage-connection-note" className="m-0 border-b px-3 py-2 text-[11px] leading-[1.5] text-muted-foreground">{usageConnectionNote(shownUsage)}</p>
         <div data-testid="usage-rows">
           {rows.map((row, index) => (
             <div key={row.label} data-testid="usage-row" className={index ? "border-t px-3 py-2.5" : "px-3 py-2.5"}>

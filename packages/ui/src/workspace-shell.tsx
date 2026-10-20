@@ -19,7 +19,6 @@ import type {
   SkillSummary,
   SkillInventorySource,
   SessionUsage,
-  SessionTurn,
   SystemEmergencyStopResult,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -59,7 +58,7 @@ import { prepareFleetEndpoint, withinFleetDeadline, type FleetEndpoint } from ".
 import { Deadline } from "./deadline"
 import { advancePendingElsewhere, freshRefusal, paletteSearchTargets, type PendingElsewhere } from "./palette-search-targets"
 import { collectFleetInventories } from "./fleet-inventories"
-import { sessionUsageFetchKey, usageWindowFetchKey } from "./session-usage"
+import { sessionUsageFetchKey, usageTodayWindow, usageWindowFetchKey } from "./session-usage"
 import type { ProviderSecretStatus } from "./provider-settings"
 import type { LocalDaemonDescription } from "./settings-shell"
 import type { SkillsSurfaceTab } from "./skills-surface"
@@ -70,7 +69,7 @@ import { DialogLoading, lazyDialog, lazySurface, prefetchWhenIdle, SurfaceCodeRe
 import { ThreadSkeleton } from "./loading-skeleton"
 import { MachineSheet } from "./machine-sheet"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointRestoreBlocked } from "./checkpoint-actions.js"
-import { latestTurnFromHistory } from "./usage-chip.js"
+import { latestTurnFromHistory, readUsage, type UsageReading } from "./usage-chip.js"
 import {
   awaitingRelease,
   carriesImages,
@@ -1443,10 +1442,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const usageSessionId = snapshot?.activeSessionId ?? null
   const usageFetchKey = sessionUsageFetchKey(snapshot)
   const usageToday = useUsageToday(connected, usageWindowFetchKey(snapshot), usageWindow)
-  const loadLatestTurn = useCallback(async (signal: AbortSignal): Promise<SessionTurn | undefined> => {
+  const loadUsageReading = useCallback(async (signal: AbortSignal): Promise<UsageReading> => {
     const sessionId = snapshot?.activeSessionId
-    return sessionId ? latestTurnFromHistory(loadSessionHistory, sessionId, signal) : undefined
-  }, [loadSessionHistory, snapshot?.activeSessionId])
+    if (!sessionId) throw new Error("No session is active")
+    return readUsage({
+      turn: () => latestTurnFromHistory(loadSessionHistory, sessionId, signal),
+      session: () => sessionUsage(sessionId),
+      today: () => usageWindow(usageTodayWindow(new Date())),
+    })
+  }, [loadSessionHistory, sessionUsage, snapshot?.activeSessionId, usageWindow])
   // Restore ownership sits here, above both surfaces. The thread guards its own
   // pending operations and the dock cannot see that state, so a restore started
   // from either one has to hold the other shut until it answers.
@@ -2174,7 +2178,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                     />
                   </div>
                 </main>
-              ) : sessionReadFailure ? <FailedSessionRead failure={sessionReadFailure} title={snapshot.sessions.find((session) => session.id === sessionReadFailure.sessionId)?.title ?? sessionReadFailure.sessionId} connected={connected} onRetry={() => activateVisibleSession(sessionReadFailure.sessionId)} onOpenMachine={() => setSurface("fleet")} /> : <Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} connectionId={connectionId} surface={windowBridge ? "desktop" : "web"} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={(input) => startSession({ kind: "fork", input })} onListModels={listModelsSeen}onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onPairMachine={threadPairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} machineMenuRequest={machineMenuRequest} onDiscoverRuntime={discoverRuntimeSeen} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSheet={() => openDockTab("changes")} onOpenDockTab={openSheetTab} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onUnpickBuildBasis={() => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, undefined) })) }} />}</ResizablePanel>
+              ) : sessionReadFailure ? <FailedSessionRead failure={sessionReadFailure} title={snapshot.sessions.find((session) => session.id === sessionReadFailure.sessionId)?.title ?? sessionReadFailure.sessionId} connected={connected} onRetry={() => activateVisibleSession(sessionReadFailure.sessionId)} onOpenMachine={() => setSurface("fleet")} /> : <Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} connectionId={connectionId} surface={windowBridge ? "desktop" : "web"} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={(input) => startSession({ kind: "fork", input })} onListModels={listModelsSeen}onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onPairMachine={threadPairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} usage={activeSessionUsage} usageToday={usageToday} loadUsageReading={loadUsageReading}machineMenuRequest={machineMenuRequest} onDiscoverRuntime={discoverRuntimeSeen} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSheet={() => openDockTab("changes")} onOpenDockTab={openSheetTab} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onUnpickBuildBasis={() => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, undefined) })) }} />}</ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces(<Button ref={dockUnpinButtonRef} variant="ghost" size="icon-sm" className="size-7 flex-none rounded-full bg-accent text-primary" aria-pressed aria-label="Unpin" onClick={() => setDockPinned(false)}><PinIcon className="size-[15px]" /></Button>, true)}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (

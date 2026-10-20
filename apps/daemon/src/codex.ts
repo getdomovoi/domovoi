@@ -1004,21 +1004,46 @@ export class CodexAppServerAdapter implements AgentAdapter {
       const last = asRecord(tokenUsage?.last)
       // Codex defines last.totalTokens as current context. tokenUsage.total is
       // cumulative session usage and must never drive context occupancy.
-      const usage = last ? normalizeProviderUsage({
-        usage: last,
-        contextTokens: last.totalTokens,
-        contextWindowTokens: tokenUsage?.modelContextWindow,
-      }) : undefined
+      // `last` is one model request, not the whole turn, so the turn's count
+      // is marked not final and the ledger records it as partly reported:
+      // any total that includes it says it may be low. Counting a Codex turn
+      // in full waits on its own design (task 127).
+      // Counters that do not add up are an accounting problem: the update is
+      // dropped rather than thrown into the transport, which would end it.
+      let usage: ReturnType<typeof normalizeProviderUsage>
+      try {
+        usage = last ? normalizeProviderUsage({
+          usage: last,
+          contextTokens: last.totalTokens,
+          contextWindowTokens: tokenUsage?.modelContextWindow,
+        }) : undefined
+      } catch {
+        usage = undefined
+      }
       if (usage && typeof params.threadId === "string" && typeof params.turnId === "string") {
-        this.#emit({ type: "usage", threadId: params.threadId, turnId: params.turnId, usage })
+        this.#emit({
+          type: "usage", threadId: params.threadId, turnId: params.turnId, usage,
+          source: { kind: "turn", tokens: "reported", final: false },
+        })
       }
     } else if (message.method === "turn/completed") {
       for (const [itemId, call] of this.#toolServerCalls) {
         if (call.threadId === params.threadId) this.#toolServerCalls.delete(itemId)
       }
-      const usage = normalizeProviderUsage(params.turn ?? params)
+      // Codex's Turn carries no usage today. One that did would be read the
+      // same way as a token-usage update: partial, and dropped rather than
+      // thrown when its counters do not add up.
+      let usage: ReturnType<typeof normalizeProviderUsage>
+      try {
+        usage = normalizeProviderUsage(params.turn ?? params)
+      } catch {
+        usage = undefined
+      }
       if (usage && typeof params.threadId === "string" && typeof params.turnId === "string") {
-        this.#emit({ type: "usage", threadId: params.threadId, turnId: params.turnId, usage })
+        this.#emit({
+          type: "usage", threadId: params.threadId, turnId: params.turnId, usage,
+          source: { kind: "turn", tokens: "reported", final: false },
+        })
       }
       this.#emit({ type: "turn-completed", params })
     } else if (codexReviewerNotifications.has(message.method ?? "")) {
