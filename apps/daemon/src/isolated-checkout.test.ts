@@ -8,9 +8,41 @@ import { publishFileDurably } from "@getdomovoi/credential-store"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
-  cachedGitVersions, checkOutIsolated, gitTeardownTimeoutMs, IndexChangedError, openIsolatedGit, publishUnderIndexLock, runGitProcess,
+  cachedGitVersions, checkOutIsolated, gitTeardownTimeoutMs, heldBackRepositoryKeys, IndexChangedError, openIsolatedGit, publishUnderIndexLock, runGitProcess,
   windowsGitStop,
 } from "./isolated-checkout.js"
+
+// What the isolated directory holds back from the repository's own config,
+// derived from the two whole configs (ruling Q140).
+describe("heldBackRepositoryKeys", () => {
+  it("lets through a repository value the directory reads as the worktree does, even one that overrides a global value", () => {
+    expect(heldBackRepositoryKeys([
+      { scope: "global", key: "core.autocrlf", value: "input" },
+      { scope: "local", key: "core.autocrlf", value: "false" },
+    ], [{ key: "core.autocrlf", value: "input" }, { key: "core.autocrlf", value: "false" }])).toEqual([])
+  })
+
+  it("holds back a repository key the directory does not read, blanks, or reads with another effective value", () => {
+    expect(heldBackRepositoryKeys([
+      { scope: "local", key: "filter.crypt.clean", value: "crypt clean" },
+      { scope: "worktree", key: "lfs.extension.x.clean", value: "x clean" },
+      { scope: "local", key: "core.eol", value: "crlf" },
+      { scope: "local", key: "remote.origin.fetch", value: "a" },
+      { scope: "local", key: "remote.origin.fetch", value: "b" },
+    ], [
+      { key: "filter.crypt.clean", value: "" },
+      { key: "core.eol", value: "lf" },
+      { key: "remote.origin.fetch", value: "b" },
+    ]).sort()).toEqual(["core.eol", "filter.crypt.clean", "lfs.extension.x.clean", "remote.origin.fetch"])
+  })
+
+  it("leaves global, system and command-line settings to the snapshot", () => {
+    expect(heldBackRepositoryKeys([
+      { scope: "global", key: "commit.gpgsign", value: "true" },
+      { scope: "command", key: "core.hookspath", value: "/dev/null" },
+    ], [])).toEqual([])
+  })
+})
 import { repositoryFilterGate } from "./repository-git-filter-gate.js"
 import { classify, readGitFilterSettings } from "./repository-git-filters.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
@@ -436,6 +468,25 @@ describe("openIsolatedGit filter configuration", () => {
       await isolated.dispose()
     }
   }
+
+  it("passes NUL-delimited raw paths through stdin to check-attr", async () => {
+    const { worktree, restore } = await sessionWorktree(() => "")
+    await writeFile(join(worktree, ".gitattributes"), "* filter=fixture\n")
+    const rawName = process.platform === "win32" ? Buffer.from("café.txt") : Buffer.from([0xff, 0x2e, 0x74, 0x78, 0x74])
+    const input = Buffer.concat([Buffer.from("space name.txt\0"), rawName, Buffer.from("\0")])
+    const isolated = await openIsolatedGit({ worktree, worktreeIndex: true })
+    try {
+      const chunks: Buffer[] = []
+      const result = await isolated.stream(["check-attr", "-z", "--stdin", "filter"], (chunk) => { chunks.push(chunk) }, { input })
+      expect(result.code).toBe(0)
+      expect(Buffer.concat(chunks)).toEqual(Buffer.concat([
+        Buffer.from("space name.txt\0filter\0fixture\0"), rawName, Buffer.from("\0filter\0fixture\0"),
+      ]))
+    } finally {
+      await isolated.dispose()
+      restore()
+    }
+  })
 
   it("keeps a command a global branch-conditional include empties for the source branch", async () => {
     const { worktree, restore } = await sessionWorktree((scratch) => {

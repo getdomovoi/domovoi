@@ -433,10 +433,15 @@ export function useWorkspace(
     updateSnapshotFrom(client, await client.openProject(path, confirmation))
   }, [updateSnapshotFrom])
 
-  const createSession = useCallback(async (title: string, runtime: Runtime) => {
+  // Gives the new session's id: session.create makes the session it created
+  // the active one in the snapshot it answers with. An answer on a connection
+  // this hook has since left gives none, as its snapshot is not applied.
+  const createSession = useCallback(async (title: string, runtime: Runtime): Promise<string | null> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshotFrom(client, await client.createSession(title, runtime))
+    const next = await client.createSession(title, runtime)
+    updateSnapshotFrom(client, next)
+    return isCurrentConnection(clientRef.current, client) ? next.activeSessionId : null
   }, [updateSnapshotFrom])
 
   const forkSession = useCallback(async (
@@ -491,6 +496,12 @@ export function useWorkspace(
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
     updateSnapshotFrom(client, await client.revertSessionFile(sessionId, path, expectedBaseCommit))
+  }, [updateSnapshotFrom])
+
+  const commitSession = useCallback(async (sessionId: string, message: string, expectedHead: string, expectedChangesDigest: string) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    updateSnapshotFrom(client, await client.commitSession(sessionId, message, expectedHead, expectedChangesDigest))
   }, [updateSnapshotFrom])
 
   const editPlan = useCallback(async (
@@ -1071,6 +1082,7 @@ export function useWorkspace(
     reconnecting,
     restoreCheckpoint,
     revertSessionFile,
+    commitSession,
     editPlan,
     discardPlanEdit,
     restartProviderThread,

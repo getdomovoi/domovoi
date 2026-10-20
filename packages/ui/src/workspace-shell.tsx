@@ -75,6 +75,7 @@ import {
   carriesImages,
   failedAttempt,
   heldAfter,
+  heldAfterStop,
   holdAllAfterStop,
   imageRelease,
   noteImageRefusals,
@@ -501,6 +502,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     reconnect,
     restoreCheckpoint: restoreWorkspaceCheckpoint,
     revertSessionFile: revertWorkspaceFile,
+    commitSession: commitWorkspaceSession,
     editPlan,
     discardPlanEdit,
     restartProviderThread: restartWorkspaceProvider,
@@ -549,6 +551,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const createCheckpoint = refusedInHandheldTab(createWorkspaceCheckpoint, "Taking a checkpoint", "take a checkpoint")
   const restoreCheckpoint = refusedInHandheldTab(restoreWorkspaceCheckpoint, "Restoring a checkpoint", "restore a checkpoint")
   const revertSessionFile = refusedInHandheldTab(revertWorkspaceFile, "Reverting a file", "revert a file")
+  const commitSession = refusedInHandheldTab(commitWorkspaceSession, "Committing", "commit")
   const revokeApprovalRule = refusedInHandheldTab(revokeWorkspaceRule, "Revoking a rule", "revoke a rule")
   const archiveSession = refusedInHandheldTab(archiveWorkspaceSession, "Archiving a session", "archive a session")
   const exportAudit = refusedInHandheldTab(exportWorkspaceAudit, "Exporting the audit log", "export the audit log")
@@ -776,6 +779,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     scope: StartScope
   } | null>(null)
   const startRefusals = useRef(0)
+  // Advances on every stop this shell holds the queues for: Pause everything,
+  // and an emergency stop from any client. A start compares it across its
+  // create, so a goal the stop overtook is queued held.
+  const stopsSeen = useRef(0)
   // Advances on every scope change and never goes back. The effect that
   // advances it also retires the card, so a result that lands before it runs
   // is cleared with the card.
@@ -810,8 +817,24 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       focusFrom: { trigger: focusOutsideDialogs.current, within: focusedElement() },
     }
     try {
-      if (attempt.kind === "create") await createSession(attempt.title, attempt.runtime)
-      else await forkSession(attempt.input)
+      if (attempt.kind === "create") {
+        const stopsBefore = stopsSeen.current
+        const sessionId = await createSession(attempt.title, attempt.runtime)
+        // Walk F14, ruling Q135: the design's launcher asks what the agent
+        // should work on and starts the session on it, so the goal is also
+        // the first message. It waits in the session's queue, which sends it
+        // under the session's mode at the first turn boundary and records a
+        // send that fails in the thread. A stop holds only the queues that
+        // exist when it lands, so a goal whose create a stop overtook is
+        // queued held, never waiting. createSession gives no id for a
+        // connection that is no longer this shell's.
+        if (sessionId) {
+          const goal: QueuedMessage = { sessionId, text: attempt.title, state: "waiting" }
+          // heldAfterStop gives a message back for any message it is given.
+          const queued = stopsSeen.current === stopsBefore ? goal : heldAfterStop(goal)!
+          setQueues((current) => setQueue(current, sessionId, queued))
+        }
+      } else await forkSession(attempt.input)
       if (startGeneration.current === scope.generation) setStartRefusal(null)
     } catch (cause) {
       const refusal = gitFilterRefusalFrom(cause)
@@ -1062,6 +1085,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // The hold is local and makes the screen look paused, so a pause the daemon
   // refused or never answered is said out loud: its turns are still running.
   const pauseActiveTurns = () => {
+    stopsSeen.current += 1
     setQueues(holdAllAfterStop)
     setWorkspaceError("")
     void pauseAll().catch((cause: unknown) => {
@@ -1090,11 +1114,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // waiting, and send the work the stop just ended. Setting state during
   // render makes React re-run this component before any effect fires.
   if (emergencyStopOutcome && emergencyStopOutcome !== seenStop) {
+    stopsSeen.current += 1
     setSeenStop(emergencyStopOutcome)
     setQueues(holdAllAfterStop)
   }
   useEffect(() => {
     if (!emergencyStopPending) return
+    stopsSeen.current += 1
     setQueues(holdAllAfterStop)
   }, [emergencyStopPending])
 
@@ -1496,7 +1522,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     }
     return sendMessage(session.id, "Looks right, carry on")
   }
-  const machineSurfaces = (pinControl?: ReactNode, pinned?: boolean) => snapshot ? <ArtifactDock pinControl={pinControl} pinned={pinned ?? false} snapshot={snapshot} daemonTimeOffsetMs={(attached ? remote : home).fleetDaemonTimeOffsetMs} clientAccess={workspaceAccess} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onBuildBasisChange={(artifactId) => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, artifactId) })) }} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} onTakeCheckpoint={createCheckpoint} onOpenInEditor={!watching && windowBridge && activeWorkspacePath && !attached ? openActiveWorkspaceInEditor : undefined} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onCarryOnPlan={carryOnPlan} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
+  const machineSurfaces = (pinControl?: ReactNode, pinned?: boolean) => snapshot ? <ArtifactDock pinControl={pinControl} pinned={pinned ?? false} snapshot={snapshot} daemonTimeOffsetMs={(attached ? remote : home).fleetDaemonTimeOffsetMs} clientAccess={workspaceAccess} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onBuildBasisChange={(artifactId) => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, artifactId) })) }} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} onTakeCheckpoint={createCheckpoint} onOpenInEditor={!watching && windowBridge && activeWorkspacePath && !attached ? openActiveWorkspaceInEditor : undefined} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onCommitSession={commitSession} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onCarryOnPlan={carryOnPlan} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   // A session read that ended without an answer: the thread column draws it
   // in place of the thread (failed-read-state.tsx). The alert says it too, as
   // it does every failed open, so no path can leave the failure unsaid.

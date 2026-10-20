@@ -249,15 +249,38 @@ export const CheckpointThreadItem = memo(function CheckpointThreadItem({
   return (
     <div className="flex min-w-0 max-w-full flex-col items-center gap-1 self-center">
       <div className="flex max-w-full items-center gap-1 rounded-full border bg-card py-1 pr-1 pl-3 font-machine text-mono-xs text-faint">
-        <span className="min-w-0 wrap-anywhere">Checkpoint · {item.label}</span>
+        <span className="min-w-0 wrap-anywhere">{item.committed ? "Commit" : "Checkpoint"} · {item.label}</span>
         {item.commit && !handheld ? (
           <CheckpointRestore checkpointId={item.id} label={item.label} disabled={disabled} onRestore={onRestore} />
         ) : null}
       </div>
       <CheckpointCaptureLine entry={item} />
+      {item.committed && item.commit ? <CommitRecordLines record={item.committed} commit={item.commit} /> : null}
     </div>
   )
 })
+
+// What a person's commit put on the session branch (walk finding F10): the
+// count, the branch, the files the record lists and the message's body (its
+// subject is in the label). Nothing is pushed, and the line says so.
+function CommitRecordLines({ record, commit }: { record: NonNullable<Extract<ThreadItem, { kind: "checkpoint" }>["committed"]>; commit: string }) {
+  const body = record.message.split("\n").slice(1).join("\n").trim()
+  const more = record.pathCount - record.paths.length
+  return (
+    <div className="flex max-w-full flex-col items-center gap-1 text-[11px] leading-normal text-muted-foreground">
+      <p className="m-0 wrap-anywhere">
+        Committed {record.pathCount} {record.pathCount === 1 ? "file" : "files"} on <span className="font-machine">{record.branch}</span>. Nothing was pushed.
+      </p>
+      {record.paths.length > 0 ? (
+        <ul aria-label={`Files in commit ${commit.slice(0, 8)}`} className="m-0 flex max-w-full list-none flex-wrap justify-center gap-x-2 p-0 font-machine text-mono-xs text-faint">
+          {record.paths.map((path) => <li key={path} className="wrap-anywhere">{path}</li>)}
+        </ul>
+      ) : null}
+      {more > 0 ? <p className="m-0 font-machine text-mono-xs text-faint">and {more} more</p> : null}
+      {body ? <p className="m-0 max-w-full whitespace-pre-wrap wrap-anywhere">{body}</p> : null}
+    </div>
+  )
+}
 
 // I69, 2026-09-23: the confirmation says exactly what archive does. The
 // daemon takes a final checkpoint, stops the agent and its terminals and

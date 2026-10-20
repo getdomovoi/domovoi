@@ -49,6 +49,7 @@ const reasonCopy: Record<NonNullable<CheckpointEntry["reason"]>, string> = {
   "before-provider-recovery": "before provider recovery",
   "before-archive": "before archiving",
   "before-approved-command": "before an approved command",
+  commit: "your commit",
 }
 
 // The id of the newest checkpoint item the snapshot holds for a session. The

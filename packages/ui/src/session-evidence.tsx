@@ -4,6 +4,7 @@ import {
   CircleStopIcon,
   ExternalLinkIcon,
   FileDiffIcon,
+  GitCommitHorizontalIcon,
   RefreshCwIcon,
   Undo2Icon,
   XCircleIcon,
@@ -17,6 +18,7 @@ import type { ChangedFileEvidence, FileEvidenceAssociation, SessionEvidence } fr
 
 import { coverageLabel, revertPrompt, type RevertPrompt } from "./file-evidence-copy"
 import { offInHandheldTab, useHandheldTabMachine } from "./handheld-tab"
+import { SessionCommitCard, type SessionCommitControls } from "./session-commit"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Badge } from "./components/ui/badge"
@@ -393,6 +395,8 @@ export function SessionEvidenceContent({
   onRevertFile,
   revertLocked,
   onOpenInEditor,
+  commit,
+  commitLocked,
 }: {
   connected: boolean
   evidence?: SessionEvidence
@@ -404,6 +408,10 @@ export function SessionEvidenceContent({
   revertLocked?: string | undefined
   // The desktop opens the worktree in the person's editor; a browser has none.
   onOpenInEditor?: (() => void) | undefined
+  // Committing the session's work (walk finding F10). Absent draws no commit.
+  commit?: SessionCommitControls | undefined
+  // Why this client draws no commit, said in the files' foot.
+  commitLocked?: string | undefined
 }) {
   const associations = useMemo(
     () => new Map((evidence?.fileAssociations ?? []).map((association) => [association.path, association])),
@@ -417,6 +425,9 @@ export function SessionEvidenceContent({
   // What the last finished revert did. The file usually leaves the list once
   // the refresh lands, so the row cannot carry the note the design draws.
   const [revertDone, setRevertDone] = useState("")
+  const [commitOpen, setCommitOpen] = useState(false)
+  // What the last commit did; the card closes and the files leave the list.
+  const [commitDone, setCommitDone] = useState("")
   const counts = changedFileCounts(evidence?.workspace.files ?? [])
   const [openFiles, setOpenFiles] = useState<ReadonlySet<string>>(new Set())
   const fileDiffs = useMemo(
@@ -486,6 +497,23 @@ export function SessionEvidenceContent({
           ) : null}
           {evidence ? (
             <>
+              {commitDone ? (
+                <p role="status" className="m-0 rounded-lg border bg-card px-3 py-2 text-[11px] leading-normal text-muted-foreground">{commitDone}</p>
+              ) : null}
+              {commit && commitOpen && evidence.workspace.files.length > 0 ? (
+                <SessionCommitCard
+                  controls={commit}
+                  files={evidence.workspace.files}
+                  totalFiles={evidence.workspace.totalChangedFiles}
+                  baseCommit={evidence.workspace.baseCommit}
+                  changesDigest={evidence.workspace.changesDigest}
+                  onCancel={() => setCommitOpen(false)}
+                  onCommitted={() => {
+                    setCommitOpen(false)
+                    setCommitDone(`Committed on ${commit.machine}. Nothing has left the machine.`)
+                  }}
+                />
+              ) : null}
               <section className="overflow-hidden rounded-lg border bg-card" aria-labelledby="evidence-per-file">
                 <div className="flex items-center justify-between px-3 py-2">
                   <div>
@@ -562,12 +590,28 @@ export function SessionEvidenceContent({
                     Only the first {evidence.workspace.files.length} changed files are shown.
                   </p>
                 ) : null}
-                {onOpenInEditor ? (
-                  <div className="flex items-center border-t px-3 py-2">
-                    <Button variant="outline" size="xs" onClick={onOpenInEditor}>
-                      <ExternalLinkIcon />
-                      Open in editor
-                    </Button>
+                {commitLocked !== undefined && evidence.workspace.files.length ? (
+                  <p className="m-0 border-t px-3 py-2 text-[11px] leading-normal text-muted-foreground">{commitLocked}</p>
+                ) : null}
+                {onOpenInEditor || (commit && evidence.workspace.files.length) ? (
+                  <div className="flex flex-wrap items-center gap-2 border-t px-3 py-2">
+                    {commit && evidence.workspace.files.length ? (
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        disabled={!connected || commitOpen}
+                        onClick={() => { setCommitDone(""); setCommitOpen(true) }}
+                      >
+                        <GitCommitHorizontalIcon />
+                        Commit without a pull request
+                      </Button>
+                    ) : null}
+                    {onOpenInEditor ? (
+                      <Button variant="outline" size="xs" onClick={onOpenInEditor}>
+                        <ExternalLinkIcon />
+                        Open in editor
+                      </Button>
+                    ) : null}
                   </div>
                 ) : null}
               </section>
@@ -688,6 +732,8 @@ export function SessionEvidencePanel({
   onLoad,
   onRevertFile,
   onOpenInEditor,
+  onCommit,
+  commitFacts,
 }: {
   connected: boolean
   readOnly?: boolean
@@ -695,6 +741,8 @@ export function SessionEvidencePanel({
   onLoad: (sessionId: string) => Promise<SessionEvidence>
   onRevertFile?: (sessionId: string, path: string, expectedBaseCommit?: string) => Promise<void>
   onOpenInEditor?: (() => void) | undefined
+  onCommit?: ((sessionId: string, message: string, expectedHead: string, expectedChangesDigest: string) => Promise<void>) | undefined
+  commitFacts?: Omit<SessionCommitControls, "onCommit"> | undefined
 }) {
   const generation = useRef(0)
   const handheldMachine = useHandheldTabMachine()
@@ -780,6 +828,22 @@ export function SessionEvidencePanel({
             // commit that has since moved.
             await onRevertFile(sessionId, path, expectedBaseCommit)
             refresh()
+          },
+        }
+        : {})}
+      // session.commit is not on phoneAndTabletRpcMethods either: a phone or
+      // tablet tab draws no commit and says why, as it does for Revert.
+      {...(onCommit && commitFacts && !readOnly && handheldMachine !== undefined
+        ? { commitLocked: offInHandheldTab(["Committing"], "commit", handheldMachine) }
+        : {})}
+      {...(onCommit && commitFacts && !readOnly && handheldMachine === undefined
+        ? {
+          commit: {
+            ...commitFacts,
+            onCommit: async (message: string, expectedHead: string, expectedChangesDigest: string) => {
+              await onCommit(sessionId, message, expectedHead, expectedChangesDigest)
+              refresh()
+            },
           },
         }
         : {})}

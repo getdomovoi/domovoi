@@ -1187,6 +1187,57 @@ it("omits process unknowns and terminal recovery for an installed stopped servic
   expect(card.queryByText("domovoid service install")).toBeNull()
 })
 
+// Walk F20: launchd says when the job has not exited since it loaded, and its
+// KeepAlive has no restart cap, so it never gives up. A recorded fact is
+// shown, a fact launchd does not record reads unknown, and exhaustion, which
+// cannot happen under launchd, is not drawn as unknown.
+function macCard(report: NonNullable<Parameters<typeof SettingsShell>[0]["localDaemon"]>["serviceReport"]) {
+  return <SettingsShell {...shellProps()} localDaemon={{ title: "Local daemon", detail: "", owner: "outside", platform: "darwin", serviceInstalled: true, serviceRunning: true,
+    serviceReport: report, serviceCheckedAt: Date.now(), service: { install: vi.fn(), remove: vi.fn(), status: vi.fn() } }} />
+}
+
+it("shows launchd's never exited as a known last exit and no exhaustion fact on macOS", () => {
+  render(macCard({ installed: true, running: true, detail: "loaded (running)", supervisor: { pid: 82027, lastExit: "never exited" } }))
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  expect(card.getByText("PID 82027")).toBeTruthy()
+  expect(card.getByText("Last exit: none since the service loaded")).toBeTruthy()
+  expect(card.queryByText("Last exit unknown")).toBeNull()
+  expect(card.queryByText("Supervisor exhaustion unknown")).toBeNull()
+  expect(card.getByText("Crash count unknown")).toBeTruthy()
+  expect(card.getByText("Uptime unknown")).toBeTruthy()
+})
+
+it("keeps an unrecorded last exit unknown on macOS, still without an exhaustion fact", () => {
+  render(macCard({ installed: true, running: true, detail: "loaded (running)", supervisor: { pid: 82027 } }))
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  expect(card.getByText("Last exit unknown")).toBeTruthy()
+  expect(card.queryByText("Supervisor exhaustion unknown")).toBeNull()
+})
+
+it.each(["linux", "win32"] as const)("still says exhaustion is unknown on %s, whose supervisor can give up", (platform) => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Local daemon", detail: "", owner: "outside", platform, serviceInstalled: true, serviceRunning: true,
+    serviceReport: { installed: true, running: true, detail: "running", supervisor: { pid: 4321, lastExit: "never exited" } }, serviceCheckedAt: Date.now(),
+    service: { install: vi.fn(), remove: vi.fn(), status: vi.fn() } }} />)
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  expect(card.getByText("Supervisor exhaustion unknown")).toBeTruthy()
+  expect(card.getByText("Last exit: none since the service loaded")).toBeTruthy()
+})
+
+// Walk F20: a locked Install drawn in the filled primary style read as live
+// beside "Install is off". Locked, it is drawn unfilled; live, filled.
+it("draws a locked Install unfilled and a live Install filled", () => {
+  const view = render(macCard({ installed: true, running: true, detail: "loaded (running)", supervisor: { pid: 82027 } }))
+  const locked = within(screen.getByRole("region", { name: "Daemon on this machine" })).getByRole("button", { name: "Install" })
+  expect(locked.hasAttribute("disabled")).toBe(true)
+  expect(locked.getAttribute("data-variant")).toBe("outline")
+  view.unmount()
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Local daemon", detail: "", owner: "app", platform: "darwin", serviceInstalled: false,
+    service: { install: vi.fn(), remove: vi.fn() } }} />)
+  const live = within(screen.getByRole("region", { name: "Daemon on this machine" })).getByRole("button", { name: "Install" })
+  expect(live.hasAttribute("disabled")).toBe(false)
+  expect(live.getAttribute("data-variant")).toBe("default")
+})
+
 it("labels uptime as the last check reading after time passes, and refreshes on a new report", () => {
   const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-12T12:05:00.000Z"))
   try {

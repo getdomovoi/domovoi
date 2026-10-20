@@ -1,7 +1,7 @@
 import { z } from "zod"
 import { utf16MaxLength } from "./validation.js"
 
-import { commitShaSchema, machineIdSchema, transferIdSchema } from "./identifiers.js"
+import { clientKindSchema, commitShaSchema, machineIdSchema, transferIdSchema } from "./identifiers.js"
 import { sessionTransferCoverageSchema } from "./transfer-coverage.js"
 
 export const checkpointReasonSchema = z.enum([
@@ -16,6 +16,10 @@ export const checkpointReasonSchema = z.enum([
   // Taken when a person allows a gated command, before the agent hears the
   // decision (J34).
   "before-approved-command",
+  // A commit a person asked for with their own message (session.commit, walk
+  // finding F10). Domovoi makes it because the agent's sandbox cannot write
+  // .git; it carries a `committed` record and nothing else does.
+  "commit",
 ])
 export type CheckpointReason = z.infer<typeof checkpointReasonSchema>
 
@@ -61,6 +65,47 @@ export function checkpointCaptureHasRequiredTurn(entry: {
 }): boolean {
   return entry.midTurn === undefined || entry.reason === "before-approved-command"
     || entry.midTurn.providerTurnId !== undefined || entry.midTurn.providerTurnIdSha256 !== undefined
+}
+
+// What a person's commit (reason "commit") put on the session branch: the
+// message as Domovoi passed it to Git, the branch it moved, the first paths it
+// committed and how many there were in all, and the kind of client that asked.
+export const maximumCommitMessageLength = 4_096
+export const maximumCommittedPaths = maximumMidTurnCheckpointPaths
+export const committedCheckpointSchema = z.object({
+  message: z.string().trim().min(1).check(utf16MaxLength(maximumCommitMessageLength)),
+  // Only ever a session branch, domovoi/<session id>: a stored or transferred
+  // record cannot carry other text here.
+  branch: z.string().regex(/^domovoi\/[a-zA-Z0-9][a-zA-Z0-9_-]*$/u).check(utf16MaxLength(256)),
+  // Do not trim: whitespace is legal in a Git path. A path the redactor would
+  // not show leaves the list but still counts, so the list may be shorter.
+  paths: z.array(z.string().min(1).check(utf16MaxLength(maximumMidTurnCheckpointPathLength))).max(maximumCommittedPaths).refine(
+    (paths) => new TextEncoder().encode(JSON.stringify(paths)).byteLength <= maximumMidTurnCheckpointPathsBytes,
+    "Committed paths exceed their serialized byte budget",
+  ),
+  // A commit always carries a change: Domovoi refuses an empty one.
+  pathCount: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  client: clientKindSchema,
+}).strict().refine((record) => record.pathCount >= record.paths.length, {
+  path: ["pathCount"],
+  message: "The committed-path count must include every displayed path",
+})
+export type CommittedCheckpoint = z.infer<typeof committedCheckpointSchema>
+
+// A commit record belongs to a commit checkpoint, which always has one, names
+// its commit and is never a mid-turn snapshot (a commit waits for the turn).
+// Its branch is the session's own, domovoi/<session id>: derived from an id
+// the entry already holds, so it can carry no other text.
+export function checkpointCommitRecordMatchesReason(entry: {
+  sessionId: string
+  reason?: CheckpointReason | undefined
+  midTurn?: MidTurnCheckpoint | undefined
+  commit?: string | undefined
+  committed?: CommittedCheckpoint | undefined
+}): boolean {
+  if (entry.reason !== "commit") return entry.committed === undefined
+  return entry.committed !== undefined && entry.commit !== undefined && entry.midTurn === undefined
+    && entry.committed.branch === `domovoi/${entry.sessionId}`
 }
 
 

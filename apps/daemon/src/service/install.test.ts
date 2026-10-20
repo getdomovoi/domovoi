@@ -1182,6 +1182,34 @@ it("does not borrow pid or last exit from a foreign launchd plist", async () => 
   expect(status).not.toHaveProperty("lastExit")
 })
 
+// Walk F20: launchd records that the job has not exited since it was loaded.
+// That is a known last exit, not an unknown one.
+it("reads launchd's never exited as a known last exit", async () => {
+  const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: "gui/501/sh.domovoi.domovoid = {\n\tpath = /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\n\tstate = running\n\tpid = 82027\n\truns = 1\n\tlast exit code = (never exited)\n}\n" })) })
+  const status = await serviceStatus(darwin, dependencies)
+  expect(status).toMatchObject({ running: true, pid: 82027, lastExit: "never exited" })
+})
+
+it("reads never exited from CRLF output", async () => {
+  const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: "job = {\r\n\tpath = /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\r\n\tstate = running\r\n\tlast exit code = (never exited)\r\n}\r\n" })) })
+  expect(await serviceStatus(darwin, dependencies)).toHaveProperty("lastExit", "never exited")
+})
+
+it.each([
+  "\t\tlast exit code = (never exited)\n",
+  "\tlast exit code = (never exited)\r\n\tlast exit code = 9\r\n",
+  "\tlast exit code = (never exited)\n\tlast exit code = 9\n",
+  "\tlast exit code = (never exited) later\n",
+])("keeps an ambiguous never exited unknown: %s", async (fields) => {
+  const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: `job = {\n\tpath = /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\n\tstate = running\n${fields}}` })) })
+  expect(await serviceStatus(darwin, dependencies)).not.toHaveProperty("lastExit")
+})
+
+it("does not borrow never exited from a foreign launchd plist", async () => {
+  const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: "job = {\n\tpath = /other.plist\n\tstate = running\n\tlast exit code = (never exited)\n}" })) })
+  expect(await serviceStatus(darwin, dependencies)).not.toHaveProperty("lastExit")
+})
+
 it("reads the numeric part of a named launchd exit code", async () => {
   const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: "job = {\n\tpath = /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\n\tstate = not running\n\tlast exit code = 75: EX_TEMPFAIL\n}" })) })
   expect(await serviceStatus(darwin, dependencies)).toHaveProperty("lastExit", "code 75")

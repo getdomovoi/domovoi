@@ -696,6 +696,13 @@ export class DomovoiClient extends EventTarget {
     })
   }
 
+  // Commits the session's work on its own branch (walk finding F10). The
+  // daemon refuses when that branch is no longer at expectedHead, the commit
+  // the person's view of the changes was read against.
+  commitSession(sessionId: string, message: string, expectedHead: string, expectedChangesDigest: string): Promise<WorkspaceSnapshot> {
+    return this.request("session.commit", { sessionId, message, expectedHead, expectedChangesDigest, client: this.kind })
+  }
+
   createCheckpoint(sessionId: string, label?: string): Promise<WorkspaceSnapshot> {
     return this.request("checkpoint.create", {
       sessionId,

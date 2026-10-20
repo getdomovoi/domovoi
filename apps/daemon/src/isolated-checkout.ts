@@ -59,8 +59,8 @@ const execute = promisify(execFile)
 //   copied into the worktree afterwards) or the session worktree's own, read
 //   and written in place under Git's usual index lock.
 // - Its info/ holds copies of the repository's info/attributes and
-//   info/exclude and, when sparse checkout is on, the worktree's
-//   sparse-checkout patterns. They are data: attributes can only select a
+//   info/exclude and the worktree's sparse-checkout patterns when it has
+//   them (Git reads those only when sparse checkout is on). They are data: attributes can only select a
 //   filter driver the isolated config defines, which is the person's own, the
 //   exact `git lfs install` line, or a trusted repository's reviewed one.
 // - It lives inside the repository's Git directory, beside the repository's
@@ -326,6 +326,7 @@ export function runGitProcess(args: readonly string[], options: {
   // The Git binary to run; gitCommand(env) when not given.
   command?: string | undefined
   signal?: AbortSignal | undefined
+  input?: Buffer | undefined
   onStdout?: (chunk: Buffer, stop: () => void) => void
   // Runs once, just before a running command is killed.
   beforeKill?: () => void
@@ -336,7 +337,7 @@ export function runGitProcess(args: readonly string[], options: {
   const child = spawn(options.command ?? gitCommand(options.env), [...args], {
     cwd: options.cwd,
     env: options.env,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     detached: posix,
     windowsHide: true,
   })
@@ -346,6 +347,7 @@ export function runGitProcess(args: readonly string[], options: {
   let errorBytes = 0
   let settled = false
   let killing = false
+  let inputError: Error | undefined
   let teardown: NodeJS.Timeout | undefined
   let settle: (outcome: { error: unknown } | { result: GitProcessResult }) => void = () => {}
   const stderrText = () => Buffer.concat(errors).toString("utf8").trim()
@@ -367,10 +369,12 @@ export function runGitProcess(args: readonly string[], options: {
     }
     teardown ??= setTimeout(() => {
       if (settled) return
-      child.stdout.destroy()
-      child.stderr.destroy()
+      child.stdin?.destroy()
+      child.stdout?.destroy()
+      child.stderr?.destroy()
       settle(signal?.aborted
         ? { error: abortError(signal) }
+        : inputError ? { error: inputError }
         : { result: { code: child.exitCode, signal: child.signalCode ?? "SIGKILL", stderr: stderrText() } })
     }, gitTeardownTimeoutMs)
   }
@@ -385,8 +389,8 @@ export function runGitProcess(args: readonly string[], options: {
     }
     signal?.addEventListener("abort", end, { once: true })
     if (signal?.aborted) end()
-    child.stdout.on("data", (chunk: Buffer) => options.onStdout?.(chunk, end))
-    child.stderr.on("data", (chunk: Buffer) => {
+    child.stdout?.on("data", (chunk: Buffer) => options.onStdout?.(chunk, end))
+    child.stderr?.on("data", (chunk: Buffer) => {
       if (errorBytes >= 16_384) return
       const captured = chunk.subarray(0, 16_384 - errorBytes)
       errors.push(captured)
@@ -394,8 +398,10 @@ export function runGitProcess(args: readonly string[], options: {
     })
     child.once("error", (error) => settle({ error }))
     child.once("close", (code, closeSignal) => {
-      settle(signal?.aborted ? { error: abortError(signal) } : { result: { code, signal: closeSignal, stderr: stderrText() } })
+      settle(signal?.aborted ? { error: abortError(signal) } : inputError ? { error: inputError } : { result: { code, signal: closeSignal, stderr: stderrText() } })
     })
+    child.stdin?.once("error", (error: Error) => { inputError = error; end() })
+    if (options.input !== undefined) child.stdin?.end(options.input)
   }) as PromiseWithChild<GitProcessResult>
   promise.child = child
   return promise
@@ -412,6 +418,8 @@ function gitFailure(result: GitProcessResult): Error {
 }
 
 export type IsolatedGitRun = {
+  // Bounded command input, preserving raw Git path bytes.
+  input?: Buffer | undefined
   // An index file other than the one this isolated directory uses.
   index?: string | undefined
   // The command's own signal, or null to run it with none (a cleanup that
@@ -436,7 +444,79 @@ export type IsolatedGit = {
   // Index locks a killed command left, which Domovoi cannot tell are its own:
   // nothing may rewrite the index under one or remove it (ruling Q265).
   readonly indexLocksLeft: readonly string[]
+  // The keys the repository's own config sets (local and worktree scope,
+  // included files among them) that this directory reads otherwise than the
+  // worktree does: blanked, left out, or not carried at all. By default from
+  // the one read of the worktree's config this directory was built from;
+  // `reread` reads the worktree's config again and compares that.
+  heldBack(options?: { reread?: boolean | undefined, signal?: AbortSignal | undefined }): Promise<string[]>
   dispose(): Promise<void>
+}
+
+// The scopes Git lists for the repository's own config, an included file read
+// from it among them.
+const repositoryConfigScopes: ReadonlySet<string> = new Set(["local", "worktree"])
+
+// The repository-scoped keys `isolated` reads otherwise than `worktree`: for
+// each key the repository's own config sets, the directory must read the
+// worktree's effective (last) value and every value the repository gives it.
+// Derived from the two whole configs, so no list of keys decides it: a key
+// a later Git or git-lfs reads, which nothing here carries, is held back too.
+export function heldBackRepositoryKeys(
+  worktree: readonly ConfigEntry[],
+  isolated: readonly { key: string; value: string | undefined }[],
+): string[] {
+  const shown = (value: string | undefined) => value === undefined ? "\0" : value
+  const read = new Map<string, string[]>()
+  for (const { key, value } of isolated) read.set(key, [...read.get(key) ?? [], shown(value)])
+  const effective = new Map<string, string>()
+  for (const { key, value } of worktree) effective.set(key, shown(value))
+  const held = new Set<string>()
+  for (const { scope, key, value } of worktree) {
+    if (!repositoryConfigScopes.has(scope)) continue
+    const values = read.get(key)
+    if (values === undefined || values.at(-1) !== effective.get(key) || !values.includes(shown(value))) held.add(key)
+  }
+  return [...held]
+}
+
+// The keys whose values, scopes or order differ between two reads of the
+// worktree's config: set, changed or removed in between.
+export function changedConfigKeys(before: readonly ConfigEntry[], after: readonly ConfigEntry[]): string[] {
+  const listed = (entries: readonly ConfigEntry[]) => {
+    const values = new Map<string, string[]>()
+    for (const { scope, key, value } of entries) values.set(key, [...values.get(key) ?? [], `${scope}\0${value === undefined ? "\0" : value}`])
+    return values
+  }
+  const was = listed(before)
+  const now = listed(after)
+  return [...new Set([...was.keys(), ...now.keys()])]
+    .filter((key) => JSON.stringify(was.get(key) ?? []) !== JSON.stringify(now.get(key) ?? []))
+}
+
+// The whole config the isolated directory reads, as Git lists it there:
+// the snapshot, its own config file and the pins. Decoded strictly.
+async function isolatedConfig(command: string, environment: NodeJS.ProcessEnv, worktree: string): Promise<Array<{ key: string; value: string | undefined }>> {
+  let bytes: Buffer = Buffer.alloc(0)
+  try {
+    bytes = (await execute(command, [...inertRepositoryConfig, "config", "--list", "-z"], {
+      env: environment, cwd: worktree, encoding: "buffer", maxBuffer: 16 * 1024 * 1024,
+    })).stdout
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== 1) throw new RepositoryGitConfigUnreadableError("git-failed", { cause: error })
+  }
+  const entries: Array<{ key: string; value: string | undefined }> = []
+  for (const record of splitBytes(bytes, 0)) {
+    if (record.length === 0) continue
+    const newline = record.indexOf(0x0a)
+    const key = strictUtf8(newline === -1 ? record : record.subarray(0, newline))
+    const value = newline === -1 ? undefined : strictUtf8(record.subarray(newline + 1))
+    if (key === undefined || (newline !== -1 && value === undefined)) {
+      throw new RepositoryGitConfigUnreadableError("git-failed", { detail: "the isolated Git directory reads a setting that is not valid UTF-8" })
+    }
+    entries.push({ key, value })
+  }
+  return entries
 }
 
 // The filter configuration this directory runs with: the source worktree's
@@ -775,6 +855,8 @@ async function refuseGitTooOldForIsolation(git: CapturedGit, read?: (command: st
 
 export async function openIsolatedGit(input: {
   worktree: string
+  // Evidence may stage to identify contents but must discard the new blobs.
+  temporaryObjects?: boolean
   // A trusted repository's reviewed filter definitions, as key and value.
   reviewed?: ReadonlyArray<readonly [string, string]> | undefined
   // Read and write the session worktree's own index (an operation on an
@@ -813,8 +895,6 @@ export async function openIsolatedGit(input: {
     const value = last(key)
     if (value !== undefined) pins.push([key, value])
   }
-  const storage = last("lfs.storage")
-  pins.push(["lfs.storage", storage === undefined || storage === "" ? join(commonDirectory, "lfs") : isAbsolute(storage) ? storage : resolve(commonDirectory, storage)])
   // The gate's policy, one value per key: its last one wins, as at the gate.
   const reviewed = new Map(input.reviewed ?? [])
   refuseChangedPolicy(entries, reviewed)
@@ -887,12 +967,22 @@ export async function openIsolatedGit(input: {
       : `[core]\n\trepositoryformatversion = 1\n\tbare = false\n[extensions]\n${extensions.join("")}`)
     await copyIfPresent(infoAttributes, join(gitDirectory, "info", "attributes"))
     await copyIfPresent(infoExclude, join(gitDirectory, "info", "exclude"))
-    if (last("core.sparsecheckout") === "true") await copyIfPresent(sparseCheckout, join(gitDirectory, "info", "sparse-checkout"))
+    // The patterns are data, and Git reads them only when its own boolean
+    // reading of the carried core.sparseCheckout ("1", "yes" and "on" among
+    // them) turns sparse checkout on, so they are copied whenever present.
+    await copyIfPresent(sparseCheckout, join(gitDirectory, "info", "sparse-checkout"))
   } catch (error) {
     await fs.rm(gitDirectory, { recursive: true, force: true })
     await fs.rm(snapshot.directory, { recursive: true, force: true })
     throw error
   }
+
+  // LFS clean stores payloads outside Git's object directory. Evidence must
+  // discard those too; commits and checkpoints retain the configured store.
+  const storage = last("lfs.storage")
+  pins.push(["lfs.storage", input.temporaryObjects
+    ? join(gitDirectory, "lfs")
+    : storage === undefined || storage === "" ? join(commonDirectory, "lfs") : isAbsolute(storage) ? storage : resolve(commonDirectory, storage)])
 
   const environment: NodeJS.ProcessEnv = { ...git.env }
   for (const name of droppedEnvironment) delete environment[name]
@@ -901,7 +991,13 @@ export async function openIsolatedGit(input: {
   environment.GIT_CONFIG_NOSYSTEM = "1"
   environment.GIT_DIR = gitDirectory
   environment.GIT_WORK_TREE = worktree
-  environment.GIT_OBJECT_DIRECTORY = join(commonDirectory, "objects")
+  environment.GIT_OBJECT_DIRECTORY = input.temporaryObjects ? join(gitDirectory, "objects") : join(commonDirectory, "objects")
+  if (input.temporaryObjects) {
+    // JSON quoting handles separators, spaces, quotes and backslashes here.
+    // Limitation: JSON's \uXXXX control-character escapes are not Git C
+    // quoting, so repository paths requiring those escapes are unsupported.
+    environment.GIT_ALTERNATE_OBJECT_DIRECTORIES = JSON.stringify(join(commonDirectory, "objects"))
+  }
   if (input.worktreeIndex) environment.GIT_INDEX_FILE = index
   pins.forEach(([key, value], position) => {
     environment[`GIT_CONFIG_KEY_${position}`] = key
@@ -912,8 +1008,11 @@ export async function openIsolatedGit(input: {
   // worktree's own value: the expected map is the worktree's (ruling Q319).
   const effectivePins = new Map<string, string>()
   for (const [key, value] of pins) effectivePins.set(key, value)
+  // What the directory reads in all, once, for heldBack.
+  let isolatedEntries: Array<{ key: string; value: string | undefined }>
   try {
     await refuseUnpinnedFilters(git.command, environment, worktree, [...effectivePins])
+    isolatedEntries = await isolatedConfig(git.command, environment, worktree)
   } catch (error) {
     await fs.rm(gitDirectory, { recursive: true, force: true })
     await fs.rm(snapshot.directory, { recursive: true, force: true })
@@ -967,7 +1066,7 @@ export async function openIsolatedGit(input: {
     let result: GitProcessResult
     try {
       result = await trackRestoreCommand(() => runGitProcess([...inertRepositoryConfig, ...args], {
-        command: git.command, env, cwd: worktree, signal: commandSignal, onStdout, beforeKill,
+        command: git.command, env, cwd: worktree, signal: commandSignal, input: options.input, onStdout, beforeKill,
       }))
     } catch (error) {
       if (killed || commandSignal?.aborted === true) {
@@ -1011,6 +1110,14 @@ export async function openIsolatedGit(input: {
     },
     stream: (args, onStdout, options = {}) => launch(args, options, onStdout),
     indexLocksLeft,
+    async heldBack(options = {}) {
+      if (options.reread !== true) return heldBackRepositoryKeys(entries, isolatedEntries)
+      // The directory runs with the config it was built from, so a key whose
+      // values changed since, in any scope, a repository override removed
+      // and a global value now showing through among them, counts too.
+      const fresh = await worktreeConfig(git, worktree, options.signal ?? signal)
+      return [...new Set([...heldBackRepositoryKeys(fresh, isolatedEntries), ...changedConfigKeys(entries, fresh)])]
+    },
     // A directory holding a lock whose owner is unknown stays, lock and all.
     // The snapshot goes in every case: a Git still running without it reads
     // no global config, and so no filter definition.

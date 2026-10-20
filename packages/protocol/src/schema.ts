@@ -5,7 +5,7 @@ import { dateTimeSchema, offsetDateTimeSchema, utf16MaxLength } from "./validati
 import { executionResolutionSchema, resolvedExecutionSchema } from "./execution.js"
 import { maximumSessionAttachments, sessionAttachmentSummarySchema } from "./image-upload.js"
 import { providerPromptDeliverySchema } from "./prompt-delivery.js"
-import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpointReasonSchema, checkpointCaptureHasRequiredTurn, midTurnCheckpointSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
+import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpointCommitRecordMatchesReason, checkpointReasonSchema, checkpointCaptureHasRequiredTurn, committedCheckpointSchema, midTurnCheckpointSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
 import { sessionTransferCoverageSchema } from "./transfer-coverage.js"
 
 import {
@@ -658,10 +658,14 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     midTurn: midTurnCheckpointSchema.optional(),
     label: z.string(),
     commit: commitShaSchema.optional(),
+    committed: committedCheckpointSchema.optional(),
     createdAt: dateTimeSchema,
   }).refine(checkpointCaptureHasRequiredTurn, {
     path: ["midTurn", "providerTurnId"],
     message: "Only an approval capture may omit its provider turn identity",
+  }).refine(checkpointCommitRecordMatchesReason, {
+    path: ["committed"],
+    message: "Only a commit checkpoint carries a commit record, and it always has one",
   }),
   z.object({
     id: z.string(),
