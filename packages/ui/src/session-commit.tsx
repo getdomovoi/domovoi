@@ -1,7 +1,10 @@
 import { useState } from "react"
 import { CircleStopIcon, GitCommitHorizontalIcon } from "lucide-react"
 
-import type { ChangedFileEvidence, Runtime, SessionEvidence } from "@getdomovoi/protocol"
+import {
+  evidenceStagingBudgetMs, maximumEvidenceStagingBytes, maximumEvidenceStagingPaths,
+  type ChangedFileEvidence, type Runtime, type SessionEvidence,
+} from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Button } from "./components/ui/button"
@@ -43,9 +46,9 @@ const statusLetter: Record<ChangedFileEvidence["status"], string> = {
 }
 
 const stagingLimitCopy = {
-  size: "Domovoi cannot verify these changes for a commit because changed files exceed the 64 MiB staging limit. Commit in your own checkout, or ignore or remove large files from these changes.",
-  paths: "Domovoi cannot verify these changes for a commit because there are more than 10,000 changed paths. Commit in your own checkout, or ignore or remove files to reduce the changed path count.",
-  time: "Domovoi could not verify these changes within the 5 s staging allowance. Refresh to try again; a retry may succeed. You can also commit in your own checkout.",
+  size: `Domovoi cannot verify these changes for a commit because changed files exceed the ${maximumEvidenceStagingBytes / (1_024 * 1_024)} MiB staging limit. Commit in your own checkout, or ignore or remove large files from these changes.`,
+  paths: `Domovoi cannot verify these changes for a commit because there are more than ${maximumEvidenceStagingPaths.toLocaleString("en-US")} changed paths. Commit in your own checkout, or ignore or remove files to reduce the changed path count.`,
+  time: `Domovoi could not verify these changes within the ${evidenceStagingBudgetMs / 1_000} s staging allowance. Refresh to try again; a retry may succeed. You can also commit in your own checkout.`,
 } satisfies Record<NonNullable<SessionEvidence["workspace"]["commitUnavailableReason"]>["limit"], string>
 
 // Desktop V2 J27's COMMITS card, as far as the daemon builds it: one commit

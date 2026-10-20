@@ -120,6 +120,38 @@ describe("committing from the Changes tab", () => {
     expect(onCommit).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ["size", "32 MiB staging limit"],
+    ["paths", "more than 12,345 changed paths"],
+    ["time", "within the 7 s staging allowance"],
+  ] as const)("uses the protocol's %s limit in the copy", async (limit, copy) => {
+    vi.resetModules()
+    vi.doMock("@getdomovoi/protocol", async (importOriginal) => ({
+      ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
+      maximumEvidenceStagingBytes: 32 * 1_024 * 1_024,
+      maximumEvidenceStagingPaths: 12_345,
+      evidenceStagingBudgetMs: 7_000,
+    }))
+    try {
+      const { SessionCommitCard } = await import("./session-commit")
+      render(<SessionCommitCard
+        controls={{ defaultMessage: "Retry", machine: "mac-mini", onCommit: vi.fn(async () => {}) }}
+        files={evidence.workspace.files}
+        totalFiles={evidence.workspace.totalChangedFiles}
+        baseCommit={evidence.workspace.baseCommit}
+        changesDigest={undefined}
+        commitUnavailableReason={{ kind: "staging-limit", limit }}
+        onCancel={vi.fn()}
+        onCommitted={vi.fn()}
+      />)
+      expect(screen.getByText((text) => text.includes(copy))).toBeTruthy()
+      expect((screen.getByRole("button", { name: "Commit 1" }) as HTMLButtonElement).disabled).toBe(true)
+    } finally {
+      vi.doUnmock("@getdomovoi/protocol")
+      vi.resetModules()
+    }
+  })
+
   it("forwards the evidence digest through the panel callback", async () => {
     const onCommit = vi.fn(async () => {})
     render(<SessionEvidencePanel connected sessionId="session-1" onLoad={vi.fn(async () => evidence)} onCommit={onCommit} commitFacts={{ defaultMessage: "Retry", machine: "mac-mini" }} />)

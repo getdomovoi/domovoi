@@ -53,8 +53,11 @@ session's work from the Changes tab instead. The daemon:
   contents keep changing through the retries while the view remains stable.
   Such evidence stays readable, with Commit disabled;
 - reports `workspace.commitUnavailableReason` with `kind: "staging-limit"` and
-  `limit: "size"`, `"paths"`, or `"time"` when interactive staging exceeds
-  64 MiB of changed input, 10,000 changed paths, or its 5 s allowance.
+  `limit: "size"`, `"paths"`, or `"time"` when interactive staging exceeds the
+  shared protocol limits: `maximumEvidenceStagingBytes`,
+  `maximumEvidenceStagingPaths`, or `evidenceStagingBudgetMs`, defined beside
+  [`workspaceEvidenceSchema`](../packages/protocol/src/rpc.ts). The daemon uses
+  these limits and the UI derives their displayed values from the same exports.
   Size and path limits require reducing the changes or committing in the person's
   own checkout. A time-limit retry can succeed. Unsafe or unstable staging keeps
   the generic verification reason. These evidence limits do not replace the
