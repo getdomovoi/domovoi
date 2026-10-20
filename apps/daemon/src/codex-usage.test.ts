@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Runtime } from "@getdomovoi/protocol"
 import { CodexAppServerAdapter, type AgentEvent, type CodexTransport, type JsonRpcMessage } from "./codex.js"
 import { codexUsageCaptures } from "./codex-usage-fixtures.js"
+import { CodexUsage } from "./codex-usage.js"
 import { UsageLedger } from "./usage.js"
 
 const runtime: Runtime = { provider: "codex", model: "gpt-5.6-sol", reasoning: "medium", permissionMode: "ask", auto: false }
@@ -327,16 +328,50 @@ describe("Codex receipt accounting", () => {
     })
   })
 
-  it("does not evict deduplication keys and recount receipts at the storage bound", async () => {
+  it("counts more than 1024 receipts without recounting replays", async () => {
     const h = await setup()
     await h.start()
     for (let index = 0; index < 1100; index++) h.transport.receive(receipt(`response-${index}`))
     const before = h.ledger.session("session").totalTokens
-    expect(before).toBeGreaterThan(0)
-    expect(before).toBeLessThan(1100 * 120)
+    expect(before).toBe(1100 * 120)
     for (let index = 0; index < 1100; index++) h.transport.receive(receipt(`response-${index}`))
     h.transport.receive(completed())
     expect(h.ledger.session("session").totalTokens).toBe(before)
+  })
+
+  it.each([true, false])("diagnoses the receipt bound once without payloads (last receipt valid: %s)", (valid) => {
+    const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {})
+    let last: AgentEvent | undefined
+    const usage = new CodexUsage((event) => { last = event })
+    usage.opened("PRIVATE_THREAD", true)
+    usage.expect("PRIVATE_THREAD")
+    usage.started("PRIVATE_THREAD", "PRIVATE_TURN")
+    const deliver = (index: number, invalid = false) => usage.receipt({
+      ...receipt(`PRIVATE_RESPONSE_${index}`, invalid ? { private: "PRIVATE_PAYLOAD" } : undefined).params,
+      threadId: "PRIVATE_THREAD", turnId: "PRIVATE_TURN", private: "PRIVATE_METADATA",
+    })
+    for (let index = 0; index < 16_383; index++) deliver(index)
+    expect(last).toMatchObject({ usage: { totalTokens: 16_383 * 120 } })
+    expect(warn).not.toHaveBeenCalled()
+    deliver(16_383, !valid)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(
+      "Codex reached the per-turn usage receipt limit; further receipts will not be counted.",
+      { code: "CODEX_USAGE_RECEIPT_LIMIT" },
+    )
+    for (let index = 0; index < 16_386; index++) deliver(index)
+    usage.complete("PRIVATE_THREAD", "PRIVATE_TURN")
+    expect(last).toMatchObject({
+      usage: { totalTokens: (valid ? 16_384 : 16_383) * 120 },
+      source: { tokens: "reported", final: false },
+    })
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE")
+    // Reaching the storage bound must not suppress the separate late-receipt diagnostic.
+    deliver(16_386)
+    deliver(16_387)
+    expect(warn).toHaveBeenCalledTimes(2)
+    expect(warn.mock.calls[1]?.[1]).toEqual({ code: "CODEX_LATE_USAGE_RECEIPT" })
   })
 
   it.each([

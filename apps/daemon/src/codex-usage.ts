@@ -2,6 +2,7 @@ import type { AgentEvent } from "./agents.js"
 import type { NormalizedUsage } from "./usage.js"
 
 const counters = ["inputTokens", "cachedInputTokens", "outputTokens", "reasoningTokens", "totalTokens"] as const
+const maximumReceiptsPerTurn = 16_384
 const empty = (): NormalizedUsage => ({
   inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0,
   totalTokens: 0, costSource: "unavailable",
@@ -89,9 +90,13 @@ export class CodexUsage {
     // Its live fallback is already published: do not mix accounting modes.
     if (!turn.rawEligible) return
     turn.rawSeen = true
-    if (!id(responseId) || turn.receipts.has(responseId) || turn.receipts.size >= 1024) return
+    if (!id(responseId) || turn.receipts.has(responseId) || turn.receipts.size >= maximumReceiptsPerTurn) return
     // Retain invalid IDs too: a conflicting replay cannot change prior evidence.
     turn.receipts.add(responseId)
+    // No keys are evicted, so reaching capacity diagnoses this turn exactly once.
+    if (turn.receipts.size === maximumReceiptsPerTurn) {
+      process.emitWarning("Codex reached the per-turn usage receipt limit; further receipts will not be counted.", { code: "CODEX_USAGE_RECEIPT_LIMIT" })
+    }
     const usage = expenditure(params.usage)
     if (!usage) return
     const sum = { ...(turn.sum ?? empty()) }
