@@ -41,13 +41,13 @@ import {
   type CodexRepositoryServer,
 } from "./codex-repository-trust.js"
 import { codexSecretFileSummary, codexSecretGlobs } from "./codex-secret-globs.js"
+import { CodexUsage } from "./codex-usage.js"
 import { credentialStores } from "./credential-stores.js"
 import { redactInventoryText } from "./inventory-redaction.js"
 import { projectInstructions } from "./project-instructions.js"
 import { repositoryTrustVerdict } from "./repository-trust-apply.js"
 import { redactDurableText } from "./secret-redaction.js"
 import type { RepositoryProviderConfigReader } from "./tool-inventory.js"
-import { normalizeProviderUsage } from "./usage.js"
 import { onProcessEnd } from "./process-end.js"
 
 export type { AgentAdapter, AgentEvent } from "./agents.js"
@@ -465,6 +465,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
   #connectPromise: Promise<void> | undefined
   #collaborationModeAvailable = true
   #additionalContextAvailable = true
+  #rawEventsAvailable = true
+  #usage = new CodexUsage((event) => this.#emit(event))
   // Running mcpToolCall items by item id, so a tool server approval can name
   // its call, and the approvals Codex asked for as MCP elicitations, which are
   // answered in that shape. Both belong to the transport that sent them.
@@ -530,7 +532,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const own = resolvedDeveloperInstructions(read)
     const servers = plan === undefined ? {} : await this.#serversToPass(plan, read)
     refuseRepositoryConfig(cwd, plan !== undefined)
-    const result = await this.#request("thread/start", {
+    const params = {
       cwd,
       model: runtime.model,
       approvalPolicy: policy.approvalPolicy,
@@ -539,11 +541,26 @@ export class CodexAppServerAdapter implements AgentAdapter {
       serviceName: "domovoi",
       developerInstructions: own ? `${own}\n\n${codexDeveloperInstructions}` : codexDeveloperInstructions,
       config: codexThreadConfig(cwd, servers),
-    })
+    }
+    let result: unknown
+    const rawEligible = this.#rawEventsAvailable
+    try {
+      result = await this.#request("thread/start", {
+        ...params, ...(rawEligible ? { experimentalRawEvents: true } : {}),
+      })
+    } catch (error) {
+      // Only a parameter-deserialization refusal proves no thread was created.
+      // Do not retry a timeout or an arbitrary error mentioning the option.
+      if (!rawEligible || !(error instanceof Error) || asRecord(error)?.code !== -32602
+        || !/unknown field [`'"]?experimentalRawEvents\b/.test(error.message)) throw error
+      this.#rawEventsAvailable = false
+      result = await this.#request("thread/start", params)
+    }
     const threadId = nestedId(result, "thread")
     if (!threadId) throw new Error("Codex did not return a thread id")
     refuseOtherReviewer(result)
     this.#opened(threadId, plan, servers)
+    this.#usage.opened(threadId, this.#rawEventsAvailable)
     return threadId
   }
 
@@ -684,6 +701,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
   async stopThread(threadId: string): Promise<void> {
     await this.#request("thread/archive", { threadId })
+    this.#usage.archived(threadId)
     this.#trustedThreads.delete(threadId)
     this.#trustApplied.delete(threadId)
   }
@@ -709,6 +727,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     }
     refuseOtherReviewer(result)
     this.#opened(threadId, plan, servers)
+    this.#usage.opened(threadId, false)
   }
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
@@ -760,6 +779,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       const withContext = this.#additionalContextAvailable
       refuseRepositoryConfig(cwd, this.#trustedThreads.has(threadId))
       try {
+        this.#usage.expect(threadId)
         result = await this.#request("turn/start", {
           ...params,
           ...(withCollaboration ? { collaborationMode } : {}),
@@ -767,6 +787,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
         })
         break
       } catch (error) {
+        this.#usage.cancel(threadId)
         if (withContext && additionalContextUnavailable(error)) {
           this.#additionalContextAvailable = false
           continue
@@ -828,7 +849,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
       const cleanup = () => signal?.removeEventListener("abort", abort)
       signal?.addEventListener("abort", abort, { once: true })
       this.#pending.set(id, {
-        resolve: (value) => { cleanup(); resolve(value) },
+        resolve: (value) => {
+          // Bind before resolving the promise: a receipt can arrive before the
+          // startTurn continuation, with or without turn/started preceding it.
+          if (method === "turn/start") this.#usage.started(params.threadId, nestedId(value, "turn"))
+          cleanup()
+          resolve(value)
+        },
         reject: (error) => { cleanup(); reject(error) },
       })
       try {
@@ -846,6 +873,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     this.#transport = transport
     this.#collaborationModeAvailable = true
     this.#additionalContextAvailable = true
+    this.#rawEventsAvailable = true
     this.#unsubscribeMessage = transport.onMessage((message) => {
       if (this.#transport === transport) this.#receive(message)
     })
@@ -855,13 +883,20 @@ export class CodexAppServerAdapter implements AgentAdapter {
     try {
       const clientInfo = { name: "domovoi", title: "Domovoi", version: buildVersion }
       try {
-        await this.#request("initialize", {
-          clientInfo,
-          capabilities: { experimentalApi: true },
-        })
+        try {
+          await this.#request("initialize", {
+            clientInfo,
+            capabilities: { experimentalApi: true, optOutNotificationMethods: ["rawResponseItem/completed"] },
+          })
+        } catch (error) {
+          if (!(error instanceof Error) || asRecord(error)?.code !== -32602
+            || !/unknown field [`'"]?optOutNotificationMethods\b/.test(error.message)) throw error
+          await this.#request("initialize", { clientInfo, capabilities: { experimentalApi: true } })
+        }
       } catch (error) {
         if (!collaborationModeUnavailable(error)) throw error
         this.#collaborationModeAvailable = false
+        this.#rawEventsAvailable = false
         await this.#request("initialize", { clientInfo })
       }
       if (this.#transport !== transport) {
@@ -891,6 +926,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
   #detachTransport(transport: CodexTransport): void {
     if (this.#transport !== transport) return
+    // Publish the buffered fallback before provider-disconnected finishes
+    // ledger rows, including explicit reset/close paths.
+    this.#usage.clear()
     this.#unsubscribeMessage?.()
     this.#unsubscribeError?.()
     this.#unsubscribeMessage = undefined
@@ -917,7 +955,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       const pending = this.#pending.get(message.id)
       if (!pending) return
       this.#pending.delete(message.id)
-      if (message.error) pending.reject(new Error(message.error.message ?? "Codex request failed"))
+      if (message.error) pending.reject(Object.assign(new Error(message.error.message ?? "Codex request failed"), { code: message.error.code }))
       else pending.resolve(message.result)
       return
     }
@@ -927,7 +965,14 @@ export class CodexAppServerAdapter implements AgentAdapter {
       ...(typeof params.threadId === "string" ? { threadId: params.threadId } : {}),
       ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
     }
-    if (message.method === "item/agentMessage/delta" && typeof params.delta === "string") {
+    if (message.method === "rawResponseItem/completed") {
+      // Defensive discard for servers that ignore the initialization opt-out.
+      return
+    } else if (message.method === "rawResponse/completed") {
+      this.#usage.receipt(params)
+    } else if (message.method === "turn/started") {
+      this.#usage.started(params.threadId, nestedId(params, "turn"), asRecord(params.turn)?.rootTurnId)
+    } else if (message.method === "item/agentMessage/delta" && typeof params.delta === "string") {
       this.#emit({
         type: "text-delta",
         ...common,
@@ -1000,50 +1045,11 @@ export class CodexAppServerAdapter implements AgentAdapter {
         params,
       })
     } else if (message.method === "thread/tokenUsage/updated") {
-      const tokenUsage = asRecord(params.tokenUsage)
-      const last = asRecord(tokenUsage?.last)
-      // Codex defines last.totalTokens as current context. tokenUsage.total is
-      // cumulative session usage and must never drive context occupancy.
-      // `last` is one model request, not the whole turn, so the turn's count
-      // is marked not final and the ledger records it as partly reported:
-      // any total that includes it says it may be low. Counting a Codex turn
-      // in full waits on its own design (task 127).
-      // Counters that do not add up are an accounting problem: the update is
-      // dropped rather than thrown into the transport, which would end it.
-      let usage: ReturnType<typeof normalizeProviderUsage>
-      try {
-        usage = last ? normalizeProviderUsage({
-          usage: last,
-          contextTokens: last.totalTokens,
-          contextWindowTokens: tokenUsage?.modelContextWindow,
-        }) : undefined
-      } catch {
-        usage = undefined
-      }
-      if (usage && typeof params.threadId === "string" && typeof params.turnId === "string") {
-        this.#emit({
-          type: "usage", threadId: params.threadId, turnId: params.turnId, usage,
-          source: { kind: "turn", tokens: "reported", final: false },
-        })
-      }
+      this.#usage.snapshot(params)
     } else if (message.method === "turn/completed") {
+      this.#usage.complete(params.threadId, nestedId(params, "turn"))
       for (const [itemId, call] of this.#toolServerCalls) {
         if (call.threadId === params.threadId) this.#toolServerCalls.delete(itemId)
-      }
-      // Codex's Turn carries no usage today. One that did would be read the
-      // same way as a token-usage update: partial, and dropped rather than
-      // thrown when its counters do not add up.
-      let usage: ReturnType<typeof normalizeProviderUsage>
-      try {
-        usage = normalizeProviderUsage(params.turn ?? params)
-      } catch {
-        usage = undefined
-      }
-      if (usage && typeof params.threadId === "string" && typeof params.turnId === "string") {
-        this.#emit({
-          type: "usage", threadId: params.threadId, turnId: params.turnId, usage,
-          source: { kind: "turn", tokens: "reported", final: false },
-        })
       }
       this.#emit({ type: "turn-completed", params })
     } else if (codexReviewerNotifications.has(message.method ?? "")) {

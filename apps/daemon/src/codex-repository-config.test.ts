@@ -358,7 +358,7 @@ describe("Codex project trust", () => {
 
     const params = sentParams(transport, "thread/start")[0]
     expect(Object.keys(params ?? {}).sort()).toEqual(
-      ["approvalPolicy", "approvalsReviewer", "config", "cwd", "developerInstructions", "model", "sandbox", "serviceName"],
+      ["approvalPolicy", "approvalsReviewer", "config", "cwd", "developerInstructions", "experimentalRawEvents", "model", "sandbox", "serviceName"],
     )
     expect(params).toMatchObject({ cwd: root, sandbox: "workspace-write", serviceName: "domovoi", approvalsReviewer: "user" })
     expect(Object.keys(params?.config as object)).toEqual(["projects", "tools"])
