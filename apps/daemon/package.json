@@ -71,7 +71,7 @@
   },
   "devDependencies": {
     "@getdomovoi/credential-store": "workspace:*",
-    "@types/node": "^26.4.0",
+    "@types/node": "^25.9.9",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "catalog:",
     "tsup": "^8.5.0",
