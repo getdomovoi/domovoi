@@ -1,7 +1,10 @@
 import { useState } from "react"
 import { CircleStopIcon, GitCommitHorizontalIcon } from "lucide-react"
 
-import type { ChangedFileEvidence, Runtime } from "@getdomovoi/protocol"
+import {
+  evidenceStagingBudgetMs, maximumEvidenceStagingBytes, maximumEvidenceStagingPaths,
+  type ChangedFileEvidence, type Runtime, type SessionEvidence,
+} from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Button } from "./components/ui/button"
@@ -42,6 +45,12 @@ const statusLetter: Record<ChangedFileEvidence["status"], string> = {
   conflicted: "!",
 }
 
+const stagingLimitCopy = {
+  size: `Domovoi cannot verify these changes for a commit because changed files exceed the ${maximumEvidenceStagingBytes / (1_024 * 1_024)} MiB staging limit. Commit in your own checkout, or ignore or remove large files from these changes.`,
+  paths: `Domovoi cannot verify these changes for a commit because there are more than ${maximumEvidenceStagingPaths.toLocaleString("en-US")} changed paths. Commit in your own checkout, or ignore or remove files to reduce the changed path count.`,
+  time: `Domovoi could not verify these changes within the ${evidenceStagingBudgetMs / 1_000} s staging allowance. Refresh to try again; a retry may succeed. You can also commit in your own checkout.`,
+} satisfies Record<NonNullable<SessionEvidence["workspace"]["commitUnavailableReason"]>["limit"], string>
+
 // Desktop V2 J27's COMMITS card, as far as the daemon builds it: one commit
 // of every change in the worktree on the session branch, with the person's
 // message. The design's plan-step grouping, Split again, moving files between
@@ -53,6 +62,7 @@ export function SessionCommitCard({
   totalFiles,
   baseCommit,
   changesDigest,
+  commitUnavailableReason,
   onCancel,
   onCommitted,
 }: {
@@ -61,6 +71,7 @@ export function SessionCommitCard({
   totalFiles: number
   baseCommit: string
   changesDigest: string | undefined
+  commitUnavailableReason?: SessionEvidence["workspace"]["commitUnavailableReason"]
   onCancel: () => void
   onCommitted: () => void
 }) {
@@ -68,7 +79,9 @@ export function SessionCommitCard({
   const [pending, setPending] = useState(false)
   const [error, setError] = useState("")
   const blocked = controls.blocked ?? (changesDigest === undefined
-    ? "Domovoi cannot verify these changes for a commit. The files may still be changing, or Git may be unable to stage them safely."
+    ? commitUnavailableReason === undefined
+      ? "Domovoi cannot verify these changes for a commit. The files may still be changing, or Git may be unable to stage them safely."
+      : stagingLimitCopy[commitUnavailableReason.limit]
     : undefined)
   const commit = () => {
     if (pending || blocked !== undefined || changesDigest === undefined || !message.trim()) return

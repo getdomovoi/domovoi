@@ -791,9 +791,20 @@ export const changedFileEvidenceSchema = z.object({
 
 const changesDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/u)
 
+// Shared interactive staging limits: the daemon enforces them and clients name
+// them when Commit is unavailable. They do not limit commit-time recomputation.
+export const maximumEvidenceStagingBytes = 64 * 1_024 * 1_024
+// Includes changed paths that need no hashing, such as deletions.
+export const maximumEvidenceStagingPaths = 10_000
+export const evidenceStagingBudgetMs = 5_000
+
 export const workspaceEvidenceSchema = z.object({
   // Older or unstageable evidence remains readable, but cannot authorize a commit.
   changesDigest: changesDigestSchema.optional(),
+  commitUnavailableReason: z.object({
+    kind: z.literal("staging-limit"),
+    limit: z.enum(["size", "paths", "time"]),
+  }).strict().optional(),
   baseCommit: commitShaSchema,
   diff: z.string().check(utf16MaxLength(maximumSessionEvidenceDiffLength)),
   diffTruncated: z.boolean(),
@@ -801,6 +812,13 @@ export const workspaceEvidenceSchema = z.object({
   files: z.array(changedFileEvidenceSchema).max(maximumSessionEvidenceFiles),
   filesTruncated: z.boolean(),
 }).strict().superRefine((workspace, context) => {
+  if (workspace.changesDigest !== undefined && workspace.commitUnavailableReason !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["commitUnavailableReason"],
+      message: "Commit authority cannot accompany an unavailable reason",
+    })
+  }
   const paths = new Set<string>()
   workspace.files.forEach((file, index) => {
     if (paths.has(file.path)) {

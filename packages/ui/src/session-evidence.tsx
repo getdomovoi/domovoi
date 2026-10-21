@@ -507,6 +507,7 @@ export function SessionEvidenceContent({
                   totalFiles={evidence.workspace.totalChangedFiles}
                   baseCommit={evidence.workspace.baseCommit}
                   changesDigest={evidence.workspace.changesDigest}
+                  commitUnavailableReason={evidence.workspace.commitUnavailableReason}
                   onCancel={() => setCommitOpen(false)}
                   onCommitted={() => {
                     setCommitOpen(false)

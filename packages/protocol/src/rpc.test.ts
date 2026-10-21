@@ -20,6 +20,9 @@ import {
   isRefusedWithoutPersistence,
   rpcMethodAuthorizations,
   maximumJsonValueDepth,
+  maximumEvidenceStagingBytes,
+  maximumEvidenceStagingPaths,
+  evidenceStagingBudgetMs,
   persistenceRecoveryRpcMethods,
   maximumTerminalReplayCharacters,
   phoneAndTabletPromise,
@@ -1155,8 +1158,41 @@ describe("session evidence", () => {
     },
   }
 
+  it("publishes the staging limits shared by the daemon and commit copy", () => {
+    expect(maximumEvidenceStagingBytes).toBe(64 * 1_024 * 1_024)
+    expect(maximumEvidenceStagingPaths).toBe(10_000)
+    expect(evidenceStagingBudgetMs).toBe(5_000)
+  })
+
   it("accepts bounded Git and observed command-run evidence", () => {
     expect(sessionEvidenceSchema.parse(evidence)).toEqual(evidence)
+  })
+
+  it.each(["size", "paths", "time"])("accepts the %s staging limit without commit authority", (limit) => {
+    const workspace = { ...evidence.workspace, commitUnavailableReason: { kind: "staging-limit", limit } }
+    expect(sessionEvidenceSchema.parse({ ...evidence, workspace }).workspace).toEqual(workspace)
+  })
+
+  it.each([
+    { kind: "staging-limit", limit: "unknown" },
+    { kind: "staging-limit" },
+    { kind: "unknown", limit: "size" },
+    { kind: "staging-limit", limit: "size", extra: true },
+  ])("rejects an invalid commit-unavailable reason %j", (commitUnavailableReason) => {
+    expect(sessionEvidenceSchema.safeParse({
+      ...evidence, workspace: { ...evidence.workspace, commitUnavailableReason },
+    }).success).toBe(false)
+  })
+
+  it("rejects a staging limit alongside a commit digest", () => {
+    expect(sessionEvidenceSchema.safeParse({
+      ...evidence,
+      workspace: {
+        ...evidence.workspace,
+        changesDigest: `sha256:${"b".repeat(64)}`,
+        commitUnavailableReason: { kind: "staging-limit", limit: "size" },
+      },
+    }).success).toBe(false)
   })
 
   it.each([
