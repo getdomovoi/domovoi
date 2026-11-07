@@ -1,5 +1,5 @@
 import { once } from "node:events"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -7,6 +7,7 @@ import {
   createEmptyWorkspace,
   demoWorkspace,
   protocolVersion,
+  rpcMethods,
   workspaceSnapshotSchema,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -16,15 +17,17 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   activeProjectCap,
   DomovoiDaemon,
+  type DaemonServerOptions,
   projectCloseUnavailableRefusal,
   projectNotOpenRefusal,
   workspaceSnapshotForClient,
 } from "./server.js"
+import type { AgentAdapter } from "./agents.js"
+import type { WorkspaceService } from "./workspace.js"
 import { SqliteWorkspaceStore } from "./store.js"
 
-// J31 S1: the daemon states its active projects and cap in every snapshot,
-// while it still keeps one project open at a time. A call that names any
-// other project is refused, and project.close is refused until S3.
+// Named operations resolve active membership independently of shared focus.
+// Unknown projects and project.close remain refused until S3.
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
@@ -40,21 +43,23 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
 
-async function fixture(open: boolean, another = false) {
+async function fixture(open: boolean, another = false, options: DaemonServerOptions = {}) {
   const root = await mkdtemp(join(tmpdir(), "domovoi-project-scope-"))
   directories.push(root)
   const empty = createEmptyWorkspace(demoWorkspace.machine)
   const project = { id: projectId, machineId: demoWorkspace.machine.id, name: "acme", path: root, branch: "main" }
   const snapshot: WorkspaceSnapshot = open ? { ...empty, project } : empty
   if (another) {
-    snapshot.projects = [project, { ...project, id: "project-b", name: "b" }]
+    const otherPath = join(root, "other")
+    await mkdir(otherPath)
+    snapshot.projects = [project, { ...project, id: "project-b", name: "b", path: otherPath }]
     snapshot.project = snapshot.projects[1]!
   }
   const store = new SqliteWorkspaceStore(":memory:", snapshot)
-  const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", store, errorSink: vi.fn() })
+  const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", store, errorSink: vi.fn(), ...options })
   daemons.push(daemon)
   await daemon.start()
-  return { daemon, project }
+  return { daemon, project, store }
 }
 
 async function connect(daemon: DomovoiDaemon) {
@@ -192,16 +197,52 @@ describe("project.close", () => {
   })
 })
 
-it("admits named non-focused active projects without admitting saved or unknown projects", async () => {
-  const { daemon } = await fixture(true, true)
+it("routes named non-focused project operations and grants only to A", async () => {
+  const agent = {
+    connect: vi.fn(async () => {}), listModels: vi.fn(async () => [{
+      provider: "codex", id: "gpt-5.6-sol", displayName: "Test model", description: "Test model",
+      supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium", isDefault: true,
+    }]),
+    startThread: vi.fn(async () => "thread-a"), resumeThread: vi.fn(async () => {}),
+    stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "turn-a"),
+    steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+    resolveApproval: vi.fn(), onEvent: () => () => {}, close: vi.fn(async () => {}),
+  } satisfies AgentAdapter
+  const workspace = {
+    inspect: vi.fn(async (path: string) => ({ root: path, name: "A", branch: "main", head: "a".repeat(40) })),
+    createSessionWorkspace: vi.fn(async (path: string) => ({ path, branch: "session", baseCommit: "a".repeat(40) })),
+    removeSessionWorkspace: vi.fn(async () => {}), checkpoint: vi.fn(), restore: vi.fn(),
+  } satisfies WorkspaceService
+  const { daemon, project, store } = await fixture(true, true, {
+    agents: { codex: agent }, workspaceService: workspace,
+    artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+  })
+  for (const [path, name] of [[project.path, "scope-a"], [join(project.path, "other"), "scope-b"]] as const) {
+    const directory = join(path, ".agents", "skills", name)
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, "SKILL.md"), `---\nname: ${name}\ndescription: Test instructions.\n---\nUse ${name}.\n`)
+  }
   const { call } = await connect(daemon)
-  for (const method of ["tool.inventory", "skill.list", "skill.inventory"]) {
-    const named = await call(method, { projectId })
-    expect(named).toHaveProperty("result")
-  }
-  for (const [method, params] of projectScoped) {
-    const named = await call(method, { ...params, projectId })
-    expect(errorOf(named)?.message).not.toBe(projectNotOpenRefusal)
-  }
+  const inventory = rpcMethods["tool.inventory"].result.parse((await call("tool.inventory", { projectId })).result)
+  expect(inventory.repository).toMatchObject({ projectId, root: project.path })
+  const otherInventory = rpcMethods["tool.inventory"].result.parse((await call("tool.inventory", {})).result)
+  expect(otherInventory.repository).toMatchObject({ projectId: "project-b", root: join(project.path, "other") })
+  const skills = rpcMethods["skill.list"].result.parse((await call("skill.list", { projectId })).result)
+  expect(skills.some((skill) => skill.name === "scope-a")).toBe(true)
+  expect(skills.some((skill) => skill.name === "scope-b")).toBe(false)
+  const skill = skills.find((entry) => entry.name === "scope-a")!
+  expect(await call("skill.setEnabled", { projectId, id: skill.id, enabled: true,
+    contentDigest: skill.contentDigest, manifest: skill.manifest })).toHaveProperty("result")
+  expect(store.load().skillEnablements).toEqual([expect.objectContaining({ projectId, skillId: skill.id, enabled: true })])
+  expect(await call("repository.trust", { projectId, configDigest: inventory.repository!.configDigest, client: "desktop" })).toHaveProperty("result")
+  expect(store.repositoryTrust.find(projectId)).toBeDefined()
+  expect(store.repositoryTrust.find("project-b")).toBeUndefined()
   expect((await call("workspace.get", {})).result).toMatchObject({ project: { id: "project-b" } })
+  const created = await call("session.create", { projectId, title: "A session", client: "desktop",
+    runtime: { provider: "codex", model: "gpt-5.6-sol", reasoning: "medium", permissionMode: "build", auto: false } })
+  expect(created).not.toHaveProperty("error")
+  expect(workspace.inspect).toHaveBeenCalledWith(project.path, expect.any(AbortSignal))
+  expect(workspace.createSessionWorkspace).toHaveBeenCalledWith(project.path, expect.any(String), expect.anything())
+  expect(store.load().sessions).toEqual([expect.objectContaining({ projectId, workspacePath: project.path })])
+  expect(store.load().projects).toHaveLength(2)
 })
