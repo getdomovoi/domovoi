@@ -389,7 +389,7 @@ export function LauncherDialog({
                     <Button
                       type="button"
                       variant="outline"
-                      className="h-auto min-h-9 justify-between py-1.5"
+                      className="h-auto min-h-9 w-full min-w-0 justify-between overflow-hidden py-1.5"
                       aria-labelledby={`${projectLabelId} ${projectValueId}`}
                       disabled={pending}
                     >
@@ -407,7 +407,7 @@ export function LauncherDialog({
                       <ChevronDownIcon data-icon="inline-end" />
                     </Button>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" className="w-[min(26rem,calc(100vw-2rem))]">
+                  <DropdownMenuContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)]">
                     {projects.length > 0 ? (
                       <>
                         <DropdownMenuLabel>Projects</DropdownMenuLabel>
@@ -575,7 +575,7 @@ export function LauncherDialog({
                   <button
                     key={session.id}
                     type="button"
-                    className="flex items-center justify-between gap-4 rounded-lg border px-3 py-2 text-left hover:bg-accent"
+                    className="flex min-w-0 items-center justify-between gap-4 rounded-lg border px-3 py-2 text-left hover:bg-accent"
                     onClick={() => {
                       onResumeSession(session.id)
                       onOpenChange(false)
