@@ -3,6 +3,7 @@ import { existsSync } from "node:fs"
 import { posix, win32 } from "node:path"
 
 import { z } from "zod"
+import { maximumProjectCap } from "@getdomovoi/protocol"
 
 import { DaemonConfigurationError, parseDaemonEnvironment, type DaemonEnvironment, type DaemonEnvironmentConfig } from "../config.js"
 import { OperationDeadline } from "../operation-deadline.js"
@@ -24,6 +25,7 @@ const configurationSchema = z.object({
   profileDirectory: pathSchema.optional(),
   host: z.string(),
   port: z.number().int(),
+  projectCap: z.number().int().min(1).max(maximumProjectCap).optional(),
   credentialPath: pathSchema,
   machineIdentityPath: pathSchema,
   relayIdentityPublicKey: z.string().optional(),
@@ -70,6 +72,7 @@ export function serviceEnvironment(config: ServiceConfiguration): DaemonEnvironm
     DOMOVOI_PROFILE_DIR: config.profileDirectory ?? profileDirectory(config.homeDirectory,
       win32.isAbsolute(config.homeDirectory) && !posix.isAbsolute(config.homeDirectory) ? "win32" : "linux"),
     DOMOVOI_PORT: String(config.port),
+    ...(config.projectCap !== undefined ? { DOMOVOI_PROJECT_CAP: String(config.projectCap) } : {}),
     DOMOVOI_CREDENTIAL_PATH: config.credentialPath,
     DOMOVOI_MACHINE_IDENTITY_PATH: config.machineIdentityPath,
     ...(config.relayIdentityPublicKey !== undefined ? { DOMOVOI_RELAY_IDENTITY_PUBLIC_KEY: config.relayIdentityPublicKey } : {}),
@@ -220,10 +223,11 @@ export function serviceProfileMismatch(input: { environment: NodeJS.ProcessEnv; 
 export function parseServiceConfiguration(text: string): ServiceConfiguration {
   try {
     if (Buffer.byteLength(text, "utf8") > maximumConfigurationBytes) throw new Error("oversized")
-    const { tls, tailnetListener, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, webAppUrl: savedWebAppUrl, webDirectory, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, serviceRuntime, lingerEnabledByDomovoi, ...required } = configurationSchema.parse(JSON.parse(text))
+    const { projectCap, tls, tailnetListener, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, webAppUrl: savedWebAppUrl, webDirectory, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, serviceRuntime, lingerEnabledByDomovoi, ...required } = configurationSchema.parse(JSON.parse(text))
     const webAppUrl = webAppUrlSetting(savedWebAppUrl)
     const config: ServiceConfiguration = {
       ...required,
+      ...(projectCap !== undefined ? { projectCap } : {}),
       ...(wsl !== undefined ? { wsl } : {}),
       ...(serviceRuntime !== undefined ? { serviceRuntime } : {}),
       ...(lingerEnabledByDomovoi !== undefined ? { lingerEnabledByDomovoi } : {}),

@@ -13,6 +13,7 @@ describe("service configuration", () => {
     const config = createServiceConfiguration({
       DOMOVOI_HOST: "::",
       DOMOVOI_PORT: "7717",
+      DOMOVOI_PROJECT_CAP: "5",
       DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
       DOMOVOI_TLS_CERT_PATH: "tls/cert.pem",
       DOMOVOI_TLS_KEY_PATH: "tls/private.key",
@@ -31,6 +32,8 @@ describe("service configuration", () => {
     const decoded = parseServiceConfiguration(text)
     const { version: _version, homeDirectory, ...settings } = config
     expect(decoded).toEqual(config)
+    expect(decoded).toMatchObject({ projectCap: 5 })
+    expect(serviceEnvironment(decoded).DOMOVOI_PROJECT_CAP).toBe("5")
     expect(decoded.webAppUrl).toBe("https://app.example.com/connect")
     expect(serviceEnvironment(decoded).DOMOVOI_WEB_APP_URL).toBe("https://app.example.com/connect")
     // S3.2 plan section 1.2: a supervised daemon keeps the web app directory.
@@ -72,6 +75,14 @@ describe("service configuration", () => {
 
   const defaults = createServiceConfiguration({}, {
     platform: "linux", homeDirectory: "/home/test", workingDirectory: "/home/test",
+  })
+  it("accepts legacy configuration without a cap and refuses invalid saved caps", () => {
+    const legacy = { ...defaults } as Record<string, unknown>
+    delete legacy.projectCap
+    expect(parseDaemonEnvironment(serviceEnvironment(parseServiceConfiguration(JSON.stringify(legacy))), "/home/test")).toMatchObject({ projectCap: 3 })
+    for (const projectCap of [0, 17, 1.5, "3"]) {
+      expect(() => parseServiceConfiguration(JSON.stringify({ ...defaults, projectCap }))).toThrow(/Invalid service configuration/)
+    }
   })
   const tailnetListener = { address: "100.101.102.103", tls: { certPath: "/home/test/.domovoi/tls/a.crt", keyPath: "/home/test/.domovoi/tls/a.key" } }
   it.each([

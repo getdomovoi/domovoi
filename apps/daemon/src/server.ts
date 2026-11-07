@@ -1599,6 +1599,7 @@ export const localMachineCapabilities = [
 ] as const satisfies readonly MachineCapability[]
 
 export type DaemonServerOptions = {
+  projectCap?: number
   updates?: DaemonUpdateOptions
   localOwner?: { secret: LocalOwnerSecret; identity: LocalOwnerIdentity }
   host?: string

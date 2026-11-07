@@ -5,6 +5,17 @@ import { describe, expect, it } from "vitest"
 import { DaemonConfigurationError, defaultWebDirectory, parseDaemonEnvironment } from "./config.js"
 
 describe("parseDaemonEnvironment", () => {
+  it("defaults to three active projects and accepts bounded overrides", () => {
+    expect(parseDaemonEnvironment({}, "/home/tester")).toMatchObject({ projectCap: 3 })
+    for (const cap of [1, 2, 16]) {
+      expect(parseDaemonEnvironment({ DOMOVOI_PROJECT_CAP: String(cap) }, "/home/tester")).toMatchObject({ projectCap: cap })
+    }
+  })
+
+  it.each(["", "0", "17", "-1", "1.5", "NaN", " 3", "3x"])("refuses an invalid active project cap: %s", (cap) => {
+    expect(() => parseDaemonEnvironment({ DOMOVOI_PROJECT_CAP: cap }, "/home/tester")).toThrow(/DOMOVOI_PROJECT_CAP/)
+  })
+
   const encryptedRemote = {
     DOMOVOI_HOST: "0.0.0.0", DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
     DOMOVOI_TLS_CERT_PATH: "/cert.pem", DOMOVOI_TLS_KEY_PATH: "/key.pem",
@@ -68,6 +79,7 @@ describe("parseDaemonEnvironment", () => {
   it("returns bounded local defaults", () => {
     expect(parseDaemonEnvironment({}, "/home/tester")).toEqual({
       profileDirectory: join("/home/tester", ".domovoi"),
+      projectCap: 3,
       host: "127.0.0.1",
       port: 47831,
       credentialPath: join("/home/tester", ".domovoi", "daemon.token"),
