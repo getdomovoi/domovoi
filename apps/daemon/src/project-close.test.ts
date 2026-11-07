@@ -2,7 +2,7 @@ import { once } from "node:events"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createEmptyWorkspace, demoWorkspace, protocolVersion, workspaceProjects, workspaceSnapshotSchema, type RpcResult, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { createEmptyWorkspace, demoWorkspace, maximumProjectCloseSessions, protocolVersion, workspaceProjects, workspaceSnapshotSchema, type RpcResult, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { afterEach, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 import type { AgentAdapter, AgentEvent } from "./agents.js"
@@ -85,6 +85,11 @@ async function fixture(options: { root?: string; initial?: WorkspaceSnapshot } =
   const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
   cleanups.push(async () => { socket.terminate() })
   await once(socket, "open")
+  const notifications: Array<{ method: string; params: unknown }> = []
+  socket.on("message", (data) => {
+    const frame = JSON.parse(String(data)) as { method?: string; params?: unknown }
+    if (frame.method) notifications.push({ method: frame.method, params: frame.params })
+  })
   let sequence = 0
   async function rpc<T = WorkspaceSnapshot>(method: string, params: Record<string, unknown> = {}) {
     const id = ++sequence
@@ -118,7 +123,7 @@ async function fixture(options: { root?: string; initial?: WorkspaceSnapshot } =
     expect(first.error.code).toBe(-32022)
     return rpc<RpcResult<"project.close">>("project.close", { projectId, client: "desktop", confirmation: first.error.data })
   }
-  return { rpc, open, close, store, loaded, root, daemon, socket, stopThread, startTurn, startThread, agent, inspect, projectDirectoryExists, watchers, terminals,
+  return { rpc, open, close, store, loaded, root, daemon, socket, notifications, workspaceService, stopThread, startTurn, startThread, agent, inspect, projectDirectoryExists, watchers, terminals,
     emit: (event: AgentEvent) => { for (const listener of listeners) listener(event) } }
 }
 
@@ -225,7 +230,7 @@ it("drops content, approval and tool events from a closed thread, including afte
 })
 
 it("preserves B's terminal, watcher, redactor and queued send when A closes", async () => {
-  const { rpc, open, close, emit, terminals, watchers, store } = await fixture()
+  const { rpc, open, close, emit, terminals, watchers, store, notifications } = await fixture()
   const a = await open("a")
   const b = await open("b")
   for (const session of [a, b]) {
@@ -240,6 +245,7 @@ it("preserves B's terminal, watcher, redactor and queued send when A closes", as
   expect(terminals[0]!.kill).toHaveBeenCalledOnce()
   expect(terminals[1]!.kill).not.toHaveBeenCalled()
   terminals[1]!.output("B is alive\n")
+  await expect.poll(() => notifications).toContainEqual({ method: "terminal.output", params: { terminalId: `terminal-${b.sessionId}`, data: "B is alive\n" } })
   expect(watchers[1]!.stop).not.toHaveBeenCalled()
   await writeFile(join(watchers[1]!.root, "plan.md"), "B's plan")
   watchers[1]!.onChange({ path: "plan.md", title: "B plan", type: "plan", mimeType: "text/markdown", content: "B's plan" })
@@ -475,4 +481,58 @@ it.each(["added", "retargeted"] as const)("renews confirmation for an injected %
   expect((await closing).error).toMatchObject({ code: -32022 })
   expect((await rpc("workspace.get")).result!.project!.id).toBe(projectId)
   expect(store.load().project!.id).toBe(projectId)
+})
+
+
+it("rejects old queued events after close, reopen and a new send while accepting new events", async () => {
+  const { rpc, open, root, emit, workspaceService, watchers } = await fixture()
+  const a = await open("a")
+  const confirmation = (await rpc("project.close", { projectId: a.projectId, client: "desktop" })).error!.data
+  const entered = deferred()
+  const release = deferred()
+  vi.spyOn(workspaceService, "checkpoint").mockImplementationOnce(async () => {
+    entered.resolve()
+    await release.promise
+    return { commit: "c".repeat(40), changedFiles: [] }
+  })
+  const checkpoint = rpc("checkpoint.create", { sessionId: a.sessionId, client: "desktop" })
+  await entered.promise
+  const closing = rpc("project.close", { projectId: a.projectId, client: "desktop", confirmation })
+  const reopening = rpc("project.open", { path: join(root, "a"), client: "desktop" })
+  const sending = rpc("session.send", { sessionId: a.sessionId, prompt: "new turn", client: "desktop" })
+  // This read bypasses the mutation queue and proves the preceding socket
+  // requests were dispatched before these old events enter the queue.
+  await rpc("permission.hardGates")
+  emit({ type: "text-delta", threadId: a.threadId, delta: "old queued text" })
+  emit({ type: "approval-requested", threadId: a.threadId, requestId: 100, command: "rm old-queued-file" })
+  emit({ type: "command-output", threadId: a.threadId, delta: "old queued tool output" })
+  await writeFile(join(watchers[0]!.root, "old.md"), "old queued artifact")
+  watchers[0]!.onChange({ path: "old.md", type: "plan", title: "old queued artifact", mimeType: "text/markdown", content: "old" })
+  release.resolve()
+  for (const result of await Promise.all([checkpoint, closing, reopening, sending])) expect(result.error).toBeUndefined()
+  const snapshot = (await rpc("workspace.get")).result!
+  expect(snapshot.approvals).toEqual([])
+  expect(snapshot.artifacts).toEqual([])
+  expect(JSON.stringify(snapshot.thread)).not.toContain("old queued")
+  emit({ type: "text-delta", threadId: a.threadId, delta: "current text" })
+  await expect.poll(async () => JSON.stringify((await rpc("workspace.get")).result!.thread)).toContain("current text")
+})
+
+it("caps the stop report without leaving omitted sessions active or unsaved", async () => {
+  const initial = createEmptyWorkspace(demoWorkspace.machine)
+  initial.project = demoWorkspace.project
+  initial.sessions = Array.from({ length: maximumProjectCloseSessions + 1 }, (_, index) => {
+    const session = { ...demoWorkspace.sessions[0]!, id: `session-cap-${index}`, title: `Session ${index}`, state: "idle" as const }
+    delete session.activeTurnId
+    delete session.providerThreadId
+    delete session.workspacePath
+    return session
+  })
+  const { close, store } = await fixture({ initial })
+  const closed = await close(initial.project!.id)
+  expect(closed.error).toBeUndefined()
+  expect(closed.result!.sessions).toHaveLength(maximumProjectCloseSessions)
+  expect(closed.result!.omittedSessions).toBe(1)
+  expect(closed.result!.snapshot.sessions).toEqual([])
+  expect(store.loadProject(initial.project!.id)!.sessions).toHaveLength(maximumProjectCloseSessions + 1)
 })

@@ -11,6 +11,7 @@ import {
   demoWorkspace,
   protocolVersion,
   workspaceSnapshotSchema,
+  workspaceProjects,
   type SessionTransferCoverage,
   type SessionTransferState,
   type WorkspaceSnapshot,
@@ -3287,5 +3288,86 @@ describe("session transfer of a turned-off provider's session", () => {
       expect(errorSink).not.toHaveBeenCalledWith(expect.objectContaining({ context }))
     }
     expect(errorSink).not.toHaveBeenCalledWith(expect.objectContaining({ context: expect.stringMatching(/provider/i) }))
+  })
+})
+
+
+describe("project close ordered with transfers", () => {
+  it.each(["before", "during"] as const)("closes the target %s import without resurrecting its active membership", async (order) => {
+    let arrive!: () => void
+    let release!: () => void
+    const arrived = new Promise<void>((resolve) => { arrive = resolve })
+    const released = new Promise<void>((resolve) => { release = resolve })
+    const { call, daemon, store, commitParams, packaged } = await preparedTargetTransfer({
+      restoreSessionFromBundle: async (_path, sessionId) => {
+        arrive()
+        await released
+        return { path: `/target/${sessionId}`, branch: `domovoi/${sessionId}`, baseCommit: checkpointCommit }
+      },
+    })
+    const socket = await openClient(daemon)
+    const client = rpc(socket)
+    const closeParams = { projectId: "project-target", client: "desktop" }
+    if (order === "before") {
+      expect(await client("project.close", closeParams)).toHaveProperty("result")
+      expect(await call("transfer.commit", commitParams)).toMatchObject({ result: { state: "refused", reason: "target-project-missing" } })
+    } else {
+      const committing = call("transfer.commit", commitParams)
+      await arrived
+      const closing = client("project.close", closeParams)
+      release()
+      expect(await committing).toMatchObject({ result: { state: "committed" } })
+      const response = await closing
+      expect(response).toMatchObject({ error: { code: -32022, data: { sessionCount: 1 } } })
+      expect(await client("project.close", { ...closeParams, confirmation: (response.error as { data: unknown }).data })).toHaveProperty("result")
+      expect(store.loadProject("project-target")!.sessions).toContainEqual(expect.objectContaining({ id: packaged.manifest.sessionId }))
+    }
+    expect(workspaceSnapshotSchema.parse((await client("workspace.get", {})).result)).toMatchObject({ project: null, projects: [], sessions: [] })
+    expect(store.load()).toMatchObject({ project: null, sessions: [] })
+    expect(workspaceProjects(store.load())).toEqual([])
+    socket.close()
+  })
+
+  it("waits for background source recovery before validating close confirmation", async () => {
+    const { source, intent, packaged } = await transferFixture()
+    const frozen = freezeSourceSessionTransfer(source, intent, packaged.manifest.transferId,
+      "2026-09-03T22:00:00.000Z", { client: "desktop", clientId: "studio-mac" })
+    const store = new SqliteWorkspaceStore(":memory:", frozen)
+    let arrive!: () => void
+    let release!: () => void
+    const arrived = new Promise<void>((resolve) => { arrive = resolve })
+    const released = new Promise<void>((resolve) => { release = resolve })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store,
+      authToken: testAuthToken("close-source-recovery"),
+      workspaceService: {
+        inspect: async () => ({ root: source.project!.path, name: source.project!.name, branch: "main", head: baseCommit }),
+        createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+        removeSessionWorkspace: async () => {}, checkpoint: async () => ({ commit: checkpointCommit, changedFiles: [] }),
+        restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        transferFingerprint: async () => { arrive(); await released; return { headCommit: checkpointCommit, digest: `sha256:${"0".repeat(64)}` } },
+      },
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    await arrived
+    const socket = new WebSocket(`ws://127.0.0.1:${daemon.address!.port}/rpc`)
+    await new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject) })
+    const call = rpc(socket)
+    expect(await call("system.hello", { client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken })).toHaveProperty("result")
+    const sessions = frozen.sessions.map(({ id, title, state, workspacePath }) => ({ id, title, state, ...(workspacePath ? { workspacePath } : {}) })).sort((a, b) => a.id.localeCompare(b.id))
+    const closeParams = { projectId: frozen.project!.id, client: "desktop" }
+    const closing = call("project.close", { ...closeParams, confirmation: {
+      kind: "project-close-confirmation", projectId: frozen.project!.id, sessions,
+      sessionCount: sessions.length, worktreeCount: sessions.filter((session) => session.workspacePath).length,
+    } })
+    release()
+    const response = await closing
+    expect(response).toMatchObject({ error: { code: -32022, data: { sessions: [expect.objectContaining({ state: "idle" })] } } })
+    expect(await call("project.close", { ...closeParams, confirmation: (response.error as { data: unknown }).data })).toHaveProperty("result")
+    expect(store.load()).toMatchObject({ project: null, sessions: [] })
+    expect(workspaceProjects(store.load())).toEqual([])
+    expect(store.loadProject(frozen.project!.id)!.sessions[0]).toMatchObject({ state: "idle", baseCommit: checkpointCommit })
+    socket.close()
   })
 })
