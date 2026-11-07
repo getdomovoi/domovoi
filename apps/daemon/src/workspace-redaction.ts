@@ -1,6 +1,6 @@
 import { resolve } from "node:path"
 
-import { maximumCommitMessageLength, maximumPairedDeviceLabelLength, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { maximumCommitMessageLength, maximumPairedDeviceLabelLength, workspaceProjects, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import {
   affectsLinePaths,
@@ -142,9 +142,17 @@ function redactWorkspaceRecords(snapshot: WorkspaceSnapshot): WorkspaceSnapshot 
     const command = redactDurableCommand(approval.command)
     const operation = redactDurableText(approval.operation)
     // A directory saved before it was classified is hidden here too, judged
-    // as written; its location is read against the session worktree.
-    const workspace = sanitized.sessions.find((session) => session.id === approval.sessionId)?.workspacePath
-      ?? sanitized.project?.path
+    // as written; its location belongs to the session, never to view focus.
+    const session = sanitized.sessions.find((session) => session.id === approval.sessionId)
+    const workspace = session?.workspacePath
+      ?? workspaceProjects(sanitized).find((project) => project.id === session?.projectId)?.path
+    // Without a root, relative path facts cannot be classified safely. A
+    // stale card must not borrow the focused project's root or expose its text.
+    if (workspace === undefined) return {
+      ...approval, risk: "hard-gate", command: "[REDACTED]", operation: "[REDACTED]",
+      directory: "[REDACTED]", affects: "[REDACTED]", network: "[REDACTED]",
+      execution: { state: "unresolved", reason: "sensitive-content" },
+    }
     const directory = approvalDirectory({ directory: approval.directory, workspace })
     const affects = redactDurableText(approval.affects)
     // A file line saved before its path was classified is judged here too.

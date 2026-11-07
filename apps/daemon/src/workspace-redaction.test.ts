@@ -7,6 +7,46 @@ import { createWorkspaceRedactor, redactThreadCopies, redactWorkspaceCopies } fr
 const createdAt = "2026-09-29T12:00:00.000Z"
 const secrets = /(?:reply|tool|output|streamed|approval)-secret-\d+/u
 
+it("redacts a no-worktree approval against its own project while another is focused", () => {
+  const snapshot = structuredClone(demoWorkspace)
+  const project = { ...snapshot.project!, path: "/synthetic/home/.ssh/project" }
+  const focused = { ...project, id: "project-other", path: "/synthetic/other" }
+  snapshot.project = focused
+  snapshot.projects = [project, focused]
+  const approval = snapshot.approvals[0]!
+  const session = snapshot.sessions.find(({ id }) => id === approval.sessionId)!
+  delete session.workspacePath
+  approval.directory = "../keys"
+  approval.command = "cat /synthetic/home/.ssh/keys"
+  approval.operation = "Read /synthetic/home/.ssh/keys"
+  for (const redact of [redactWorkspaceCopies, createWorkspaceRedactor()]) {
+    const card = redact(snapshot).approvals[0]!
+    expect(card.directory).toContain("[REDACTED]")
+    expect(card.risk).toBe("hard-gate")
+    expect(JSON.stringify(card)).not.toContain("/synthetic/home/.ssh/keys")
+    snapshot.project = project
+    expect(redact(snapshot).approvals[0]).toEqual(card)
+    snapshot.project = focused
+  }
+  expect(approval.directory).toBe("../keys")
+})
+
+it.each(["session", "project"])("hides path facts when the approval's %s is missing", (missing) => {
+  const snapshot = structuredClone(demoWorkspace)
+  const approval = snapshot.approvals[0]!
+  const session = snapshot.sessions.find(({ id }) => id === approval.sessionId)!
+  delete session.workspacePath
+  if (missing === "session") snapshot.sessions = snapshot.sessions.filter(({ id }) => id !== session.id)
+  else session.projectId = "project-missing"
+  approval.directory = "../keys"
+  for (const redact of [redactWorkspaceCopies, createWorkspaceRedactor()]) {
+    expect(redact(snapshot).approvals[0]).toMatchObject({
+      risk: "hard-gate", directory: "[REDACTED]", command: "[REDACTED]",
+      operation: "[REDACTED]", execution: { state: "unresolved", reason: "sensitive-content" },
+    })
+  }
+})
+
 // A long project history with a secret in every item, and one assistant reply
 // still streaming at the end, as the persistence path sees it mid-turn.
 function streamingWorkspace(historyItems: number): WorkspaceSnapshot {
