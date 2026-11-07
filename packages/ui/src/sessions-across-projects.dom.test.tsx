@@ -10,6 +10,7 @@ import {
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
+import type { DesktopWindowBridge } from "./desktop-platform"
 import { WorkspaceShell } from "./workspace-shell"
 import { workspaceUiStorageKey } from "./workspace-persistence"
 import {
@@ -313,6 +314,44 @@ describe("starting a session in another project", () => {
     expect(sentRequests(socket, "project.open")).toHaveLength(1)
     expect(dialog.isConnected).toBe(true)
     expect(within(dialog).getByRole<HTMLButtonElement>("button", { name: "Create session" }).disabled).toBe(false)
+  })
+
+  it("takes Choose a folder from the desktop's own folder dialog", async () => {
+    const user = userEvent.setup()
+    const openDirectory = vi.fn(async () => ({ status: "selected" as const, path: "/Users/dev/src/new-repo" }))
+    const windowBridge: DesktopWindowBridge = {
+      platform: "darwin",
+      getRpcEndpoint: async () => ({ url: "ws://127.0.0.1:47831/rpc", token: "t" }),
+      captureAnnotation: async () => { throw new Error("not in this test") },
+      notify: async () => true,
+      onNotificationActivate: () => () => {},
+      openDirectory,
+      readClipboardText: async () => "",
+      writeClipboardText: async () => true,
+      openExternal: async () => true,
+      onDeepLink: () => () => {},
+      getWindowDecoration: async () => "system",
+      setWindowDecoration: async () => true,
+      minimize: () => {},
+      maximize: () => {},
+      close: () => {},
+    }
+    render(<WorkspaceShell windowBridge={windowBridge} />)
+    const socket = harness.socket(0)
+    await act(async () => {
+      const snapshot = workspaceSnapshot()
+      completeHandshake(socket, { ...snapshot, machine: { ...snapshot.machine, providers: [codex] } })
+    })
+    await answerProjectList(socket, [known(projectA, demoWorkspace.sessions)])
+    await user.click(screen.getByRole("button", { name: "New session" }))
+    const dialog = await screen.findByRole("dialog", { name: "Start a session" })
+    await settle()
+    await user.click(within(dialog).getByRole("button", { name: /^Project/ }))
+    await user.click(screen.getByRole("menuitem", { name: /Choose a folder/ }))
+    await settle()
+    expect(openDirectory).toHaveBeenCalledOnce()
+    expect(within(dialog).getByRole("button", { name: /^Project/ }).textContent).toContain("new-repo")
+    expect(within(dialog).queryByLabelText("Repository path")).toBeNull()
   })
 
   it("opens the same dialog with no project chosen when none is open", async () => {
