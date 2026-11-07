@@ -67,8 +67,10 @@ overrides:
   # GHSA-mrhx-c7xc-m3w5, high: zod below 4.6.6 can exhaust memory while validating oversized
   # constrained collections. The catalog floor below covers the direct consumers; this forces
   # the copy eslint-plugin-react-hooks resolves. Scoped to 4.x so no 3.x consumer crosses a
-  # major; auditConfig below explains the one 3.x copy. Remove once the lockfile resolves 4.6.6
-  # or later on its own.
+  # major; auditConfig below explains the one 3.x copy. pnpm applies overrides to peers too, so
+  # dual-major peer ranges (`^3.25 || ^4`, as in the MCP SDK and zod-validation-error) become
+  # ^4.6.6; every consumer of those already resolves zod 4. Remove once the lockfile resolves
+  # 4.6.6 or later on its own.
   zod@4: ^4.6.6
   # GHSA-27r3-jxmh-p828, high: body-parser 2.x below 2.4.0 lets trailing bytes after a
   # compressed request body cause a denial of service. Reached through express 5 in the MCP
