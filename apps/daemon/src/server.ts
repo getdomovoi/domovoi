@@ -8,6 +8,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import {
   approvalCheckpointErrorCode,
   buildVersion,
+  maximumKnownProjects,
+  maximumKnownProjectSessions,
+  maximumKnownSessionTitleLength,
+  type KnownProject,
   maximumRpcMessageBytes,
   maximumMidTurnCheckpointTurnIdLength,
   maximumMidTurnCheckpointPaths,
@@ -8428,6 +8432,19 @@ export class DomovoiDaemon {
         return
       }
 
+      // Rulings Q158 A and Q159 A: every saved project, so a client keeps
+      // listing a project's sessions after another one opens. The focused
+      // project is read from the live snapshot, which a save may not have
+      // reached yet, and leads the list.
+      if (method === "project.list") {
+        this.#sendResult(socket, method, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(await this.#knownProjects()),
+        })
+        return
+      }
+
       // Trust is recorded here and reported by tool.inventory; each provider
       // call carries the grant (#repositoryTrustCall), Claude Code and Codex
       // load parts of the configuration under it (P6b, P6c) and the other
@@ -14001,6 +14018,43 @@ export class DomovoiDaemon {
     }
   }
 
+  // project.list: the saved projects newest first, with the focused project
+  // read from the live snapshot and listed first, cut to the protocol's
+  // bounds. A saved row that does not read is reported and left out; a
+  // project whose folder is gone is listed as missing.
+  async #knownProjects(): Promise<RpcResult<"project.list">> {
+    const listing = this.#store.listProjects?.(maximumKnownProjectSessions) ?? { projects: [], unreadable: [] }
+    for (const projectId of listing.unreadable) {
+      this.#reportError(`Domovoi could not read the saved project ${projectId} for the project list`, new Error("The saved row is not one project's state"))
+    }
+    const focused = this.#snapshot.project
+    const saved = listing.projects.filter((known) => known.project.id !== focused?.id)
+    if (focused) {
+      const sessions = this.#snapshot.sessions
+        .map((session) => ({
+          id: session.id,
+          title: session.title.slice(0, maximumKnownSessionTitleLength),
+          state: session.state,
+          updatedAt: session.updatedAt,
+        }))
+        .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || left.id.localeCompare(right.id))
+      const savedAt = listing.projects.find((known) => known.project.id === focused.id)?.savedAt ?? new Date().toISOString()
+      const omittedSessions = sessions.length - maximumKnownProjectSessions
+      saved.unshift({
+        project: focused,
+        savedAt,
+        sessions: sessions.slice(0, maximumKnownProjectSessions),
+        ...(omittedSessions > 0 ? { omittedSessions } : {}),
+      })
+    }
+    const listed = saved.slice(0, maximumKnownProjects)
+    const omittedProjects = saved.length - listed.length
+    return {
+      projects: await Promise.all(listed.map(async (known) => ({ ...known, folder: await projectFolderState(known.project.path) }))),
+      ...(omittedProjects > 0 ? { omittedProjects } : {}),
+    }
+  }
+
   async #suspendProjectSessions(): Promise<void> {
     const suspendedAt = new Date().toISOString()
     const interruptedSessionIds = new Set<string>()
@@ -14247,6 +14301,23 @@ function terminalExit(terminal: TerminalProcess): Promise<void> {
     disposable = terminal.onExit(finish)
     if (exited) disposable.dispose()
   })
+}
+
+// How long project.list waits on one project folder before it says the
+// folder could not be read. A path on an unreachable network mount can hang.
+const projectFolderCheckTimeoutMs = 2_000
+
+// Whether a saved project's folder is still there. Gone or replaced by a file
+// is missing; any other answer, a permission refusal or a stat that does not
+// return in time, is unreadable, because the daemon could not tell.
+async function projectFolderState(path: string): Promise<KnownProject["folder"]> {
+  try {
+    const entry = await withTimeout(stat(path), projectFolderCheckTimeoutMs, "Project folder check timed out")
+    return entry.isDirectory() ? "present" : "missing"
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return code === "ENOENT" || code === "ENOTDIR" ? "missing" : "unreadable"
+  }
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

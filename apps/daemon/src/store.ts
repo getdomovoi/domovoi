@@ -7,8 +7,12 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import { Worker } from "node:worker_threads"
 
 import {
+  dateTimeSchema,
   executionResolutionSchema,
+  knownProjectSessionSchema,
   machineIdSchema,
+  maximumKnownSessionTitleLength,
+  projectSchema,
   protocolCompatibility,
   protocolVersion,
   protocolVersionSchema,
@@ -16,6 +20,8 @@ import {
   resolvedExecutionSchema,
   sessionSendParamsSchema,
   workspaceSnapshotSchema,
+  type KnownProject,
+  type KnownProjectSession,
   type QueuedSessionSend,
   type SessionAttachment,
   type SessionSendReview,
@@ -52,6 +58,48 @@ export type WorkspaceStoreRecovery = StateRecovery & { quarantinedPath: string; 
 
 type StoredProjectWorkspace = {
   state: string
+}
+
+// A saved project as project.list reads it, before the daemon looks for its
+// folder: its sessions newest first, at most the limit asked for.
+export type SavedProject = Omit<KnownProject, "folder">
+
+export type SavedProjectListing = {
+  projects: SavedProject[]
+  // Ids of rows that did not read as one project's own state.
+  unreadable: string[]
+}
+
+function savedProjectListing(
+  row: { project_id: string; updated_at: string; project: string | null; sessions: string | null },
+  sessionLimit: number,
+): SavedProject | undefined {
+  if (row.project === null || row.sessions === null) return undefined
+  const savedAt = dateTimeSchema.safeParse(row.updated_at)
+  const project = projectSchema.safeParse(JSON.parse(row.project))
+  if (!savedAt.success || !project.success || project.data.id !== row.project_id) return undefined
+  const stored: unknown = JSON.parse(row.sessions)
+  if (!Array.isArray(stored)) return undefined
+  const sessions: KnownProjectSession[] = []
+  for (const value of stored) {
+    if (!isRecord(value) || value.projectId !== row.project_id) return undefined
+    // A title is listed whole up to the list's bound; a longer one, which
+    // nothing creates today, is cut there rather than costing the row.
+    const title = typeof value.title === "string" ? value.title.slice(0, maximumKnownSessionTitleLength) : value.title
+    const session = knownProjectSessionSchema.safeParse({ id: value.id, title, state: value.state, updatedAt: value.updatedAt })
+    if (!session.success) return undefined
+    sessions.push(session.data)
+  }
+  sessions.sort((left, right) => (
+    Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || left.id.localeCompare(right.id)
+  ))
+  const omittedSessions = sessions.length - sessionLimit
+  return {
+    project: project.data,
+    savedAt: savedAt.data,
+    sessions: sessions.slice(0, sessionLimit),
+    ...(omittedSessions > 0 ? { omittedSessions } : {}),
+  }
 }
 
 type StoredQueuedSessionSendRow = {
@@ -141,6 +189,7 @@ export interface WorkspaceStore {
   readonly recovery?: WorkspaceStoreRecovery | undefined
   load(): WorkspaceSnapshot
   loadProject?(projectId: string, machine?: WorkspaceSnapshot["machine"]): ProjectWorkspaceState | undefined
+  listProjects?(sessionLimit: number): SavedProjectListing
   save(snapshot: WorkspaceSnapshot): void
   saveAsync?(snapshot: WorkspaceSnapshot): Promise<void>
   saveTransferredSnapshot?(
@@ -1489,6 +1538,27 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       session.runtime.reasoning = normalizeLegacyEffort(session.runtime.provider, session.runtime.reasoning)
     }
     return projectWorkspaceState(this.transferConflicts.restore(snapshot))
+  }
+
+  // Every saved project row, newest first, for project.list. Each row's
+  // project and session list are read with SQLite's JSON functions, so a
+  // project's thread is never parsed here. A row that does not read as one
+  // project's own state is named in unreadable and left out.
+  listProjects(sessionLimit: number): SavedProjectListing {
+    const rows = this.#database.prepare(`
+      SELECT project_id, updated_at,
+        CASE WHEN json_valid(state) THEN json_extract(state, '$.project') END AS project,
+        CASE WHEN json_valid(state) THEN json_extract(state, '$.sessions') END AS sessions
+      FROM workspace_projects
+      ORDER BY updated_at DESC, project_id
+    `).all() as Array<{ project_id: string; updated_at: string; project: string | null; sessions: string | null }>
+    const listing: SavedProjectListing = { projects: [], unreadable: [] }
+    for (const row of rows) {
+      const saved = savedProjectListing(row, sessionLimit)
+      if (saved) listing.projects.push(saved)
+      else listing.unreadable.push(row.project_id)
+    }
+    return listing
   }
 
   #seedProjectRow(snapshot: WorkspaceSnapshot): void {
