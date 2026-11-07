@@ -5,6 +5,7 @@ import { dirname, join } from "node:path"
 import { DatabaseSync, type SQLInputValue } from "node:sqlite"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { Worker } from "node:worker_threads"
+import { ZodError } from "zod"
 
 import {
   executionResolutionSchema,
@@ -568,26 +569,30 @@ export class UnreadableActiveProjectStateError extends Error {
 function restoreActiveWorkspace(value: unknown, database: DatabaseSync): WorkspaceSnapshot {
   try {
     const focused = workspaceSnapshotSchema.parse(value)
-    if (!focused.project || !focused.projects || focused.projects.length < 2) throw new Error("Missing active project list")
+    if (!focused.project || !focused.projects || focused.projects.length < 2) throw new UnreadableActiveProjectStateError()
     const { projects: _projects, projectCap: _cap, ...onlyFocused } = focused
     // The workspace row contains only focused-project records. Accepting a
     // mixed row here would silently discard records when rebuilding from rows.
     workspaceSnapshotSchema.parse(onlyFocused)
     const states = focused.projects.map((project) => {
       const row = database.prepare("SELECT state FROM workspace_projects WHERE project_id = ?").get(project.id) as StoredProjectWorkspace | undefined
-      if (!row) throw new Error("Missing active project row")
-      const raw: unknown = JSON.parse(row.state)
-      if (!holdsOneProject(raw, project.id)) throw new Error("Mixed project row")
+      if (!row) throw new UnreadableActiveProjectStateError()
+      let raw: unknown
+      try { raw = JSON.parse(row.state) } catch (error) {
+        if (error instanceof SyntaxError) throw new UnreadableActiveProjectStateError()
+        throw error
+      }
+      if (!holdsOneProject(raw, project.id)) throw new UnreadableActiveProjectStateError()
       const parsed = workspaceSnapshotSchema.parse({
         ...(raw as Record<string, unknown>), protocolVersion: focused.protocolVersion,
         machine: focused.machine, skillEnablements: [],
       })
-      if (JSON.stringify(parsed.project) !== JSON.stringify(project)) throw new Error("Project identity changed")
+      if (JSON.stringify(parsed.project) !== JSON.stringify(project)) throw new UnreadableActiveProjectStateError()
       if (project.id === focused.project!.id) {
         // Both copies are written in the same transaction and must agree.
         const rowState = { ...projectWorkspaceState(parsed), queuedSends: parsed.queuedSends, turns: parsed.turns }
         const focusState = { ...projectWorkspaceState(focused), queuedSends: focused.queuedSends, turns: focused.turns }
-        if (JSON.stringify(rowState) !== JSON.stringify(focusState)) throw new Error("Focused state disagrees")
+        if (JSON.stringify(rowState) !== JSON.stringify(focusState)) throw new UnreadableActiveProjectStateError()
       }
       return parsed
     })
@@ -603,10 +608,11 @@ function restoreActiveWorkspace(value: unknown, database: DatabaseSync): Workspa
       ...(states.some((state) => state.queuedSends !== undefined) ? { queuedSends: states.flatMap((state) => state.queuedSends ?? []) } : {}),
       ...(states.some((state) => state.turns !== undefined) ? { turns: states.flatMap((state) => state.turns ?? []) } : {}),
     })
-  } catch {
-    // No parser details here: a damaged row can carry secrets. This distinct
-    // error must never be mistaken for corrupt SQLite and trigger salvage.
-    throw new UnreadableActiveProjectStateError()
+  } catch (error) {
+    // Validation details can carry secrets. Operational errors and programming
+    // failures retain their identity instead of masquerading as damaged state.
+    if (error instanceof ZodError) throw new UnreadableActiveProjectStateError()
+    throw error
   }
 }
 
@@ -984,7 +990,8 @@ async function start() {
   )
   const saveProject = database.prepare(
     "INSERT INTO workspace_projects (project_id, state, updated_at) VALUES (?, ?, ?) " +
-    "ON CONFLICT(project_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
+    "ON CONFLICT(project_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at " +
+    "WHERE workspace_projects.state <> excluded.state",
   )
   parentPort.on("message", (message) => {
     try {
@@ -1207,7 +1214,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
           { restoreActiveProjects: this.#restoreActiveProjects },
         )
       } catch (error) {
-        if (error instanceof UnreadableActiveProjectStateError) {
+        if (error instanceof UnreadableActiveProjectStateError || (stored && keepsSeveralProjects(stored.value))) {
           this.#database.close()
           this.#databaseClosed = true
           throw error
@@ -1623,6 +1630,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
           ON CONFLICT(project_id) DO UPDATE SET
             state = excluded.state,
             updated_at = excluded.updated_at
+          WHERE workspace_projects.state <> excluded.state
         `)
         .run(state.project.id, JSON.stringify(state), updatedAt)
     }
