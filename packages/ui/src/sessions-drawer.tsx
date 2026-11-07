@@ -383,10 +383,11 @@ export function SessionsDrawerColumn({
     else next.add(id)
     return next
   })
-  const renderGroups = (groups: readonly SessionGroup[], keyPrefix: string) => (
+  const renderGroups = (groups: readonly SessionGroup[], keyPrefix: string, projectOf?: (sessionId: string) => string | undefined) => (
     <SessionGroupList
       groups={groups}
       keyPrefix={keyPrefix}
+      projectOf={projectOf}
       collapsed={collapsed}
       toggle={toggle}
       activeSessionId={snapshot.activeSessionId}
@@ -406,11 +407,27 @@ export function SessionsDrawerColumn({
   // With no project known, as before rulings Q158 A and Q159 A: every
   // session in the snapshot, grouped by what it wants from you.
   const ungrouped = entries.length === 0 ? groupSessions(snapshot) : []
-  // Ruling Q159 A (Q193 A): a section per project, from the data. An active
-  // project's sessions are live in the snapshot and keep their groups; one
-  // that is not active lists what project.list read, and choosing a row opens
-  // that project first. A session whose project is not among the active ones
-  // stays visible under the focused project.
+  // Rulings Q159 A and Q193 A (recorded for T129 as Q165): NEEDS YOU first,
+  // across every project, so a waiting gate never sits inside a section below
+  // the fold; then a section per project, from the data. An active project's
+  // section keeps RUNNING and QUIET for its own sessions; one that is not
+  // active lists what project.list read, and choosing a row opens that project
+  // first. A session whose project is not among the active ones stays visible
+  // under the focused project.
+  const sessionProject = (session: SessionSummary): ProjectEntry | undefined => (
+    entries.find((entry) => entry.active && entry.project.id === session.projectId)
+    ?? entries.find((entry) => entry.focused)
+  )
+  const needsYou = entries.length === 0
+    ? undefined
+    : groupSessions(snapshot).find((group) => group.id === "needs-you")
+  // With more than one project listed, a NEEDS YOU row names its project.
+  const needsYouProject = entries.length > 1
+    ? (sessionId: string) => {
+      const session = sessionsById.get(sessionId)
+      return session ? sessionProject(session)?.project.name : undefined
+    }
+    : undefined
   const renderProject = (entry: ProjectEntry) => {
     const name = entry.project.name
     const sectionKey = `project:${entry.project.id}`
@@ -424,11 +441,17 @@ export function SessionsDrawerColumn({
       : entry.folder === "unreadable"
         ? "folder could not be read"
         : entry.active ? "" : "not active"
-    const groups = entry.active
+    const own = entry.active
       ? groupSessions(snapshot, (session) => session.projectId === entry.project.id
         || (entry.focused && !activeProjectIds.has(session.projectId)))
       : []
+    const waiting = own.find((group) => group.id === "needs-you")?.sessions.length ?? 0
+    const groups = own.filter((group) => group.id !== "needs-you")
     const empty = entry.active ? groups.length === 0 : entry.savedSessions.length === 0
+    // The design's lines for a section whose sessions all wait in NEEDS YOU.
+    const emptyLine = waiting === 0
+      ? "No sessions yet"
+      : waiting === 1 ? "Its one session is in Needs you" : "Its sessions are in Needs you"
     const heading = (
       <>
         <span className="truncate font-machine text-[11px] font-medium text-strong">{name}</span>
@@ -475,7 +498,7 @@ export function SessionsDrawerColumn({
         </div>
         {shut ? null : (
           <>
-            {empty ? <p className="m-0 px-[9px] pt-0.5 pb-1 pl-7 text-[11px] text-faint">No sessions yet</p> : null}
+            {empty ? <p className="m-0 px-[9px] pt-0.5 pb-1 pl-7 text-[11px] text-faint">{emptyLine}</p> : null}
             {entry.active ? renderGroups(groups, `${entry.project.id}:`) : entry.savedSessions.map((session) => {
               const note = savedSessionNote(session, now)
               const content = (
@@ -546,7 +569,12 @@ export function SessionsDrawerColumn({
             No sessions on this machine yet.
           </p>
         ) : null}
-        {entries.length === 0 ? renderGroups(ungrouped, "") : entries.map(renderProject)}
+        {entries.length === 0 ? renderGroups(ungrouped, "") : (
+          <>
+            {needsYou ? renderGroups([needsYou], "", needsYouProject) : null}
+            {entries.map(renderProject)}
+          </>
+        )}
       </div>
       {credentialNote ? (
         <div className="flex shrink-0 items-center gap-2 border-t px-[14px] py-[9px]">
@@ -592,6 +620,8 @@ type SessionGroupListProps = {
   asideRef: RefObject<HTMLElement | null>
   archivedNoteId: string
   archiveLocked: string | undefined
+  // Names a row's project in its meta, where the group spans projects.
+  projectOf?: ((sessionId: string) => string | undefined) | undefined
 }
 
 function SessionGroupList({
@@ -611,6 +641,7 @@ function SessionGroupList({
   asideRef,
   archivedNoteId,
   archiveLocked,
+  projectOf,
 }: SessionGroupListProps) {
   return (
     <>
@@ -657,7 +688,7 @@ function SessionGroupList({
                           it is hidden so a screen reader hears it once. */}
                       <span className="flex min-w-0 flex-1 flex-col items-start">
                         <span className="line-clamp-2 text-[12px] leading-[1.38] text-strong">{entry.title}</span>
-                        <span data-session-meta="" className="mt-[3px] font-machine text-[10.5px] text-faint">{`${machine} · ${rowMeta(entry, sessionsById.get(entry.id), now)}`}</span>
+                        <span data-session-meta="" className="mt-[3px] font-machine text-[10.5px] text-faint">{[machine, projectOf?.(entry.id), rowMeta(entry, sessionsById.get(entry.id), now)].filter(Boolean).join(" · ")}</span>
                       </span>
                       <span aria-hidden className={cn("order-first mt-[5px] flex", entry.meaning === "idle" && "opacity-80")}>
                         <StatusDot meaning={entry.meaning} label={entry.note} size="inline" labelHidden />

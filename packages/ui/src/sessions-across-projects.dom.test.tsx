@@ -141,6 +141,37 @@ describe("the session sidebar across projects", () => {
     for (const session of demoWorkspace.sessions) expect(within(acme).getByText(session.title)).toBeTruthy()
   })
 
+  // Ruling Q193 A: NEEDS YOU leads, across every project, so a waiting gate is
+  // never inside a section below the fold; each project's section keeps its
+  // RUNNING and QUIET. Two active projects is the J31 S2 shape, built here
+  // from the snapshot alone.
+  it("puts every project's waiting sessions in one NEEDS YOU above the project sections", async () => {
+    const user = userEvent.setup()
+    const waiting = { ...demoWorkspace.sessions[0]!, id: "session-pdf-gate", projectId: projectB.id, title: "Render Cyrillic invoices" }
+    const gate = { ...demoWorkspace.approvals[0]!, id: "approval-pdf", sessionId: waiting.id }
+    const socket = await openShell("desktop", workspaceSnapshot({
+      projects: [projectA, projectB],
+      sessions: [...demoWorkspace.sessions, waiting],
+      approvals: [...demoWorkspace.approvals, gate],
+    }))
+    await answerProjectList(socket, [known(projectA, demoWorkspace.sessions), known(projectB, [waiting])])
+    const drawer = await openDrawer(user)
+
+    const regions = within(drawer).getAllByRole("region").map((region) => region.getAttribute("aria-label"))
+    expect(regions.indexOf("NEEDS YOU")).toBe(0)
+    expect(regions.filter((label) => label?.startsWith("Project "))).toEqual(["Project acme-api", "Project pdf-worker"])
+    const needsYou = within(drawer).getAllByRole("region", { name: "NEEDS YOU" })
+    expect(needsYou).toHaveLength(1)
+    const rows = within(needsYou[0]!).getAllByRole("button", { name: /waiting on you/ })
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining("acme-api · waiting on you"),
+      expect.stringContaining("pdf-worker · waiting on you"),
+    ])
+    // Both of pdf-worker's sessions wait on you, so its section says where they are.
+    expect(within(projectSection("pdf-worker")).getByText("Its one session is in Needs you")).toBeTruthy()
+    expect(within(projectSection("acme-api")).getByRole("region", { name: "QUIET" })).toBeTruthy()
+  })
+
   it("opens the other project and its session when one of its sessions is chosen", async () => {
     const user = userEvent.setup()
     const socket = await openShell("desktop", snapshotB())
