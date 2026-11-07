@@ -8797,7 +8797,10 @@ export class DomovoiDaemon {
         const activeProject = this.#projectForCall(paramsResult.data as { projectId?: string })
         // An authenticated revoke must not retain trust because the closed
         // project's saved row is unreadable. The row is needed only to read
-        // the configuration digest for the response.
+        // the configuration digest for the response. For a never-saved id,
+        // deleting a nonexistent grant and advancing its invalidation epoch
+        // creates no project or grant; the lookup below still refuses it.
+        // Keeping deletion first also covers a saved row that cannot be read.
         if (method === "repository.revokeTrust" && !activeProject) revokeGrant()
         const project = activeProject ?? (method === "repository.revokeTrust"
           ? this.#store.loadProject?.(params.projectId, this.#snapshot.machine)?.project : undefined)
