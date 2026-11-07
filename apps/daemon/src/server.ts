@@ -82,7 +82,11 @@ import {
   type ProviderModel,
   type Project,
   type ProjectCapRefusal,
+  type ProjectCloseConfirmation,
   projectCapErrorCode,
+  projectCloseConfirmationErrorCode,
+  projectCloseConfirmationSchema,
+  maximumProjectCloseSessions,
   maximumProjectCap,
   workspaceProjects,
   type QueuedSessionSend,
@@ -413,9 +417,6 @@ const projectFolderCheckTimeoutMs = 2_000
 // A call that names a project outside the active list.
 export const projectNotOpenRefusal =
   "That project is not open. Open it first, or leave projectId out to use the open project."
-// project.close is declared on the wire before it is built (J31 S3).
-export const projectCloseUnavailableRefusal =
-  "Closing a project is not available yet. Opening another project keeps existing projects active."
 // Methods whose params may name a project with projectId.
 const projectScopedRpcMethods: ReadonlySet<RpcMethod> = new Set([
   "session.create",
@@ -443,7 +444,7 @@ const trustedStopUnconfirmedProviders: ReadonlySet<string> = new Set(["codex"])
 type TrustedThread = { projectId: string; sessionId: string; provider: string; threadId: string; trustedDigest: string }
 // A provider call's repository trust grant and the count of its project's
 // revokes it was looked up under (#repositoryTrustCall).
-type RepositoryTrustCall = { projectId: string; generation: number; input: { repositoryTrust?: RepositoryTrustGrant } }
+type RepositoryTrustCall = { projectId: string; generation: number; closeGeneration: number; input: { repositoryTrust?: RepositoryTrustGrant } }
 export const desktopPairingRefusal = "A web, phone or tablet connection cannot pair a desktop credential"
 export const persistenceUnavailableMessage =
   "Daemon cannot persist state, so changes are refused"
@@ -1967,6 +1968,15 @@ export class DomovoiDaemon {
   #workspaceAbort = new AbortController()
   #emergencyBlockedThreads = new Set<string>()
   #failedEmergencyThreads = new Set<string>()
+  // Fences and close generations are process-local, as repository revoke's
+  // fences are. Restart does not establish that an orphan process exited.
+  #closingProjects = new Set<string>()
+  #closingThreadClaims = new Set<string>()
+  #closedThreads = new Set<string>()
+  #projectCloseGenerations = new Map<string, number>()
+  #threadCloseGenerations = new Map<string, number>()
+  #eventCloseGenerations = new WeakMap<AgentEvent, number>()
+  #projectFocusHistory: string[] = []
   #inFlightProviderThreads = new Map<string, string>()
   // Slice P6d: the provider threads that loaded a repository's trusted
   // configuration, by thread key, with the project and session they belong
@@ -2328,6 +2338,12 @@ export class DomovoiDaemon {
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
       agent.onEvent((event) => {
         if (this.#stopping || this.#stopped) return
+        const threadId = threadIdForAgentEvent(event)
+        if (threadId) {
+          const key = providerThreadKey(provider, threadId)
+          if (this.#closedThreads.has(key)) return
+          this.#eventCloseGenerations.set(event, this.#threadCloseGenerations.get(key) ?? 0)
+        }
         if (event.type === "approval-requested") {
           this.#approvalRequestGenerations.set(event, { generation: this.#emergencyStopGeneration, duringStop: this.#emergencyStopInProgress })
         }
@@ -2564,7 +2580,8 @@ export class DomovoiDaemon {
   // The grant for one provider call, with the count of the project's revokes
   // it was looked up under. `input` is what the adapter call carries.
   #repositoryTrustCall(projectId: string): RepositoryTrustCall {
-    return { projectId, generation: this.#repositoryTrustGeneration(projectId), input: this.#repositoryTrustFor(projectId) }
+    return { projectId, generation: this.#repositoryTrustGeneration(projectId),
+      closeGeneration: this.#projectCloseGenerations.get(projectId) ?? 0, input: this.#repositoryTrustFor(projectId) }
   }
 
   #repositoryTrustGeneration(projectId: string): number {
@@ -2587,6 +2604,12 @@ export class DomovoiDaemon {
   // so this is a backstop for a call that lands outside that order: the thread
   // is stopped as the revoke would have stopped it.
   #recordRepositoryTrust(call: RepositoryTrustCall, sessionId: string, provider: string, threadId: string): void {
+    if (call.closeGeneration !== (this.#projectCloseGenerations.get(call.projectId) ?? 0)
+      || this.#closingProjects.has(call.projectId) || !this.#projectById(call.projectId)) {
+      void this.#stopLateStart(call, sessionId, provider, threadId)
+        .catch((error: unknown) => this.#reportError("Domovoi could not stop a thread arriving after project close", error))
+      return
+    }
     if (!this.#trackRepositoryTrust(call, sessionId, provider, threadId)) return
     if (call.generation === this.#repositoryTrustGeneration(call.projectId)) return
     const threadKey = providerThreadKey(provider, threadId)
@@ -2745,6 +2768,14 @@ export class DomovoiDaemon {
   // it applied trust, then stopped: a stop that fails leaves it tracked and
   // fenced for revoke (security review round 2 of #669).
   async #stopLateStart(call: RepositoryTrustCall, sessionId: string, provider: string, threadId: string): Promise<void> {
+    const closed = call.closeGeneration !== (this.#projectCloseGenerations.get(call.projectId) ?? 0)
+      || this.#closingProjects.has(call.projectId) || !this.#projectById(call.projectId)
+    const key = providerThreadKey(provider, threadId)
+    if (closed) {
+      this.#closedThreads.add(key)
+      this.#emergencyBlockedThreads.add(key)
+      this.#failedEmergencyThreads.add(key)
+    }
     this.#trackRepositoryTrust(call, sessionId, provider, threadId)
     await this.#stopAbandonedThread(provider, threadId, "Late provider cleanup timed out")
   }
@@ -3029,6 +3060,160 @@ export class DomovoiDaemon {
       )
     }
     return [...outcomes].map(([sessionId, outcome]) => ({ sessionId, outcome }))
+  }
+
+  async #closeProjectSessions(projectId: string): Promise<RpcResult<"project.close">["sessions"]> {
+    const sessions = this.#snapshot.sessions.filter((session) => session.projectId === projectId)
+    const ids = new Set(sessions.map((session) => session.id))
+    const claims = new Map<string, { sessionId: string; provider: string; threadId: string; turnId?: string; trusted?: TrustedThread }>()
+    for (const session of sessions) {
+      if (!session.providerThreadId) continue
+      const key = providerThreadKey(session.runtime.provider, session.providerThreadId)
+      // Saved but unloaded threads have no process in this daemon unless an
+      // earlier failed stop or a trusted residual says otherwise.
+      if (this.#loadedAgentThreads.has(key) || this.#failedEmergencyThreads.has(key)) {
+        claims.set(key, { sessionId: session.id, provider: session.runtime.provider, threadId: session.providerThreadId,
+          ...(session.activeTurnId ? { turnId: session.activeTurnId } : {}) })
+      }
+    }
+    for (const tracked of [this.#residualTrustedThreads, this.#trustedThreads]) {
+      for (const [key, trusted] of tracked) {
+        if (trusted.projectId !== projectId) continue
+        claims.set(key, { ...claims.get(key), sessionId: trusted.sessionId, provider: trusted.provider, threadId: trusted.threadId, trusted })
+      }
+    }
+    const now = new Date().toISOString()
+    this.#closingProjects.add(projectId)
+    this.#projectCloseGenerations.set(projectId, (this.#projectCloseGenerations.get(projectId) ?? 0) + 1)
+    for (const [key, claim] of claims) {
+      this.#closingThreadClaims.add(key)
+      this.#closedThreads.add(key)
+      this.#threadCloseGenerations.set(key, (this.#threadCloseGenerations.get(key) ?? 0) + 1)
+      this.#emergencyBlockedThreads.add(key)
+      this.#loadedAgentThreads.delete(key)
+      if (claim.trusted) {
+        this.#residualTrustedThreads.delete(key)
+        this.#trustedThreads.set(key, claim.trusted)
+        this.#claimedTrustThreads.set(key, claim.trusted)
+      }
+    }
+    // Even an unloaded saved thread must not publish unsolicited events when
+    // the project is reopened, before an explicit send resumes it.
+    for (const session of sessions) {
+      if (session.providerThreadId) this.#closedThreads.add(providerThreadKey(session.runtime.provider, session.providerThreadId))
+    }
+    const failures: unknown[] = []
+    const record = (operation: () => void) => { try { operation() } catch (error) { failures.push(error) } }
+    const exits: Promise<void>[] = []
+    const ended = sessions.flatMap((session) => session.activeTurnId ? [{ sessionId: session.id, turnId: session.activeTurnId }] : [])
+    for (const session of sessions) {
+      record(() => this.#flushCommandOutputStreams(session.id))
+      delete session.activeTurnId
+      if (!sessionIsReadOnly(session) && session.state !== "failed") session.state = "idle"
+      session.updatedAt = now
+      record(() => this.#holdQueuedSessionSend(session.id, "Project close held the queued send."))
+      record(() => { exits.push(...this.#closeSessionTerminals(session.id)) })
+      record(() => this.#artifactWatchers.get(session.id)?.watcher.stop())
+      this.#artifactWatchers.delete(session.id)
+      this.#activeAssistantItems.delete(session.id)
+    }
+    record(() => {
+      const expired = this.#removeApprovals((approval) => ids.has(approval.sessionId), now)
+      noteExpiredApprovals(this.#snapshot, expired, "Project close expired the pending approval request.", now)
+      this.#auditExpiredApprovals(expired, "project-close", projectId)
+    })
+    this.#auditEndedStoredTurns(ended, "project-close", projectId)
+    // Finish only A's turns: B remains in the ledger's live set.
+    this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.(
+      this.#snapshot.sessions.flatMap((session) => session.providerThreadId && session.activeTurnId
+        ? [{ provider: session.runtime.provider, threadId: session.providerThreadId, turnId: session.activeTurnId }] : []),
+    ))
+    const outcomes = new Map<string, "stopped" | "unconfirmed">(sessions.map((session) => [session.id, "stopped"]))
+    await Promise.all([...claims].map(async ([key, claim]) => {
+      let confirmed = false
+      try {
+        if (claim.turnId) {
+          try {
+            await withTimeout(this.#agents.require(claim.provider).interruptTurn(claim.threadId, claim.turnId),
+              this.#agentTimeoutMs, "Project close turn interrupt timed out")
+          } catch (error) { this.#reportError("Domovoi could not interrupt a closing project's turn", error) }
+        }
+        await this.#stopAbandonedThread(claim.provider, claim.threadId, "Project close thread stop timed out")
+        confirmed = !trustedStopUnconfirmedProviders.has(claim.provider)
+      } catch (error) { this.#reportError("Domovoi could not confirm a closing project's thread stopped", error) }
+      finally {
+        this.#claimedTrustThreads.delete(key)
+        this.#closingThreadClaims.delete(key)
+      }
+      if (confirmed && claim.trusted) {
+        this.#releaseTrustedThread(claim.provider, claim.threadId)
+        confirmed = !this.#trustedThreads.has(key) && !this.#revokedTrustThreads.has(key)
+      }
+      if (!confirmed) {
+        this.#failedEmergencyThreads.add(key)
+        this.#emergencyBlockedThreads.add(key)
+        if (claim.trusted) {
+          this.#trustedThreads.set(key, claim.trusted)
+          this.#revokedTrustThreads.set(key, claim.trusted)
+        }
+        if (ids.has(claim.sessionId)) outcomes.set(claim.sessionId, "unconfirmed")
+      } else this.#repositoryTrustStopConfirmed(key, claim.sessionId)
+    }))
+    await this.#awaitTerminalExits(exits)
+    for (const session of sessions) {
+      const unconfirmed = outcomes.get(session.id) === "unconfirmed"
+      if (unconfirmed && !sessionIsReadOnly(session)) session.state = "failed"
+      this.#snapshot.thread.push({ id: `system-${randomUUID()}`, sessionId: session.id, kind: "system", createdAt: now,
+        body: unconfirmed ? "Project closed, but Domovoi could not confirm that the agent stopped." : "Project close stopped this session.",
+        detail: unconfirmed ? "The agent may still be running. This daemon will refuse another turn until recovery confirms its exit."
+          : "The worktree, session history and standing rules were kept.",
+      })
+    }
+    if (failures.length > 0) throw new AggregateError(failures, "Project close could not finish its bookkeeping")
+    return [...outcomes].map(([sessionId, outcome]) => ({ sessionId, outcome }))
+  }
+
+  async #commitProjectClose(projectId: string): Promise<void> {
+    await this.#serializeSnapshotPersistence(async () => {
+      const partition = (snapshot: WorkspaceSnapshot, retain: boolean): WorkspaceSnapshot => {
+        const projects = workspaceProjects(snapshot).filter((project) => (project.id === projectId) === retain)
+        const sessions = snapshot.sessions.filter((session) => (session.projectId === projectId) === retain)
+        const ids = new Set(sessions.map((session) => session.id))
+        const recent = [...this.#projectFocusHistory].reverse().find((id) => projects.some((project) => project.id === id))
+        const project = projects.find((entry) => entry.id === snapshot.project?.id)
+          ?? projects.find((entry) => entry.id === recent) ?? projects.at(-1) ?? null
+        const activeSessionId = sessions.find((session) => session.id === snapshot.activeSessionId && session.projectId === project?.id)?.id
+          ?? sessions.find((session) => session.projectId === project?.id)?.id ?? null
+        return workspaceSnapshotSchema.parse({ ...snapshot, project, projects, sessions, activeSessionId,
+          approvals: snapshot.approvals.filter((item) => ids.has(item.sessionId)),
+          approvalRules: snapshot.approvalRules.filter((rule) => (rule.projectId === projectId) === retain),
+          thread: snapshot.thread.filter((item) => ids.has(item.sessionId)),
+          artifacts: snapshot.artifacts.filter((item) => ids.has(item.sessionId)),
+          workingPlans: snapshot.workingPlans.filter((item) => ids.has(item.sessionId)),
+          annotations: snapshot.annotations.filter((item) => ids.has(item.sessionId)),
+          queuedSends: (snapshot.queuedSends ?? []).filter((item) => ids.has(item.sessionId)),
+          ...(snapshot.turns === undefined ? {} : { turns: snapshot.turns.filter((item) => ids.has(item.sessionId)) }),
+        })
+      }
+      this.#flushPendingWorkspaceDeltas()
+      const closed = partition(this.#snapshot, true)
+      const remaining = partition(this.#snapshot, false)
+      try {
+        if (this.#store.saveProjectCloseAsync) await this.#store.saveProjectCloseAsync(remaining, closed)
+        else this.#store.saveProjectClose!(remaining, closed)
+      } catch (error) {
+        this.#persistenceFailed(error)
+        throw error
+      }
+      this.#persistenceSucceeded()
+      // An emergency stop may have changed B during the write. Preserve that
+      // live state; its queued persistence runs after this atomic close write.
+      this.#snapshot = partition(this.#snapshot, false)
+      this.#projectFocusHistory = this.#projectFocusHistory.filter((id) => id !== projectId)
+      for (const session of closed.sessions) this.#queuedSessionSends.delete(session.id)
+      this.#sessionHistory.invalidate()
+      this.#forgetDepartedApprovalContext()
+    })
   }
 
   // The connection declared web, phone or tablet. Such a connection may hold a
@@ -3963,6 +4148,12 @@ export class DomovoiDaemon {
   }
 
   #focusProject(project: Project, sessionId?: string): void {
+    if (this.#projectFocusHistory.length === 0) {
+      this.#projectFocusHistory = workspaceProjects(this.#snapshot).map((entry) => entry.id)
+      const previous = this.#snapshot.project?.id
+      if (previous) this.#projectFocusHistory = [...this.#projectFocusHistory.filter((id) => id !== previous), previous]
+    }
+    this.#projectFocusHistory = [...this.#projectFocusHistory.filter((id) => id !== project.id), project.id]
     this.#snapshot.project = project
     this.#snapshot.activeSessionId = sessionId
       ?? this.#snapshot.sessions.find((session) => session.projectId === project.id && session.id === this.#snapshot.activeSessionId)?.id
@@ -4444,7 +4635,7 @@ export class DomovoiDaemon {
     id: string | number | null,
     code: number,
     message: string,
-    data?: ProjectCapRefusal | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch | SkillInstallRefusal | SessionAttachmentRefusal
+    data?: ProjectCloseConfirmation | ProjectCapRefusal | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch | SkillInstallRefusal | SessionAttachmentRefusal
       | RepositoryGitFilterRefusal | SessionReviewRefusal | ApprovalCheckpointRefusal,
   ): void {
     this.#send(socket, this.#errorFrame(id, { code, message, ...(data ? { data } : {}) }))
@@ -4672,7 +4863,8 @@ export class DomovoiDaemon {
     snapshot: WorkspaceSnapshot,
     queuedSends: Iterable<StoredQueuedSessionSend>,
   ): QueuedSessionSend[] {
-    const durable = [...queuedSends].map((queued) => this.#queuedSendMetadata(queued))
+    const durable = [...queuedSends].filter((queued) => snapshot.sessions.some((session) => session.id === queued.sessionId))
+      .map((queued) => this.#queuedSendMetadata(queued))
     const durableSessions = new Set(durable.map((queued) => queued.sessionId))
     const sessions = new Set(snapshot.sessions.map((session) => session.id))
     const delivered = (snapshot.queuedSends ?? []).filter(
@@ -6828,14 +7020,51 @@ export class DomovoiDaemon {
         return
       }
     }
-    if (method === "project.close") {
-      this.#error(socket, request.id, invalidParams, projectCloseUnavailableRefusal)
-      return
-    }
-
     try {
       let changed = false
       let alreadyPersisted = false
+      if (method === "project.close") {
+        const params = paramsResult.data as RpcParams<"project.close">
+        const confirm = () => {
+          if (!this.#projectById(params.projectId)) {
+            this.#error(socket, request.id, invalidParams, projectNotOpenRefusal)
+            return false
+          }
+          const sessions = this.#snapshot.sessions.filter((session) => session.projectId === params.projectId)
+            .map(({ id, title, state, workspacePath }) => ({ id, title, state, ...(workspacePath ? { workspacePath } : {}) }))
+            .sort((a, b) => a.id.localeCompare(b.id))
+          const confirmation = projectCloseConfirmationSchema.parse({ kind: "project-close-confirmation", projectId: params.projectId,
+            sessions, sessionCount: sessions.length, worktreeCount: sessions.filter((session) => session.workspacePath).length })
+          if (sessions.length === 0 || JSON.stringify(params.confirmation) === JSON.stringify(confirmation)) return true
+          this.#error(socket, request.id, projectCloseConfirmationErrorCode, "Confirm the sessions this project close stops", confirmation)
+          return false
+        }
+        if (!confirm()) return
+        if (!this.#store.saveProjectClose && !this.#store.saveProjectCloseAsync) {
+          throw new PublicRpcError(internalError, "This store cannot atomically close a project")
+        }
+        await this.#settleEmergencyStops()
+        if (!confirm()) return
+        signal?.throwIfAborted()
+        // Beyond the claim, emergency cancellation does not abandon cleanup.
+        // The close owns these threads, as a revoke owns its claimed threads.
+        let sessions: RpcResult<"project.close">["sessions"]
+        try {
+          sessions = await this.#closeProjectSessions(params.projectId)
+          await this.#settleEmergencyStops()
+          await this.#commitProjectClose(params.projectId)
+        } finally {
+          this.#closingProjects.delete(params.projectId)
+          this.#syncArtifactWatchers()
+        }
+        const result: RpcResult<"project.close"> = { snapshot: this.#clientSnapshot(),
+          sessions: sessions.slice(0, maximumProjectCloseSessions),
+          ...(sessions.length > maximumProjectCloseSessions ? { omittedSessions: sessions.length - maximumProjectCloseSessions } : {}),
+        }
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result })
+        this.#broadcastSnapshot()
+        return
+      }
       if (method === "permission.hardGates") {
         this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(permissionHardGates()) })
         return
@@ -8483,9 +8712,8 @@ export class DomovoiDaemon {
       // call carries the grant (#repositoryTrustCall), Claude Code and Codex
       // load parts of the configuration under it (P6b, P6c) and the other
       // providers nothing yet; taking it back stops the threads that loaded it
-      // (#restartRepositoryTrustThreads). Both methods answer for the open project only,
-      // against its configuration read now, as its worktrees read it (ruling
-      // Q145 A). A reader failure
+      // (#restartRepositoryTrustThreads). Grants apply to active projects;
+      // an inactive project's revoke only deletes its grant. A reader failure
       // reaches the catch below and the daemon's internal error, which names no
       // path or value (rulings Q123, Q129 A).
       if (method === "repository.trust" || method === "repository.revokeTrust") {
@@ -8495,7 +8723,9 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Repository trust is unavailable")
           return
         }
-        const project = this.#projectForCall(paramsResult.data as { projectId?: string })
+        const activeProject = this.#projectForCall(paramsResult.data as { projectId?: string })
+        const project = activeProject ?? (method === "repository.revokeTrust"
+          ? this.#store.loadProject?.(params.projectId, this.#snapshot.machine)?.project : undefined)
         if (!project || project.id !== params.projectId) {
           this.#error(socket, request.id, invalidParams, repositoryTrustProjectRefusal)
           return
@@ -8519,7 +8749,7 @@ export class DomovoiDaemon {
           // from here on: the grant is gone, and stopping the threads is what
           // the emergency stop would do.
           await this.#settleEmergencyStops()
-          const threads = await this.#restartRepositoryTrustThreads(project.id)
+          const threads = activeProject ? await this.#restartRepositoryTrustThreads(project.id) : []
           if (threads.length > 0) {
             try {
               await this.#saveAgentState()
@@ -10706,6 +10936,7 @@ export class DomovoiDaemon {
           return
         }
         this.#emergencyBlockedThreads.delete(emergencyThread)
+        this.#closedThreads.delete(emergencyThread)
         this.#inFlightProviderThreads.set(emergencyThread, session.id)
         // A provider that cannot connect, resume or start a turn is something
         // the person can act on: record the classified failure on the session,
@@ -11330,6 +11561,9 @@ export class DomovoiDaemon {
     }
     const threadId = threadIdForAgentEvent(event)
     if (!threadId) return
+    const closeKey = providerThreadKey(provider, threadId)
+    if (this.#closedThreads.has(closeKey)
+      || (this.#eventCloseGenerations.get(event) ?? 0) !== (this.#threadCloseGenerations.get(closeKey) ?? 0)) return
     if (event.type === "usage") {
       // Stops block execution/content events; already-incurred usage still belongs to its known dispatch.
       this.#updateUsageAccounting(() => {
@@ -12252,6 +12486,11 @@ export class DomovoiDaemon {
   // A handler test checks that every answer and card follows this check with
   // no await in between.
   #admitApprovalRequest(provider: string, event: Extract<AgentEvent, { type: "approval-requested" }>): boolean {
+    if (event.threadId) {
+      const key = providerThreadKey(provider, event.threadId)
+      if (this.#closedThreads.has(key)
+        || (this.#eventCloseGenerations.get(event) ?? 0) !== (this.#threadCloseGenerations.get(key) ?? 0)) return false
+    }
     if (this.#stopOvertook(event) || this.#emergencyStopInProgress) {
       this.#denyHeldApprovalRequest(provider, event)
       return false
@@ -12557,7 +12796,7 @@ export class DomovoiDaemon {
     // review round 1 of #647).
     const handledThreadKeys = new Set([...activeThreadKeys, ...inFlight.map(([threadKey]) => threadKey)])
     const retained = retainedFailedThreads
-      .filter((threadKey) => !handledThreadKeys.has(threadKey))
+      .filter((threadKey) => !handledThreadKeys.has(threadKey) && !this.#closingThreadClaims.has(threadKey))
       .map((threadKey) => {
         const separator = threadKey.indexOf("\u0000")
         const provider = threadKey.slice(0, separator)
@@ -12962,7 +13201,7 @@ export class DomovoiDaemon {
 
   #auditExpiredApprovals(
     approvals: WorkspaceSnapshot["approvals"],
-    component: "startup-recovery" | "project-open",
+    component: "startup-recovery" | "project-open" | "project-close",
     projectId?: string,
   ): void {
     for (const approval of approvals) {
@@ -13043,7 +13282,7 @@ export class DomovoiDaemon {
 
   #auditEndedStoredTurns(
     turns: ReadonlyArray<{ sessionId: string; turnId: string }>,
-    component: "startup-recovery" | "project-open",
+    component: "startup-recovery" | "project-open" | "project-close",
     projectId?: string,
   ): void {
     for (const turn of turns) {
@@ -13586,7 +13825,7 @@ export class DomovoiDaemon {
 
   #syncArtifactWatchers(): void {
     const liveSessions = new Map(this.#snapshot.sessions.flatMap((session) =>
-      session.workspacePath && !sessionIsReadOnly(session)
+      session.workspacePath && !sessionIsReadOnly(session) && !this.#closingProjects.has(session.projectId)
         ? [[session.id, resolve(session.workspacePath)] as const]
         : []
     ))

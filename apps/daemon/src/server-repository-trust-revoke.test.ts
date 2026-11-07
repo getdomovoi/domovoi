@@ -225,6 +225,48 @@ function failNextMapSet(key: string): () => void {
 // The reported detail carries the error's stack.
 const bookkeepingFailed = expect.stringContaining("Error: bookkeeping failed")
 
+describe("project close ordered with repository revoke", () => {
+  it.each(["close", "revoke"] as const)("finishes %s first and never restarts a closed project's thread", async (first) => {
+    const { agents, grants, rpc, ok, revoke } = await fixture()
+    grants.set(projectId, grant(projectId))
+    await ok("session.send", { sessionId: "session-a", prompt: "work" })
+    const initial = await rpc("project.close", { projectId, client: "desktop" })
+    const confirmation = (initial.error as { code: number; data: unknown }).data
+    expect(initial.error).toMatchObject({ code: -32022 })
+    const entered = deferred()
+    const stopped = deferred()
+    agents["claude-code"].stopThread.mockImplementationOnce(async () => { entered.resolve(); await stopped.promise })
+    const close = () => rpc("project.close", { projectId, client: "desktop", confirmation })
+    const firstCall = first === "close" ? close() : revoke()
+    await entered.promise
+    const secondCall = first === "close" ? revoke() : close()
+    stopped.resolve()
+    await firstCall
+    const second = await secondCall
+    // Revoke changed the displayed session state, so a previously collected
+    // close confirmation must be renewed after waiting behind it.
+    if (first === "revoke") {
+      expect(second).toMatchObject({ error: { code: -32022 } })
+      await ok("project.close", { projectId, confirmation: (second as { error: { data: unknown } }).error.data })
+    }
+    expect(grants.has(projectId)).toBe(false)
+    expect((await rpc("workspace.get", {})).result).toMatchObject({ project: null, sessions: [] })
+    expect(agents["claude-code"].startThread).not.toHaveBeenCalled()
+    expect(agents["claude-code"].stopThread).toHaveBeenCalledOnce()
+  })
+
+  it("includes a detached residual Codex thread and keeps its session fenced", async () => {
+    const { agents, grants, ok, rpc } = await fixture()
+    grants.set(projectId, grant(projectId))
+    await ok("session.restartProviderThread", { sessionId: "session-restart", runtime: codex })
+    await ok("session.setRuntime", { sessionId: "session-restart", runtime: claude })
+    const initial = await rpc("project.close", { projectId, client: "desktop" })
+    const closed = await ok("project.close", { projectId, confirmation: (initial.error as { data: unknown }).data })
+    expect(closed.result).toMatchObject({ sessions: expect.arrayContaining([{ sessionId: "session-restart", outcome: "unconfirmed" }]) })
+    expect(agents.codex.stopThread.mock.calls).toEqual([["codex-started"], ["codex-started"]])
+  })
+})
+
 describe("repository.revokeTrust stops the threads that opened under the grant", () => {
   it("reports no threads when none opened under it", async () => {
     const { agents, grants, revoke } = await fixture()

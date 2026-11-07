@@ -18,7 +18,6 @@ import {
   activeProjectCap,
   DomovoiDaemon,
   type DaemonServerOptions,
-  projectCloseUnavailableRefusal,
   projectNotOpenRefusal,
   workspaceSnapshotForClient,
 } from "./server.js"
@@ -27,7 +26,7 @@ import type { WorkspaceService } from "./workspace.js"
 import { SqliteWorkspaceStore } from "./store.js"
 
 // Named operations resolve active membership independently of shared focus.
-// Unknown projects and project.close remain refused until S3.
+// Unknown projects remain refused.
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
@@ -187,13 +186,12 @@ describe("a call that names a project", () => {
 })
 
 describe("project.close", () => {
-  it("is refused until closing a project is built, and changes nothing", async () => {
+  it("closes an empty project without confirmation", async () => {
     const { daemon, project } = await fixture(true)
     const { call } = await connect(daemon)
-    const before = (await call("workspace.get", {})).result
     const reply = await call("project.close", { projectId: project.id, client: "desktop" })
-    expect(errorOf(reply)).toEqual({ code: invalidParams, message: projectCloseUnavailableRefusal })
-    expect((await call("workspace.get", {})).result).toEqual(before)
+    expect(errorOf(reply)).toBeUndefined()
+    expect(reply.result).toMatchObject({ snapshot: { project: null, projects: [] }, sessions: [] })
   })
 })
 

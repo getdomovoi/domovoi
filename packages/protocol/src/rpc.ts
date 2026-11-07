@@ -174,6 +174,8 @@ const projectSwitchAffectedSessionSchema = z.object({
   workspacePath: z.string().min(1).optional(),
 }).strict()
 
+// Legacy dead switch path: the daemon no longer emits -32010. Kept for UI
+// imports and project.open confirmations until the S4 client migration.
 export const projectSwitchConfirmationSchema = z.object({
   kind: z.literal("project-switch-confirmation"),
   requestedPath: z.string().min(1),
