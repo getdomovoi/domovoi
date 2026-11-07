@@ -295,6 +295,10 @@ function newSessionShortcut(
     : event.ctrlKey && !event.metaKey
 }
 
+// A start whose project switch finished after the window moved to another
+// machine: the session is not started on the machine now shown.
+const windowMovedRefusal = "The window moved to another machine before the session could start. Nothing was started."
+
 // How a project switch the shell asked for ended (switchProject).
 type ProjectSwitchOutcome =
   | { kind: "opened"; projectId: string | null }
@@ -744,7 +748,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [projectSwitchPending, setProjectSwitchPending] = useState(false)
   const [projectSwitchError, setProjectSwitchError] = useState("")
   // What waits on the confirmation dialog's answer, when something does.
-  const pendingSwitch = useRef<((outcome: ProjectSwitchOutcome) => void) | null>(null)
+  // The confirmation on screen and what waits on its answer: set while the
+  // dialog shows, cleared when it is answered or cancelled.
+  const pendingSwitch = useRef<{ requestedPath: string; settle: (outcome: ProjectSwitchOutcome) => void } | null>(null)
   // Rulings Q158 A and Q159 A: the projects this machine knows, as
   // project.list read them, kept per machine. A project's sessions stay listed
   // while another one is open. The list is read again when the active set or
@@ -778,20 +784,43 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       })
     }
   }, [snapshot, attached?.machineId])
+  // The active set the last read was made for, so only projects that left it
+  // since are drawn from what the snapshot last showed.
+  const previousActive = useRef<{ machineId: string; ids: ReadonlySet<string> } | null>(null)
   useEffect(() => {
     if (!connected || !knownProjectsKey || handheld) return
     let current = true
     const machineId = knownProjectsMachineId
-    const active = new Set(activeProjectIdsKey.split("\u0000"))
-    const left = [...lastLiveProjects.current.entries()]
-      .filter(([key, entry]) => key.startsWith(`${machineId}\u0000`) && !active.has(entry.project.id))
-      .map(([, entry]) => entry)
-    setLeftActive({ machineId, projects: left })
+    const active = new Set(activeProjectIdsKey.split("\u0000").filter(Boolean))
+    const before = previousActive.current?.machineId === machineId ? previousActive.current.ids : new Set<string>()
+    previousActive.current = { machineId, ids: active }
+    const departed = [...before]
+      .filter((id) => !active.has(id))
+      .flatMap((id) => {
+        const entry = lastLiveProjects.current.get(`${machineId}\u0000${id}`)
+        return entry ? [entry] : []
+      })
+    if (departed.length > 0) {
+      // Added to any that left before a read could answer; a project that
+      // came back is active again and drawn from the snapshot.
+      setLeftActive((held) => {
+        const kept = held?.machineId === machineId
+          ? held.projects.filter((entry) => !active.has(entry.project.id) && !departed.some((left) => left.project.id === entry.project.id))
+          : []
+        return { machineId, projects: [...departed, ...kept] }
+      })
+    }
     listProjects().then(
       (result) => {
         if (!current) return
+        // The read is newer than any copy kept for a project it lists, so
+        // those copies retire; the active ones stay current in the snapshot.
         setKnownProjectList({ machineId, projects: result.projects })
         setLeftActive(null)
+        for (const key of [...lastLiveProjects.current.keys()]) {
+          const [keyMachine, projectId] = key.split("\u0000")
+          if (keyMachine === machineId && projectId !== undefined && !active.has(projectId)) lastLiveProjects.current.delete(key)
+        }
       },
       // A daemon that cannot list its projects still has the open one, which
       // the snapshot names, and the list it gave last time stands.
@@ -815,11 +844,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // launcher, or a session chosen in the sidebar. It runs in the render after
   // the new snapshot lands, through the latest handlers, so it acts in the
   // project it was meant for.
+  // Each names the machine the switch was made on: one that lands after the
+  // window moved to another machine does nothing there.
   const [afterSwitch, setAfterSwitch] = useState<
-    | { kind: "start"; attempt: SessionStartAttempt; resolve: () => void; reject: (cause: unknown) => void }
-    | { kind: "open"; sessionId: string }
+    | { kind: "start"; machineId: string; attempt: SessionStartAttempt; resolve: () => void; reject: (cause: unknown) => void }
+    | { kind: "open"; machineId: string; sessionId: string }
     | null
   >(null)
+  const shownMachineId = useRef(knownProjectsMachineId)
+  shownMachineId.current = knownProjectsMachineId
   const [connectionError, setConnectionError] = useState("")
   const [providerSecrets, setProviderSecrets] = useState<ProviderSecretStatus[]>([])
   const [skills, setSkills] = useState<SkillSummary[]>([])
@@ -1007,8 +1040,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   useEffect(() => {
     if (!afterSwitch) return
     setAfterSwitch(null)
+    const moved = afterSwitch.machineId !== shownMachineId.current
     if (afterSwitch.kind === "open") {
-      openSessionRef.current(afterSwitch.sessionId)
+      if (!moved) openSessionRef.current(afterSwitch.sessionId)
+      return
+    }
+    if (moved) {
+      afterSwitch.reject(new Error(windowMovedRefusal))
       return
     }
     startSessionRef.current(afterSwitch.attempt).then(afterSwitch.resolve, afterSwitch.reject)
@@ -1362,17 +1400,23 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // carries the id of the project the daemon opened, for the call that
   // follows to name; null when that answer came on a connection this shell
   // has since left, and then nothing follows.
+  //
+  // One confirmation is on screen at a time, and it keeps its own answer: a
+  // second switch that asks while one is showing (two requests were in flight)
+  // ends as cancelled instead of taking the dialog over, so a confirmed switch
+  // is never answered to the wrong caller.
   const switchProject = async (path: string, waitForConfirmation: boolean): Promise<ProjectSwitchOutcome> => {
     try {
       return { kind: "opened", projectId: await openProject(path) }
     } catch (cause) {
       if (!(cause instanceof ProjectSwitchConfirmationError)) throw cause
-      pendingSwitch.current?.({ kind: "cancelled" })
-      pendingSwitch.current = null
+      if (pendingSwitch.current) return { kind: "cancelled" }
       setProjectSwitchError("")
       setProjectSwitchConfirmation(cause.confirmation)
-      if (!waitForConfirmation) return { kind: "confirming" }
-      return new Promise((resolve) => { pendingSwitch.current = resolve })
+      return new Promise((resolve) => {
+        pendingSwitch.current = { requestedPath: cause.confirmation.requestedPath, settle: resolve }
+        if (!waitForConfirmation) resolve({ kind: "confirming" })
+      })
     }
   }
   const openProjectSafely = async (path: string) => {
@@ -1381,18 +1425,22 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const cancelProjectSwitch = () => {
     setProjectSwitchError("")
     setProjectSwitchConfirmation(null)
-    pendingSwitch.current?.({ kind: "cancelled" })
+    pendingSwitch.current?.settle({ kind: "cancelled" })
     pendingSwitch.current = null
   }
   const confirmProjectSwitch = async (path: string) => {
     if (projectSwitchPending || projectSwitchConfirmation?.requestedPath !== path) return
+    // The switch this answer belongs to, held from the moment it is sent.
+    const waiting = pendingSwitch.current
     setProjectSwitchPending(true)
     setProjectSwitchError("")
     try {
       const projectId = await openProject(path, projectSwitchConfirmation)
-      setProjectSwitchConfirmation(null)
-      pendingSwitch.current?.({ kind: "opened", projectId })
-      pendingSwitch.current = null
+      if (pendingSwitch.current === waiting) {
+        setProjectSwitchConfirmation(null)
+        pendingSwitch.current = null
+      }
+      waiting?.settle({ kind: "opened", projectId })
     } catch (cause) {
       if (cause instanceof ProjectSwitchConfirmationError) {
         setProjectSwitchConfirmation(cause.confirmation)
@@ -1439,13 +1487,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       await startSession({ kind: "create", title, runtime, projectId: open.id })
       return "started"
     }
+    const machineId = knownProjectsMachineId
     const switched = await switchProject(projectPath, true)
     if (switched.kind !== "opened") return "cancelled"
     // The answer came on a connection this shell has left: nothing it opened
     // is on screen, so nothing starts.
-    if (switched.projectId === null) throw new Error("The connection to the daemon changed before the session could start. Try again.")
+    if (switched.projectId === null) throw new Error("The connection to the daemon changed before the session could start. Nothing was started.")
+    if (shownMachineId.current !== machineId) throw new Error(windowMovedRefusal)
     const attempt: SessionStartAttempt = { kind: "create", title, runtime, projectId: switched.projectId }
-    await new Promise<void>((resolve, reject) => setAfterSwitch({ kind: "start", attempt, resolve, reject }))
+    await new Promise<void>((resolve, reject) => setAfterSwitch({ kind: "start", machineId, attempt, resolve, reject }))
     return "started"
   }
   // Ruling Q159 A: a session in a project that is not active opens that
@@ -1453,9 +1503,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const openSessionElsewhere = (project: Project, sessionId: string) => {
     if (watching) return
     setWorkspaceError("")
+    const machineId = knownProjectsMachineId
     void switchProject(project.path, true).then((outcome) => {
-      // Only in the project that was asked for, on this connection.
-      if (outcome.kind === "opened" && outcome.projectId === project.id) setAfterSwitch({ kind: "open", sessionId })
+      // Only in the project that was asked for, on this connection and the
+      // machine it was asked on.
+      if (outcome.kind === "opened" && outcome.projectId === project.id) setAfterSwitch({ kind: "open", machineId, sessionId })
     }, (cause: unknown) => {
       setWorkspaceError(cause instanceof Error ? cause.message : "Domovoi could not open that project")
     })
@@ -1655,6 +1707,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (!onMachine) { setLaunchIntent(null); return }
     if (!connected || !snapshot?.project) return
     setLaunchIntent(null)
+    // A start on a named machine opens on that machine's open project, never
+    // on a project another New session chose earlier.
+    setLauncherProjectPath(undefined)
     setLauncherMode("session")
   }, [launchIntent, attached, homeMachineId, connected, snapshot])
   const setLauncherTransferTargetId = (machineId: string | null) => {

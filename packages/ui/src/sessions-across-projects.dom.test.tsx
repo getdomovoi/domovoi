@@ -169,6 +169,27 @@ describe("the session sidebar across projects", () => {
     for (const session of demoWorkspace.sessions) expect(within(acme).getByText(session.title)).toBeTruthy()
   })
 
+  // A list read after a project left is newer than what the snapshot last
+  // showed of it, so a later switch must not bring the older copy back.
+  it("does not bring back an older copy of a project the list has since read", async () => {
+    const user = userEvent.setup()
+    const socket = await openShell()
+    await answerProjectList(socket, [known(projectA, demoWorkspace.sessions)])
+    await act(async () => {
+      socket.receive({ jsonrpc: "2.0", method: "workspace.changed", params: snapshotB() })
+    })
+    const stopped = demoWorkspace.sessions.map((session) => session.id === audit.id ? { ...session, state: "failed" as const } : session)
+    await answerProjectList(socket, [known(projectB, []), known(projectA, stopped)])
+    const projectC: Project = { ...projectB, id: "project-docs", name: "docs", path: "/Users/dev/src/docs" }
+    await act(async () => {
+      socket.receive({ jsonrpc: "2.0", method: "workspace.changed", params: workspaceSnapshot({ ...snapshotB(), project: projectC }) })
+    })
+    await settle()
+    await openDrawer(user)
+    const row = within(projectSection("acme-api")).getByRole("button", { name: new RegExp(`^${audit.title.slice(0, 20)}`) })
+    expect(row.textContent).toMatch(/failed .* ago/)
+  })
+
   // Ruling Q193 A: NEEDS YOU leads, across every project, so a waiting gate is
   // never inside a section below the fold; each project's section keeps its
   // RUNNING and QUIET. Two active projects is the J31 S2 shape, built here
@@ -347,6 +368,50 @@ describe("starting a session in another project", () => {
     // client makes in between is refused by the daemon rather than starting
     // the session in the wrong repository.
     expect(pendingRequest(socket, "session.create").params).toMatchObject({ title: "Render Cyrillic invoices", projectId: projectB.id })
+  })
+
+  // Two switches in flight: a session chosen in docs, then a start in
+  // pdf-worker. The confirmation on screen keeps its own answer; one that
+  // arrives later is dropped rather than taking it over, so the start lands
+  // in the project it was confirmed for.
+  it("keeps the confirmation on screen bound to its own switch when another arrives", async () => {
+    const user = userEvent.setup()
+    const projectC: Project = { ...projectB, id: "project-docs", name: "docs", path: "/Users/dev/src/docs" }
+    const docsSession = { ...audit, id: "session-docs", projectId: projectC.id, title: "Rewrite the install guide" }
+    const socket = await openShell()
+    await answerProjectList(socket, [known(projectA, demoWorkspace.sessions), known(projectB, []), known(projectC, [docsSession])])
+    await openDrawer(user)
+    await user.click(within(projectSection("docs")).getByRole("button", { name: /^Rewrite the install guide/ }))
+    await settle()
+    const docsOpen = pendingRequest(socket, "project.open")
+    expect(docsOpen.params).toMatchObject({ path: projectC.path })
+
+    await startIn(user, socket, "pdf-worker")
+    const pdfOpen = socket.sent.find((request) => request.method === "project.open" && !socket.answered.has(request.id) && request.id !== docsOpen.id)!
+    expect(pdfOpen.params).toMatchObject({ path: projectB.path })
+    const answer = (request: typeof pdfOpen, message: Record<string, unknown>) => {
+      socket.answered.add(request.id)
+      socket.receive({ jsonrpc: "2.0", id: request.id, ...message })
+    }
+    await act(async () => {
+      answer(pdfOpen, { error: { code: projectSwitchConfirmationErrorCode, message: "Confirm stopping this project's running work before switching", data: confirmation } })
+    })
+    await settle()
+    await user.click(screen.getByRole("button", { name: "Stop work and switch" }))
+    await settle()
+    const confirmed = socket.sent.find((request) => request.method === "project.open" && !socket.answered.has(request.id) && request.id !== docsOpen.id)!
+    expect(confirmed.params).toMatchObject({ path: projectB.path, confirmation })
+    // docs answers late, asking for its own confirmation.
+    await act(async () => {
+      answer(docsOpen, { error: { code: projectSwitchConfirmationErrorCode, message: "Confirm stopping this project's running work before switching", data: { ...confirmation, requestedPath: projectC.path } } })
+    })
+    await settle()
+    await act(async () => {
+      answer(confirmed, { result: snapshotB() })
+    })
+    await settle()
+    expect(pendingRequest(socket, "session.create").params).toMatchObject({ title: "Render Cyrillic invoices", projectId: projectB.id })
+    expect(sentRequests(socket, "session.activate")).toHaveLength(0)
   })
 
   it("starts nothing and keeps the launcher open when the switch is not confirmed", async () => {
