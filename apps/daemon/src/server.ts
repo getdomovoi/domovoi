@@ -10125,7 +10125,6 @@ export class DomovoiDaemon {
           this.#auditEndedStoredTurns(endStoredTurns(loaded, endedTurnSessionIds, expiredApprovals, expiredAt), "project-open", projectId)
           this.#snapshot.projects = [...active, project]
           this.#snapshot.sessions.push(...loaded.sessions)
-          this.#snapshot.approvals.push(...loaded.approvals)
           this.#snapshot.approvalRules.push(...loaded.approvalRules)
           this.#snapshot.thread.push(...loaded.thread)
           this.#snapshot.artifacts.push(...loaded.artifacts)
