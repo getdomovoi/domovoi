@@ -1349,6 +1349,8 @@ export const knownProjectSessionSchema = z.object({
   updatedAt: dateTimeSchema,
 }).strict()
 
+export type KnownProjectSession = z.infer<typeof knownProjectSessionSchema>
+
 export const knownProjectSchema = z.object({
   project: projectSchema,
   // When the daemon last saved the project's state.
