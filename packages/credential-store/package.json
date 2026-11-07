@@ -1,6 +1,6 @@
 {
   "name": "@getdomovoi/credential-store",
-  "version": "0.0.1",
+  "version": "0.1.0-alpha.0",
   "description": "Explicit keychain or private-file custody for Domovoi credentials.",
   "type": "module",
   "engines": { "node": ">=22.13.0" },
