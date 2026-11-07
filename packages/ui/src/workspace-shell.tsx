@@ -10,7 +10,9 @@ import {
 import { CircleStopIcon, PinIcon } from "lucide-react"
 import type {
   ClientKind,
+  KnownProject,
   PermissionMode,
+  Project,
   ProjectSwitchConfirmation,
   ProviderModel,
   RepositoryGitFilterRefusal,
@@ -22,7 +24,7 @@ import type {
   SystemEmergencyStopResult,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
-import { selectableTurnSkills, serviceHandoffRefusal, turnSkillSelectionFor } from "@getdomovoi/protocol"
+import { selectableTurnSkills, serviceHandoffRefusal, turnSkillSelectionFor, workspaceProjects } from "@getdomovoi/protocol"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { StateRecoveryNotice } from "./state-recovery-notice"
 import {
@@ -147,7 +149,8 @@ import {
   localFleetEntry,
   sessionIsArchiveReadOnly,
 } from "./workspace-selectors"
-import { launcherContentClassName, launcherTitle, type LauncherMode } from "./launcher-frame"
+import { launcherContentClassName, launcherTitle, type LauncherMode, type LauncherStartOutcome } from "./launcher-frame"
+import { launcherProjects, projectEntries } from "./project-entries"
 import { ProjectSwitchConfirmationDialog } from "./project-switch-confirmation"
 import { AppBar, useUsageToday } from "./app-bar"
 import { TitlebarLeadingInset, titlebarLeadingInset } from "./titlebar-inset"
@@ -495,6 +498,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     loadSessionHistory,
     loadSessionEvidence,
     openProject,
+    listProjects,
     pauseSession,
     queryAudit,
     readSkill,
@@ -624,6 +628,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // only when that machine is the one attached and its snapshot has a project.
   const [launchIntent, setLaunchIntent] = useState<{ machineId: string } | null>(null)
   const [launcherProjectNote, setLauncherProjectNote] = useState("")
+  // The project "Start a session" opens with when a project section's own New
+  // session asked for it (ruling Q160); otherwise it opens on the open project.
+  const [launcherProjectPath, setLauncherProjectPath] = useState<string | undefined>(undefined)
   const [notificationDelivery, setNotificationDelivery] = useState<WorkspaceNotificationDelivery | undefined>(
     () => platform?.notifications.delivery(),
   )
@@ -728,6 +735,42 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [projectSwitchConfirmation, setProjectSwitchConfirmation] = useState<ProjectSwitchConfirmation | null>(null)
   const [projectSwitchPending, setProjectSwitchPending] = useState(false)
   const [projectSwitchError, setProjectSwitchError] = useState("")
+  // What waits on the confirmation dialog's answer, when something does.
+  const pendingSwitch = useRef<((outcome: "opened" | "cancelled") => void) | null>(null)
+  // Rulings Q158 A and Q159 A: the projects this machine knows, as
+  // project.list read them, kept per machine. A project's sessions stay listed
+  // while another one is open. The list is read again when the active set or
+  // the focused project changes; until the answer, the last one stands, so a
+  // switch never empties the sidebar. A phone or tablet credential is refused
+  // project.list and the connection closes on a refusal, so a handheld tab
+  // never asks.
+  const [knownProjectList, setKnownProjectList] = useState<{ machineId: string; projects: KnownProject[] } | null>(null)
+  const knownProjectsMachineId = attached?.machineId ?? snapshot?.machine.id ?? ""
+  const knownProjectsKey = snapshot
+    ? `${knownProjectsMachineId}\u0000${snapshot.project?.id ?? ""}\u0000${workspaceProjects(snapshot).map((project) => project.id).join("\u0000")}`
+    : ""
+  useEffect(() => {
+    if (!connected || !knownProjectsKey || handheld) return
+    let current = true
+    const machineId = knownProjectsMachineId
+    listProjects().then(
+      (result) => { if (current) setKnownProjectList({ machineId, projects: result.projects }) },
+      // A daemon that cannot list its projects still has the open one, which
+      // the snapshot names.
+      () => { if (current) setKnownProjectList(null) },
+    )
+    return () => { current = false }
+  }, [connected, knownProjectsKey, knownProjectsMachineId, handheld, listProjects])
+  const knownProjects = knownProjectList?.machineId === knownProjectsMachineId ? knownProjectList.projects : null
+  // What runs in a project once a switch to it is made: a start from the
+  // launcher, or a session chosen in the sidebar. It runs in the render after
+  // the new snapshot lands, through the latest handlers, so it acts in the
+  // project it was meant for.
+  const [afterSwitch, setAfterSwitch] = useState<
+    | { kind: "start"; attempt: SessionStartAttempt; resolve: () => void; reject: (cause: unknown) => void }
+    | { kind: "open"; sessionId: string }
+    | null
+  >(null)
   const [connectionError, setConnectionError] = useState("")
   const [providerSecrets, setProviderSecrets] = useState<ProviderSecretStatus[]>([])
   const [skills, setSkills] = useState<SkillSummary[]>([])
@@ -908,6 +951,19 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setSurface("workspace")
     activateVisibleSession(sessionId)
   }
+  const startSessionRef = useRef(startSession)
+  startSessionRef.current = startSession
+  const openSessionRef = useRef(openSessionInWorkspace)
+  openSessionRef.current = openSessionInWorkspace
+  useEffect(() => {
+    if (!afterSwitch) return
+    setAfterSwitch(null)
+    if (afterSwitch.kind === "open") {
+      openSessionRef.current(afterSwitch.sessionId)
+      return
+    }
+    startSessionRef.current(afterSwitch.attempt).then(afterSwitch.resolve, afterSwitch.reject)
+  }, [afterSwitch])
   const [machineMenuRequest, setMachineMenuRequest] = useState(0)
   // Fork and Move need the person to choose a checkpoint or a machine on the
   // session the row names. Activation is a round trip and the thread remounts
@@ -1249,17 +1305,33 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         })
     }
   }, [snapshot, queues, emergencyStopPending, skills, sendMessage, skillCatalogLoaded, skillCatalogFailed, settled, watching, connected, imageRefusals, releaseReadsSettled, connectionId, listModelsSeen])
-  const openProjectSafely = async (path: string) => {
+  // Opens a project through the switch rules that apply today: when the
+  // daemon asks to confirm stopping the open project's work, the confirmation
+  // dialog asks. A caller that goes on to do something in the new project
+  // (start a session there, open one of its sessions) waits for the answer;
+  // "cancelled" means the person kept the current project.
+  const switchProject = async (path: string, waitForConfirmation: boolean): Promise<"opened" | "cancelled" | "confirming"> => {
     try {
       await openProject(path)
+      return "opened"
     } catch (cause) {
-      if (cause instanceof ProjectSwitchConfirmationError) {
-        setProjectSwitchError("")
-        setProjectSwitchConfirmation(cause.confirmation)
-        return
-      }
-      throw cause
+      if (!(cause instanceof ProjectSwitchConfirmationError)) throw cause
+      pendingSwitch.current?.("cancelled")
+      pendingSwitch.current = null
+      setProjectSwitchError("")
+      setProjectSwitchConfirmation(cause.confirmation)
+      if (!waitForConfirmation) return "confirming"
+      return new Promise((resolve) => { pendingSwitch.current = resolve })
     }
+  }
+  const openProjectSafely = async (path: string) => {
+    await switchProject(path, false)
+  }
+  const cancelProjectSwitch = () => {
+    setProjectSwitchError("")
+    setProjectSwitchConfirmation(null)
+    pendingSwitch.current?.("cancelled")
+    pendingSwitch.current = null
   }
   const confirmProjectSwitch = async (path: string) => {
     if (projectSwitchPending || projectSwitchConfirmation?.requestedPath !== path) return
@@ -1268,6 +1340,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     try {
       await openProject(path, projectSwitchConfirmation)
       setProjectSwitchConfirmation(null)
+      pendingSwitch.current?.("opened")
+      pendingSwitch.current = null
     } catch (cause) {
       if (cause instanceof ProjectSwitchConfirmationError) {
         setProjectSwitchConfirmation(cause.confirmation)
@@ -1303,6 +1377,45 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       setWorkspaceError(cause instanceof Error ? cause.message : "Domovoi could not open the selected project")
     })
   }
+  // Ruling Q158 A: "Start a session" names its project. Starting in the open
+  // project is a start; starting in another opens it first, through the
+  // switch rules, and starts there once its snapshot is the one on screen. A
+  // switch the person did not confirm starts nothing and leaves the launcher
+  // open.
+  const startSessionIn = async (title: string, runtime: Runtime, projectPath: string): Promise<LauncherStartOutcome> => {
+    const attempt: SessionStartAttempt = { kind: "create", title, runtime }
+    if (projectPath === snapshot?.project?.path) {
+      await startSession(attempt)
+      return "started"
+    }
+    if (await switchProject(projectPath, true) !== "opened") return "cancelled"
+    await new Promise<void>((resolve, reject) => setAfterSwitch({ kind: "start", attempt, resolve, reject }))
+    return "started"
+  }
+  // Ruling Q159 A: a session in a project that is not active opens that
+  // project, through the same switch rules, and then the session.
+  const openSessionElsewhere = (project: Project, sessionId: string) => {
+    if (watching) return
+    setWorkspaceError("")
+    void switchProject(project.path, true).then((outcome) => {
+      if (outcome === "opened") setAfterSwitch({ kind: "open", sessionId })
+    }, (cause: unknown) => {
+      setWorkspaceError(cause instanceof Error ? cause.message : "Domovoi could not open that project")
+    })
+  }
+  const newSessionIn = (project?: Project) => {
+    setLauncherProjectPath(project?.path)
+    setLauncherMode("session")
+  }
+  // A native folder picker for the launcher's Choose a folder, where this
+  // window has one for the machine it shows; a browser, or a desktop window
+  // on another machine, takes a typed path instead.
+  const chooseLauncherFolder = windowBridge && !attached
+    ? async () => {
+      const result = await windowBridge.openDirectory()
+      return result.status === "selected" ? result.path : null
+    }
+    : undefined
   const openActiveWorkspaceInEditor = () => {
     if (watching || !windowBridge || !activeWorkspacePath || attached) return
     setWorkspaceError("")
@@ -1358,9 +1471,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     } : {}),
     connected,
     emergencyStopPending,
-    hasProject: Boolean(snapshot?.project),
     openProject: requestOpenProject,
-    newSession: () => setLauncherMode(snapshot?.project ? "session" : "project"),
+    // Ruling Q158 A: no project open is no longer a step before the
+    // launcher; its Project field starts empty instead.
+    newSession: () => newSessionIn(),
     pauseAll: pauseActiveTurns,
     emergencyStop: stopEverything,
     reconnect: reconnectDaemon,
@@ -1686,7 +1800,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // desktop's alone, as Q291 A keeps the two above, because a browser tab never
   // receives Cmd+N or Ctrl+N. The listener reads the action through a ref so a
   // project or attachment change does not leave it calling an old one.
-  const newSession = () => snapshot?.project ? setLauncherMode("session") : requestOpenProject()
+  // The project of the selected session, else the open one: today both are
+  // the focused project, which the launcher starts on (ruling Q160).
+  const newSession = () => newSessionIn()
   const newSessionRef = useRef(newSession)
   newSessionRef.current = newSession
   useEffect(() => {
@@ -1919,6 +2035,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onOpenChange={setSessionsOpen}
             onActivate={openSessionInWorkspace}
               onAction={watching ? undefined : sessionRowAction}
+            knownProjects={knownProjects}
+            {...(watching ? {} : { onActivateElsewhere: openSessionElsewhere, onNewSessionIn: newSessionIn })}
             machineAvailability={machineAvailability}
             onOpenMachines={() => setSurface("fleet")}
             {...(clientKind === "web" && !attached ? {
@@ -2178,7 +2296,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                     />
                   </div>
                 </main>
-              ) : sessionReadFailure ? <FailedSessionRead failure={sessionReadFailure} title={snapshot.sessions.find((session) => session.id === sessionReadFailure.sessionId)?.title ?? sessionReadFailure.sessionId} connected={connected} onRetry={() => activateVisibleSession(sessionReadFailure.sessionId)} onOpenMachine={() => setSurface("fleet")} /> : <Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} connectionId={connectionId} surface={windowBridge ? "desktop" : "web"} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={(input) => startSession({ kind: "fork", input })} onListModels={listModelsSeen}onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onPairMachine={threadPairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} usage={activeSessionUsage} usageToday={usageToday} loadUsageReading={loadUsageReading}machineMenuRequest={machineMenuRequest} onDiscoverRuntime={discoverRuntimeSeen} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSheet={() => openDockTab("changes")} onOpenDockTab={openSheetTab} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onUnpickBuildBasis={() => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, undefined) })) }} />}</ResizablePanel>
+              ) : sessionReadFailure ? <FailedSessionRead failure={sessionReadFailure} title={snapshot.sessions.find((session) => session.id === sessionReadFailure.sessionId)?.title ?? sessionReadFailure.sessionId} connected={connected} onRetry={() => activateVisibleSession(sessionReadFailure.sessionId)} onOpenMachine={() => setSurface("fleet")} /> : <Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} connectionId={connectionId} surface={windowBridge ? "desktop" : "web"} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={(input) => startSession({ kind: "fork", input })} onListModels={listModelsSeen}onNewSession={snapshot.project ? newSession : requestOpenProject} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onPairMachine={threadPairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} usage={activeSessionUsage} usageToday={usageToday} loadUsageReading={loadUsageReading}machineMenuRequest={machineMenuRequest} onDiscoverRuntime={discoverRuntimeSeen} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSheet={() => openDockTab("changes")} onOpenDockTab={openSheetTab} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onUnpickBuildBasis={() => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, undefined) })) }} />}</ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces(<Button ref={dockUnpinButtonRef} variant="ghost" size="icon-sm" className="size-7 flex-none rounded-full bg-accent text-primary" aria-pressed aria-label="Unpin" onClick={() => setDockPinned(false)}><PinIcon className="size-[15px]" /></Button>, true)}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (
@@ -2245,13 +2363,16 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               : "build"}
             onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
             onOpenProject={openProjectSafely}
-            onCreateSession={(title, runtime) => startSession({ kind: "create", title, runtime })}
+            onCreateSession={startSessionIn}
             onListModels={listModelsSeen}
             recentSessions={snapshot.sessions}
             onResumeSession={(sessionId) => {
               openSessionInWorkspace(sessionId)
               setLauncherMode(null)
             }}
+            projects={launcherProjects(projectEntries(snapshot, knownProjects))}
+            initialProjectPath={launcherProjectPath}
+            onChooseFolder={chooseLauncherFolder}
           />
         ) : null}
         {projectSwitchConfirmation ? (
@@ -2259,10 +2380,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             confirmation={projectSwitchConfirmation}
             pending={projectSwitchPending}
             error={projectSwitchError}
-            onCancel={() => {
-              setProjectSwitchError("")
-              setProjectSwitchConfirmation(null)
-            }}
+            onCancel={cancelProjectSwitch}
             onConfirm={(path) => { void confirmProjectSwitch(path) }}
           />
         ) : null}

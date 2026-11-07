@@ -2,14 +2,13 @@ import { act, cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
-import { createEmptyWorkspace } from "@getdomovoi/protocol"
-
 import type { WorkspacePlatform } from "./workspace-platform"
 import { workspaceUiStorageKey } from "./workspace-persistence"
 import {
   completeHandshake,
   fail,
   installFakeWebSocket,
+  respond,
   workspaceSnapshot,
   type FakeWebSocketHarness,
 } from "./test-support/fake-websocket"
@@ -136,16 +135,25 @@ function watchForStandIns(): { seen: () => number, stop: () => void } {
   return { seen: () => { count(); return seen }, stop: () => observer.disconnect() }
 }
 
+// Ruling Q159 A: a session in a project that is not active opens that project
+// from the sessions column, which loads with the shell, so the switch it asks
+// to confirm can start before any dialog's code has arrived.
 it("shows what a project switch stops before any dialog's code has loaded", async () => {
-  const platform: WorkspacePlatform = {
-    dialogs: { pickProjectDirectory: vi.fn(async () => ({ status: "selected" as const, path: "/code/elsewhere" })) },
-    notifications: { delivery: () => ({ status: "ready" }), request: vi.fn(async () => ({ status: "ready" as const })), notify: vi.fn(async () => {}) },
-    clipboard: { writeText: vi.fn(async () => {}) },
-    install: { state: () => ({ status: "installed" }), prompt: vi.fn(async () => ({ status: "installed" as const })) },
-  }
-  const socket = await openWorkspace({ platform, snapshot: workspaceSnapshot(createEmptyWorkspace(workspaceSnapshot().machine)) })
+  const snapshot = workspaceSnapshot()
+  const socket = await openWorkspace({ snapshot })
+  const elsewhere = { id: "project-elsewhere", machineId: snapshot.machine.id, name: "elsewhere", path: "/code/elsewhere", branch: "main" }
+  await act(async () => {
+    respond(socket, "project.list", { projects: [{
+      project: elsewhere,
+      savedAt: "2026-11-06T10:00:00.000Z",
+      folder: "present",
+      sessions: [{ id: "session-elsewhere", title: "Render Cyrillic invoices", state: "idle", updatedAt: "2026-11-06T09:00:00.000Z" }],
+    }] })
+  })
+  await settle()
   const user = userEvent.setup()
-  await user.click(screen.getByRole("button", { name: "New session" }))
+  await user.click(screen.getByRole("button", { name: /^Sessions \d/ }))
+  await user.click(screen.getByRole("button", { name: /^Render Cyrillic invoices/ }))
   await settle()
   await act(async () => {
     fail(socket, "project.open", {

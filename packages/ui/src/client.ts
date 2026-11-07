@@ -652,6 +652,12 @@ export class DomovoiClient extends EventTarget {
     })
   }
 
+  // Every project the daemon has saved, with its sessions (rulings Q158 A,
+  // Q159 A).
+  listProjects(): Promise<RpcResult<"project.list">> {
+    return this.request("project.list", {})
+  }
+
   createSession(title: string, runtime: Runtime): Promise<WorkspaceSnapshot> {
     return this.request("session.create", { title, runtime, client: this.kind })
   }

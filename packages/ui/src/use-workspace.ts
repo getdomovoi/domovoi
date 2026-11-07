@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientAccess, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, RpcResult, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, StateRecovery, ToolInventory, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalResizedNotification, TerminalSession, TerminalSummary, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
+import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientAccess, ClientKind, ProviderModel, ProjectListResult, ProjectSwitchConfirmation, RpcParams, RpcResult, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, StateRecovery, ToolInventory, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalResizedNotification, TerminalSession, TerminalSummary, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DaemonRpcError, DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions, type DomovoiEndpoint, type TerminalWatch, type TerminalWatchOptions } from "./client"
 import type { ClientAdmission } from "./client-admission-policy"
@@ -739,6 +739,12 @@ export function useWorkspace(
     return client.listFleet(options)
   }, [])
 
+  const listProjects = useCallback(async (): Promise<ProjectListResult> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.listProjects()
+  }, [])
+
   // Moving a session lands on the target machine, so the answer is returned to
   // the caller rather than folded into this machine's snapshot.
   const previewTransfer = useCallback(async (
@@ -1063,6 +1069,7 @@ export function useWorkspace(
     loadSessionHistory,
     loadSessionEvidence,
     listFleet,
+    listProjects,
     listDevices,
     updateStatus,
     tailnetStatus,

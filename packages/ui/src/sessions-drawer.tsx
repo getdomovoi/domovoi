@@ -1,7 +1,7 @@
-import { ArchiveIcon, ChevronRightIcon, EllipsisIcon, GitBranchIcon, GitForkIcon, MonitorIcon, PanelLeftIcon, PauseIcon, PlayIcon } from "lucide-react"
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react"
+import { ArchiveIcon, ChevronRightIcon, EllipsisIcon, GitBranchIcon, GitForkIcon, MonitorIcon, PanelLeftIcon, PauseIcon, PlayIcon, PlusIcon } from "lucide-react"
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react"
 
-import type { ClientKind, SessionSummary, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { ClientKind, KnownProject, KnownProjectSession, Project, SessionSummary, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import {
   DropdownMenu,
@@ -11,7 +11,8 @@ import {
 } from "./components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
 import { StatusDot } from "./status-dot"
-import { groupSessions, type GroupedSession, type SessionGroupId } from "./session-groups"
+import { groupSessions, type GroupedSession, type SessionGroup } from "./session-groups"
+import { projectEntries, type ProjectEntry } from "./project-entries"
 import { cn } from "./lib/utils"
 import { dockSideBySideMinimumWidth } from "./dock-auto-collapse"
 import { titlebarTipClassName } from "./titlebar-tip"
@@ -206,6 +207,16 @@ function rowMeta(entry: GroupedSession, session: SessionSummary | undefined, now
   return entry.note
 }
 
+// The meta of a row in a project that is not active. Nothing runs there, so a
+// row says how its session was left and how long ago.
+function savedSessionNote(session: KnownProjectSession, now: number): string {
+  if (session.state === "archived") return "archived"
+  if (session.state === "archiving") return "archiving"
+  if (session.state === "transferred") return "moved to another machine"
+  if (session.state === "failed") return `failed ${elapsed(session.updatedAt, now)} ago`
+  return `idle ${elapsed(session.updatedAt, now)}`
+}
+
 export function SessionsDrawerColumn({
   snapshot,
   open,
@@ -217,7 +228,17 @@ export function SessionsDrawerColumn({
   scope,
   credentialNote,
   className,
+  knownProjects,
+  onActivateElsewhere,
+  onNewSessionIn,
 }: {
+  // What project.list read: the projects this machine knows, so a project's
+  // sessions stay listed while another one is open (ruling Q159 A).
+  knownProjects?: readonly KnownProject[] | null | undefined
+  // A session in a project that is not active: open that project, then it.
+  onActivateElsewhere?: ((project: Project, sessionId: string) => void) | undefined
+  // Each project's own New session (ruling Q160).
+  onNewSessionIn?: ((project: Project) => void) | undefined
   snapshot: WorkspaceSnapshot
   open: boolean
   // Lets the column close itself where it covers the thread (a narrow tab).
@@ -234,7 +255,7 @@ export function SessionsDrawerColumn({
   onOpenMachines?: (() => void) | undefined
   className?: string
 }) {
-  const [collapsed, setCollapsed] = useState<ReadonlySet<SessionGroupId>>(new Set())
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const archivedNoteId = useId()
   const now = useDrawerClock(open)
   // session.archive is not on phoneAndTabletRpcMethods (handheld-tab.ts).
@@ -352,15 +373,149 @@ export function SessionsDrawerColumn({
     onAction?.(action, sessionId)
     if (coversNow()) close()
   }
-  const groups = groupSessions(snapshot)
   const machine = snapshot.machine.name
   const sessionsById = new Map(snapshot.sessions.map((session) => [session.id, session]))
-  const toggle = (id: SessionGroupId) => setCollapsed((current) => {
+  const entries = projectEntries(snapshot, knownProjects)
+  const activeProjectIds = new Set(entries.filter((entry) => entry.active).map((entry) => entry.project.id))
+  const toggle = (id: string) => setCollapsed((current) => {
     const next = new Set(current)
     if (next.has(id)) next.delete(id)
     else next.add(id)
     return next
   })
+  const renderGroups = (groups: readonly SessionGroup[], keyPrefix: string) => (
+    <SessionGroupList
+      groups={groups}
+      keyPrefix={keyPrefix}
+      collapsed={collapsed}
+      toggle={toggle}
+      activeSessionId={snapshot.activeSessionId}
+      machine={machine}
+      sessionsById={sessionsById}
+      now={now}
+      onActivate={onActivate}
+      onAction={onAction}
+      openBehind={openBehind}
+      coversNow={coversNow}
+      close={close}
+      asideRef={asideRef}
+      archivedNoteId={archivedNoteId}
+      archiveLocked={archiveLocked}
+    />
+  )
+  // With no project known, as before rulings Q158 A and Q159 A: every
+  // session in the snapshot, grouped by what it wants from you.
+  const ungrouped = entries.length === 0 ? groupSessions(snapshot) : []
+  // Ruling Q159 A (Q193 A): a section per project, from the data. An active
+  // project's sessions are live in the snapshot and keep their groups; one
+  // that is not active lists what project.list read, and choosing a row opens
+  // that project first. A session whose project is not among the active ones
+  // stays visible under the focused project.
+  const renderProject = (entry: ProjectEntry) => {
+    const name = entry.project.name
+    const sectionKey = `project:${entry.project.id}`
+    const shut = !entry.active && collapsed.has(sectionKey)
+    const statusId = `${archivedNoteId}-project-${entry.project.id}`
+    // Every project here is on this machine, which each row's meta already
+    // names, so the header says only what differs: not active, or a folder
+    // the daemon could not find or read.
+    const status = entry.folder === "missing"
+      ? "folder not found"
+      : entry.folder === "unreadable"
+        ? "folder could not be read"
+        : entry.active ? "" : "not active"
+    const groups = entry.active
+      ? groupSessions(snapshot, (session) => session.projectId === entry.project.id
+        || (entry.focused && !activeProjectIds.has(session.projectId)))
+      : []
+    const empty = entry.active ? groups.length === 0 : entry.savedSessions.length === 0
+    const heading = (
+      <>
+        <span className="truncate font-machine text-[11px] font-medium text-strong">{name}</span>
+        {status ? <span id={statusId} className="min-w-0 truncate font-machine text-[10.5px] text-faint">{status}</span> : null}
+      </>
+    )
+    return (
+      <section key={entry.project.id} aria-label={`Project ${name}`} className="flex flex-col gap-0.5 pb-2">
+        <div className="flex items-center gap-[7px] rounded-md px-[9px] pt-2 pb-1.5 hover:bg-accent/60">
+          {entry.active ? (
+            <span className="flex min-w-0 flex-1 items-baseline gap-[7px]">{heading}</span>
+          ) : (
+            <button
+              type="button"
+              aria-expanded={!shut}
+              onClick={() => toggle(sectionKey)}
+              className="flex min-w-0 flex-1 items-center gap-[7px] text-left"
+            >
+              <ChevronRightIcon className={cn("size-3 shrink-0 text-faint transition-transform", !shut && "rotate-90")} />
+              {heading}
+            </button>
+          )}
+          {!entry.active ? (
+            <span className="rounded-full bg-muted px-1.5 font-machine text-[10.5px] text-muted-foreground">{entry.savedSessions.length + entry.omittedSessions}</span>
+          ) : null}
+          {/* The design's 22px icon button for a project header (Domovoi
+              Projects, section headers), named for its project. */}
+          {onNewSessionIn ? (
+            <button
+              type="button"
+              aria-label={`New session in ${name}`}
+              title={`New session in ${name}`}
+              aria-describedby={entry.folder === "missing" ? statusId : undefined}
+              disabled={entry.folder === "missing"}
+              onClick={() => {
+                onNewSessionIn(entry.project)
+                if (coversNow()) close()
+              }}
+              className="flex size-[22px] shrink-0 items-center justify-center rounded-[calc(var(--radius)-4px)] text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
+            >
+              <PlusIcon className="size-3.5" />
+            </button>
+          ) : null}
+        </div>
+        {shut ? null : (
+          <>
+            {empty ? <p className="m-0 px-[9px] pt-0.5 pb-1 pl-7 text-[11px] text-faint">No sessions yet</p> : null}
+            {entry.active ? renderGroups(groups, `${entry.project.id}:`) : entry.savedSessions.map((session) => {
+              const note = savedSessionNote(session, now)
+              const content = (
+                <>
+                  <span className="flex min-w-0 flex-1 flex-col items-start">
+                    <span className="line-clamp-2 text-[12px] leading-[1.38] text-strong">{session.title}</span>
+                    <span data-session-meta="" className="mt-[3px] font-machine text-[10.5px] text-faint">{`${machine} · ${note}`}</span>
+                  </span>
+                  <span aria-hidden className="order-first mt-[5px] flex opacity-80">
+                    <StatusDot meaning={session.state === "failed" ? "offline" : "idle"} label={note} size="inline" labelHidden />
+                  </span>
+                </>
+              )
+              return (
+                <div key={session.id} className="flex items-start gap-[9px] rounded-md px-[9px] py-2 opacity-55 hover:bg-accent/60">
+                  {onActivateElsewhere ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onActivateElsewhere(entry.project, session.id)
+                        if (coversNow()) close()
+                      }}
+                      className="flex min-w-0 flex-1 items-start gap-[9px] text-left"
+                    >
+                      {content}
+                    </button>
+                  ) : (
+                    <span className="flex min-w-0 flex-1 items-start gap-[9px]">{content}</span>
+                  )}
+                </div>
+              )
+            })}
+            {entry.omittedSessions > 0 ? (
+              <p className="m-0 px-[9px] py-1 pl-6 text-[11px] text-faint">{`${entry.omittedSessions} more in ${name}`}</p>
+            ) : null}
+          </>
+        )}
+      </section>
+    )
+  }
 
   return (
     <>
@@ -386,19 +541,88 @@ export function SessionsDrawerColumn({
         </div>
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-2">
-        {groups.length === 0 ? (
+        {entries.length === 0 && ungrouped.length === 0 ? (
           <p className="m-0 px-2 py-3 text-[11.5px] text-faint">
             No sessions on this machine yet.
           </p>
         ) : null}
+        {entries.length === 0 ? renderGroups(ungrouped, "") : entries.map(renderProject)}
+      </div>
+      {credentialNote ? (
+        <div className="flex shrink-0 items-center gap-2 border-t px-[14px] py-[9px]">
+          <span aria-hidden className="size-1.5 rounded-full bg-info" />
+          <span className="text-[11px]">{credentialNote.label}</span>
+          <span className="flex-1" />
+          <span className="font-machine text-[10.5px] text-faint">{credentialNote.meta}</span>
+        </div>
+      ) : null}
+      {machineAvailability ? (
+        <div className="flex shrink-0 items-center justify-center px-[10px] pt-[9px] pb-[11px]">
+          <button type="button" className="font-machine text-[10.5px] text-muted-foreground" disabled={!onOpenMachines} onClick={() => {
+            onOpenMachines?.()
+            // Machines opens beside the column, which would cover it.
+            if (coversNow()) close()
+          }}>
+            {machineAvailability}
+          </button>
+        </div>
+      ) : null}
+    </aside>
+    </>
+  )
+}
+
+// One project's NEEDS YOU, RUNNING and QUIET groups, or every session's when
+// no project is known. Collapse keys carry the project, so the same group in
+// two projects opens and closes on its own.
+type SessionGroupListProps = {
+  groups: readonly SessionGroup[]
+  keyPrefix: string
+  collapsed: ReadonlySet<string>
+  toggle: (key: string) => void
+  activeSessionId: string | null
+  machine: string
+  sessionsById: ReadonlyMap<string, SessionSummary>
+  now: number
+  onActivate: (sessionId: string) => void
+  onAction: ((action: SessionRowAction, sessionId: string) => void) | undefined
+  openBehind: (action: "resume" | "fork" | "move", sessionId: string) => void
+  coversNow: () => boolean
+  close: () => void
+  asideRef: RefObject<HTMLElement | null>
+  archivedNoteId: string
+  archiveLocked: string | undefined
+}
+
+function SessionGroupList({
+  groups,
+  keyPrefix,
+  collapsed,
+  toggle,
+  activeSessionId,
+  machine,
+  sessionsById,
+  now,
+  onActivate,
+  onAction,
+  openBehind,
+  coversNow,
+  close,
+  asideRef,
+  archivedNoteId,
+  archiveLocked,
+}: SessionGroupListProps) {
+  return (
+    <>
         {groups.map((group) => {
-          const shut = collapsed.has(group.id)
+          const key = `${keyPrefix}${group.id}`
+          const shut = collapsed.has(key)
           return (
-            <section key={group.id} aria-label={group.label} className="flex flex-col gap-0.5 pb-2">
+            <section key={key} aria-label={group.label} className="flex flex-col gap-0.5 pb-2">
               <button
                 type="button"
                 aria-expanded={!shut}
-                onClick={() => toggle(group.id)}
+                onClick={() => toggle(key)}
                 className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/60"
               >
                 <ChevronRightIcon className={cn("size-3 text-faint transition-transform", !shut && "rotate-90")} />
@@ -407,7 +631,7 @@ export function SessionsDrawerColumn({
                 <span className="rounded-full bg-muted px-1.5 font-machine text-[10.5px] text-muted-foreground">{group.sessions.length}</span>
               </button>
               {shut ? null : group.sessions.map((entry) => {
-                const current = entry.id === snapshot.activeSessionId
+                const current = entry.id === activeSessionId
                 return (
                   <div
                     key={entry.id}
@@ -501,27 +725,6 @@ export function SessionsDrawerColumn({
             </section>
           )
         })}
-      </div>
-      {credentialNote ? (
-        <div className="flex shrink-0 items-center gap-2 border-t px-[14px] py-[9px]">
-          <span aria-hidden className="size-1.5 rounded-full bg-info" />
-          <span className="text-[11px]">{credentialNote.label}</span>
-          <span className="flex-1" />
-          <span className="font-machine text-[10.5px] text-faint">{credentialNote.meta}</span>
-        </div>
-      ) : null}
-      {machineAvailability ? (
-        <div className="flex shrink-0 items-center justify-center px-[10px] pt-[9px] pb-[11px]">
-          <button type="button" className="font-machine text-[10.5px] text-muted-foreground" disabled={!onOpenMachines} onClick={() => {
-            onOpenMachines?.()
-            // Machines opens beside the column, which would cover it.
-            if (coversNow()) close()
-          }}>
-            {machineAvailability}
-          </button>
-        </div>
-      ) : null}
-    </aside>
     </>
   )
 }
