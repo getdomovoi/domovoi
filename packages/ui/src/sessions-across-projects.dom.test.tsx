@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   demoWorkspace,
+  projectCapErrorCode,
   projectSwitchConfirmationErrorCode,
   type KnownProject,
   type Project,
@@ -429,6 +430,37 @@ describe("starting a session in another project", () => {
     expect(sentRequests(socket, "project.open")).toHaveLength(1)
     expect(dialog.isConnected).toBe(true)
     expect(within(dialog).getByRole<HTMLButtonElement>("button", { name: "Create session" }).disabled).toBe(false)
+  })
+
+  // J31 S2: an active project takes a session as it is; nothing opens and
+  // nothing asks.
+  it("starts in another active project without opening it", async () => {
+    const user = userEvent.setup()
+    const socket = await openShell("desktop", workspaceSnapshot({ projects: [projectA, projectB] }))
+    await answerProjectList(socket, [known(projectA, demoWorkspace.sessions), known(projectB, [])])
+    await startIn(user, socket, "pdf-worker")
+    expect(sentRequests(socket, "project.open")).toHaveLength(0)
+    expect(pendingRequest(socket, "session.create").params).toMatchObject({ title: "Render Cyrillic invoices", projectId: projectB.id })
+  })
+
+  // Opening a project past the daemon's cap is refused (project_cap); the
+  // launcher says so and starts nothing.
+  it("says the daemon keeps no more projects active, and starts nothing", async () => {
+    const user = userEvent.setup()
+    const projectC: Project = { ...projectB, id: "project-docs", name: "docs", path: "/Users/dev/src/docs" }
+    const socket = await openShell("desktop", workspaceSnapshot({ projects: [projectA, projectB], projectCap: 2 }))
+    await answerProjectList(socket, [known(projectA, demoWorkspace.sessions), known(projectB, []), known(projectC, [])])
+    const dialog = await startIn(user, socket, "docs")
+    await act(async () => {
+      fail(socket, "project.open", {
+        code: projectCapErrorCode,
+        message: "The active project cap has been reached",
+        data: { kind: "project_cap", cap: 2, activeProjectIds: [projectA.id, projectB.id] },
+      })
+    })
+    await settle()
+    expect(within(dialog).getByText(`2 projects are active on ${demoWorkspace.machine.name}, the most this daemon keeps active, so docs did not open. Nothing was started.`)).toBeTruthy()
+    expect(sentRequests(socket, "session.create")).toHaveLength(0)
   })
 
   it("takes Choose a folder from the desktop's own folder dialog", async () => {

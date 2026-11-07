@@ -24,7 +24,7 @@ import type {
   SystemEmergencyStopResult,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
-import { selectableTurnSkills, serviceHandoffRefusal, turnSkillSelectionFor, workspaceProjects } from "@getdomovoi/protocol"
+import { projectCapErrorCode, projectCapRefusalSchema, selectableTurnSkills, serviceHandoffRefusal, turnSkillSelectionFor, workspaceProjects } from "@getdomovoi/protocol"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { StateRecoveryNotice } from "./state-recovery-notice"
 import {
@@ -1482,13 +1482,21 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // switch the person did not confirm starts nothing and leaves the launcher
   // open.
   const startSessionIn = async (title: string, runtime: Runtime, projectPath: string): Promise<LauncherStartOutcome> => {
-    const open = snapshot?.project
-    if (open && projectPath === open.path) {
-      await startSession({ kind: "create", title, runtime, projectId: open.id })
+    // J31 S2: an active project, focused or not, takes the session as it is.
+    const active = snapshot ? workspaceProjects(snapshot).find((project) => project.path === projectPath) : undefined
+    if (active) {
+      await startSession({ kind: "create", title, runtime, projectId: active.id })
       return "started"
     }
     const machineId = knownProjectsMachineId
-    const switched = await switchProject(projectPath, true)
+    let switched: ProjectSwitchOutcome
+    try {
+      switched = await switchProject(projectPath, true)
+    } catch (cause) {
+      const refusal = projectCapRefusal(cause, projectPath)
+      if (refusal) throw new Error(`${refusal} Nothing was started.`, { cause })
+      throw cause
+    }
     if (switched.kind !== "opened") return "cancelled"
     // The answer came on a connection this shell has left: nothing it opened
     // is on screen, so nothing starts.
@@ -1509,8 +1517,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       // machine it was asked on.
       if (outcome.kind === "opened" && outcome.projectId === project.id) setAfterSwitch({ kind: "open", machineId, sessionId })
     }, (cause: unknown) => {
-      setWorkspaceError(cause instanceof Error ? cause.message : "Domovoi could not open that project")
+      setWorkspaceError(projectCapRefusal(cause, project.path) ?? (cause instanceof Error ? cause.message : "Domovoi could not open that project"))
     })
+  }
+  // project.open past the daemon's cap of active projects (J31 S2), in words:
+  // how many are active, where, and that this one did not open. Closing a
+  // project is not offered yet, so the sentence names no way out it cannot back.
+  const projectCapRefusal = (cause: unknown, path: string): string | undefined => {
+    if (!(cause instanceof DaemonRpcError) || cause.code !== projectCapErrorCode) return undefined
+    const refusal = projectCapRefusalSchema.safeParse(cause.data)
+    const count = refusal.success ? refusal.data.activeProjectIds.length : snapshot ? workspaceProjects(snapshot).length : 0
+    const name = path.split(/[\\/]/u).filter(Boolean).at(-1) ?? path
+    return `${count} projects are active on ${snapshot?.machine.name ?? "this machine"}, the most this daemon keeps active, so ${name} did not open.`
   }
   const newSessionIn = (project?: Project) => {
     setLauncherProjectPath(project?.path)

@@ -82,7 +82,8 @@ describe("the project a session starts in", () => {
 
     await user.click(items[1]!)
     expect(projectField().textContent).toContain("pdf-worker")
-    expect(screen.getByText("Domovoi opens this project first. If the open project has sessions, it asks before stopping their work.")).toBeTruthy()
+    // J31 S2: opening a project adds it beside the open ones.
+    expect(screen.getByText("Domovoi opens this project first. Opening one project stops nothing in the others.")).toBeTruthy()
     await screen.findByText("GPT-5.6 Sol")
     await user.type(goal(), "Render Cyrillic invoices")
     await user.click(start())

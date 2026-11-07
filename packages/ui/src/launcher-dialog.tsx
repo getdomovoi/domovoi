@@ -439,7 +439,7 @@ export function LauncherDialog({
                 {chosenPath && !chosenProject?.open ? (
                   <FieldDescription>
                     {anyProjectOpen
-                      ? "Domovoi opens this project first. If the open project has sessions, it asks before stopping their work."
+                      ? "Domovoi opens this project first. Opening one project stops nothing in the others."
                       : "Domovoi opens this project first."}
                   </FieldDescription>
                 ) : null}
