@@ -974,7 +974,7 @@ export function Thread({
             <EmptyDescription>
               {hasProject
                 ? "Start a session to create an isolated worktree and talk to an agent."
-                : "Open a local Git repository before starting an agent session."}
+                : "Open a local Git repository, or start a session and choose its project there."}
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>

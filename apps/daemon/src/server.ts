@@ -8,6 +8,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import {
   approvalCheckpointErrorCode,
   buildVersion,
+  maximumKnownProjectSessions,
   maximumRpcMessageBytes,
   maximumMidTurnCheckpointTurnIdLength,
   maximumMidTurnCheckpointPaths,
@@ -153,6 +154,7 @@ import {
   type WorkspaceStore,
 } from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
+import { createProjectFolderProbe, knownProjectList } from "./known-projects.js"
 import { fleetClientSnapshot } from "./fleet-client-snapshot.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { defaultFleetHeartbeatIntervalMs, defaultFleetOperationTimeoutMs, FleetEnrollmentService } from "./fleet-enrollment.js"
@@ -1830,6 +1832,8 @@ export class DomovoiDaemon {
   #snapshot: WorkspaceSnapshot
   #localMachine: WorkspaceSnapshot["machine"]
   #store: WorkspaceStore
+  // project.list's folder checks, one at a time per folder.
+  readonly #projectFolders = createProjectFolderProbe()
   #stateRecovery: StateRecovery | undefined
   #queuedSessionSends = new Map<string, StoredQueuedSessionSend>()
   #persistenceFailures = 0
@@ -6224,6 +6228,7 @@ export class DomovoiDaemon {
         || request.method === "skill.list"
         || request.method === "skill.inventory"
         || request.method === "tool.inventory"
+        || request.method === "project.list"
         || request.method === "skill.read"
         || request.method === "skill.reviewRevision"
         || request.method === "skill.installPreview"
@@ -8769,6 +8774,19 @@ export class DomovoiDaemon {
             grant: project ? this.#repositoryTrust?.find(project.id) : undefined,
             ...(this.#repositoryProviderConfig ? { read: this.#repositoryProviderConfig } : {}),
           }),
+        })
+        return
+      }
+
+      // Rulings Q158 A and Q159 A: every saved project, so a client keeps
+      // listing a project's sessions after another one opens. The focused
+      // project is read from the live snapshot, which a save may not have
+      // reached yet, and leads the list.
+      if (method === "project.list") {
+        this.#sendResult(socket, method, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(await this.#knownProjects()),
         })
         return
       }
@@ -14309,6 +14327,17 @@ export class DomovoiDaemon {
         this.#reportError("Domovoi could not stop a quarantined provider thread", error)
       }
     }
+  }
+
+  // project.list: live projects from the live snapshot, saved rows for the
+  // rest (known-projects.ts). A saved row that does not read is reported and
+  // left out; a project whose folder is gone is listed as missing.
+  async #knownProjects(): Promise<RpcResult<"project.list">> {
+    const listing = this.#store.listProjects?.(maximumKnownProjectSessions) ?? { projects: [], unreadable: [] }
+    for (const projectId of listing.unreadable) {
+      this.#reportError(`Domovoi could not read the saved project ${projectId} for the project list`, new Error("The saved row is not one project's state"))
+    }
+    return knownProjectList(this.#snapshot, listing, this.#projectFolders)
   }
 }
 

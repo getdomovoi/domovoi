@@ -168,7 +168,6 @@ export function buildWorkspaceCommands({
   copyWorktreePath,
   connected,
   emergencyStopPending,
-  hasProject,
   openProject,
   newSession,
   openInEditor,
@@ -204,7 +203,6 @@ export function buildWorkspaceCommands({
   copyWorktreePath?: (() => void) | undefined
   connected: boolean
   emergencyStopPending: boolean
-  hasProject: boolean
   openProject: () => void
   newSession: () => void
   openInEditor?: (() => void) | undefined
@@ -287,7 +285,7 @@ export function buildWorkspaceCommands({
     ] : []),
     { id: "surface-audit", label: "Read the audit log", section: "Navigate", keywords: ["audit log", "history", "receipts"], icon: HistoryIcon, tone: "online", detail: "on this machine", run: () => setSurface("audit") },
     { id: "open-project", label: "Open project", section: "Project", keywords: ["folder", "repository"], icon: FolderOpenIcon, tone: "handoff", restoreFocus: false, run: openProject },
-    { id: "new-session", label: "New session", section: "Session", keywords: ["create", "agent"], icon: MessageSquarePlusIcon, tone: "handoff", disabled: !connected || !hasProject, restoreFocus: false, opensStart: true, run: newSession },
+    { id: "new-session", label: "New session", section: "Session", keywords: ["create", "agent"], icon: MessageSquarePlusIcon, tone: "handoff", disabled: !connected, restoreFocus: false, opensStart: true, run: newSession },
     ...(activeWorkspacePath && openInEditor ? [
       { id: "open-in-editor", label: desktopExternalActionLabel(externalEditor ?? "system"), section: "Session" as const, keywords: ["worktree", "file", "external"], icon: ExternalLinkIcon, tone: "handoff" as const, run: openInEditor },
     ] : []),

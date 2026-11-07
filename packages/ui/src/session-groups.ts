@@ -29,13 +29,19 @@ export type SessionGroup = {
 // state. A session whose note says it is waiting on you sits under Needs you
 // even while its turn is still in flight, or the group label and the row
 // would disagree; the row's running flag still says the machine is working.
-export function groupSessions(snapshot: WorkspaceSnapshot): SessionGroup[] {
+// `belongs` narrows the groups to one project's sessions, for a sidebar that
+// draws a section per project (ruling Q159 A).
+export function groupSessions(
+  snapshot: WorkspaceSnapshot,
+  belongs: (session: WorkspaceSnapshot["sessions"][number]) => boolean = () => true,
+): SessionGroup[] {
   const gated = new Set(snapshot.approvals.map((approval) => approval.sessionId))
   const running: GroupedSession[] = []
   const needsYou: GroupedSession[] = []
   const quiet: GroupedSession[] = []
 
   for (const session of snapshot.sessions) {
+    if (!belongs(session)) continue
     if (session.state === "archived") {
       quiet.push({ id: session.id, title: session.title, meaning: "idle", note: "archived", running: false, archiving: false, archived: true })
       continue

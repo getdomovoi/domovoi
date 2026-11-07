@@ -47,7 +47,6 @@ function entries(...machines: FleetMachine[]): FleetEntry[] {
 const base = {
   connected: true,
   emergencyStopPending: false,
-  hasProject: true,
   openProject: vi.fn(),
   newSession: vi.fn(),
   pauseAll: vi.fn(),

@@ -222,6 +222,7 @@ it("carries the effort level across a provider pick by its word", async () => {
       onCreateSession={onCreateSession}
       onListModels={onListModels}
       providers={[{ id: "claude-code", command: "claude", status: "ready", sessionCapable: true }, ...providers]}
+      projects={[{ name: "acme-api", path: "/Users/dev/src/acme-api", open: true, folder: "present" }]}
     />,
   )
   await screen.findByText("Sonnet")
@@ -231,7 +232,7 @@ it("carries the effort level across a provider pick by its word", async () => {
   await user.type(screen.getByPlaceholderText("Describe what this session should accomplish"), "Fix the build")
   await user.click(screen.getByRole("button", { name: "Create session" }))
   await waitFor(() => expect(onCreateSession).toHaveBeenCalledTimes(1))
-  expect(onCreateSession).toHaveBeenCalledWith("Fix the build", expect.objectContaining({ provider: "codex", reasoning: "medium" }))
+  expect(onCreateSession).toHaveBeenCalledWith("Fix the build", expect.objectContaining({ provider: "codex", reasoning: "medium" }), "/Users/dev/src/acme-api")
 })
 
 // M1 walk F4. A harness that could not report its models is named, with the

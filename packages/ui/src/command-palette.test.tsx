@@ -62,7 +62,6 @@ describe("buildWorkspaceCommands", () => {
     const connected = buildWorkspaceCommands({
       connected: true,
       emergencyStopPending: false,
-      hasProject: true,
       ...callbacks,
     })
     // Ruling Q376 A (2026-10-02): the design's commands lead, and the ones it
@@ -83,7 +82,6 @@ describe("buildWorkspaceCommands", () => {
     const disconnected = buildWorkspaceCommands({
       connected: false,
       emergencyStopPending: false,
-      hasProject: false,
       ...callbacks,
     })
     expect(disconnected.map(({ id }) => id)).toContain("reconnect")
@@ -97,7 +95,6 @@ describe("buildWorkspaceCommands", () => {
     const base = {
       connected: true,
       emergencyStopPending: false,
-      hasProject: true,
       openProject: vi.fn(),
       newSession: vi.fn(),
       pauseAll: vi.fn(),
@@ -124,7 +121,6 @@ describe("buildWorkspaceCommands", () => {
     const base = {
       connected: false,
       emergencyStopPending: false,
-      hasProject: true,
       openProject: vi.fn(),
       newSession: vi.fn(),
       pauseAll: vi.fn(),
@@ -152,7 +148,6 @@ describe("buildWorkspaceCommands", () => {
     const commands = buildWorkspaceCommands({
       connected: true,
       emergencyStopPending: false,
-      hasProject: true,
       ...callbacks,
     })
     commands.find(({ id }) => id === "new-session")?.run()
@@ -175,7 +170,6 @@ describe("buildWorkspaceCommands", () => {
     const commands = buildWorkspaceCommands({
       connected: true,
       emergencyStopPending: false,
-      hasProject: true,
       activeWorkspacePath: "/worktrees/session-one",
       openInEditor,
       externalEditor: "cursor",
@@ -205,7 +199,6 @@ describe("buildWorkspaceCommands", () => {
     const commands = buildWorkspaceCommands({
       connected: true,
       emergencyStopPending: false,
-      hasProject: true,
       activeWorkspacePath: "/worktrees/session-one",
       openInEditor: vi.fn(),
       externalEditor: "system",
@@ -229,7 +222,6 @@ describe("v2 session commands", () => {
   const base = {
     connected: true,
     emergencyStopPending: false,
-    hasProject: true,
     openProject: vi.fn(),
     newSession: vi.fn(),
     pauseAll: vi.fn(),
@@ -401,7 +393,6 @@ describe("launcher entities", () => {
     const commands = buildWorkspaceCommands({
       connected: true,
       emergencyStopPending: false,
-      hasProject: true,
       openProject: vi.fn(),
       newSession: vi.fn(),
       pauseAll: vi.fn(),
@@ -448,7 +439,6 @@ describe("open elsewhere", () => {
     const commands = buildWorkspaceCommands({
       connected: true,
       emergencyStopPending: false,
-      hasProject: true,
       openProject: vi.fn(),
       newSession: vi.fn(),
       pauseAll: vi.fn(),
@@ -476,7 +466,6 @@ describe("open elsewhere", () => {
     const commands = buildWorkspaceCommands({
       connected: true,
       emergencyStopPending: false,
-      hasProject: true,
       openProject: vi.fn(),
       newSession: vi.fn(),
       pauseAll: vi.fn(),

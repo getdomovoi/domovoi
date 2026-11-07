@@ -451,7 +451,6 @@ describe("Thread", () => {
       externalEditor: "cursor",
       connected: true,
       emergencyStopPending: false,
-      hasProject: true,
       openProject: vi.fn(),
       newSession: vi.fn(),
       pauseAll: vi.fn(),
