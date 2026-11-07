@@ -67,10 +67,9 @@ overrides:
   # GHSA-mrhx-c7xc-m3w5, high: zod below 4.6.6 can exhaust memory while validating oversized
   # constrained collections. The catalog floor below covers the direct consumers; this forces
   # the copy eslint-plugin-react-hooks resolves. Scoped to 4.x so no 3.x consumer crosses a
-  # major; auditConfig below explains the one 3.x copy. pnpm applies overrides to peers too, so
-  # dual-major peer ranges (`^3.25 || ^4`, as in the MCP SDK and zod-validation-error) become
-  # ^4.6.6; every consumer of those already resolves zod 4. Remove once the lockfile resolves
-  # 4.6.6 or later on its own.
+  # major. pnpm applies overrides to peers too, so dual-major peer ranges (`^3.25 || ^4`, as in
+  # the MCP SDK and zod-validation-error) become ^4.6.6; every consumer of those already
+  # resolves zod 4. Remove once the lockfile resolves 4.6.6 or later on its own.
   zod@4: ^4.6.6
   # GHSA-27r3-jxmh-p828, high: body-parser 2.x below 2.4.0 lets trailing bytes after a
   # compressed request body cause a denial of service. Reached through express 5 in the MCP
@@ -106,49 +105,3 @@ minimumReleaseAgeExclude:
   - expo-modules-core@57.0.16
   - expo-modules-jsi@57.0.8
   - expo@57.0.20
-
-auditConfig:
-  ignoreGhsas:
-    # GHSA-86w9-cpqp-85rv, high: node-forge accepts extra nested DigestAlgorithm
-    # elements in RSA PKCS#1 v1.5 signature checks. Every node-forge release is
-    # affected (<= 1.4.0) and none is patched as of 2026-10-01. It reaches only
-    # apps/mobile, through Expo CLI's code-signing tools for development builds;
-    # the daemon, desktop, web and CLI do not depend on it. Ruling Q309 A,
-    # 2026-10-01. Remove once node-forge or Expo ships a fix.
-    - GHSA-86w9-cpqp-85rv
-    # GHSA-ch52-4w7c-c8xp, high: http-cache-semantics lets a large max-stale read
-    # zeroed shared-cache entries. Every release is affected (<= 4.2.0) and none is
-    # patched as of 2026-10-02; the advisory names no fixed version and npm has no
-    # 4.2.1, so an override has nothing to force. It reaches only apps/desktop, as
-    # a devDependency: electron-builder > @electron/get > got > cacheable-request,
-    # used while packaging. No shipped client or daemon depends on it. Ruling Q406
-    # A, 2026-10-02. Remove once a patched http-cache-semantics is published, and
-    # force it in overrides.
-    - GHSA-ch52-4w7c-c8xp
-    # GHSA-vfj7-8cjw-p6xm, high: braces recursion has no depth guard, so a deeply
-    # nested pattern exhausts the stack. Every release is affected (<= 3.0.3) and
-    # none is patched as of 2026-10-02; the advisory names no fixed version and npm
-    # has no 3.0.4, so an override has nothing to force. It reaches only Node build
-    # tooling through micromatch and chokidar: Metro, Expo CLI, Jest and Tailwind in
-    # apps/mobile, and the shadcn CLI in packages/ui. Ruling Q406 A, 2026-10-02.
-    # Remove once a patched braces is published, and force it in overrides.
-    - GHSA-vfj7-8cjw-p6xm
-    # GHSA-mrhx-c7xc-m3w5, high: zod can exhaust memory while validating oversized
-    # constrained collections. The advisory covers every 3.x release and names only
-    # 4.6.6 as patched. The zod@4 override and the catalog floor keep every 4.x copy
-    # patched, so this ignore covers only zod 3.25.76, which reaches apps/mobile
-    # through @expo/cli 57.0.26. The dev server uses it to validate dev tools plugin
-    # manifests and their output; no shipped client or daemon depends on it.
-    # @expo/cli 57.0.33 drops zod, but reaching it needs the Expo SDK patch bump to
-    # expo ~57.0.32. Ruling Q167 A, 2026-11-06. Remove with that bump.
-    - GHSA-mrhx-c7xc-m3w5
-
-# Swift 6.4 (Xcode 27.1) spells C++ types `__ObjC::expo...`, which the published SDK 57 strip
-# program misses; the patch backports the expo-modules-jsi 58 program. Remove it with the move to
-# Expo SDK 58. apps/mobile/README.md has the details.
-patchedDependencies:
-  expo-modules-jsi@57.1.0: patches/expo-modules-jsi@57.1.0.patch
-# Desktop packaging runs `pnpm --filter @getdomovoi/daemon deploy`, whose filtered install has no
-# expo-modules-jsi and would otherwise fail with ERR_PNPM_UNUSED_PATCH. A patch that stops
-# applying after an Expo upgrade is caught by apps/mobile/src/expo-modules-jsi-patch.test.ts.
-allowUnusedPatches: true
