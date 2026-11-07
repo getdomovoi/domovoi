@@ -11,6 +11,7 @@ import {
   turnSkillRefusalFrom,
   turnSkillSelectionFor,
   workspaceSnapshotSchema,
+  workspaceProjects,
   type ApprovalDecision,
   type PermissionMode,
   type RpcMethod,
@@ -52,7 +53,7 @@ import { ApprovalScreen } from "./screens/approval"
 import { DenyExplainScreen } from "./screens/deny-explain"
 import { ArtifactScreen, type PreviewRender } from "./screens/artifact"
 import { fleetLoader, fleetNow, type HeldFleet } from "./fleet-load"
-import { freshSessionReadiness, startFreshSession } from "./fresh-session"
+import { defaultFreshProjectId, freshSessionReadiness, startFreshSession } from "./fresh-session"
 import { phoneRefusalFrom, type PhoneRefusal } from "./session-refusal"
 import { MachinesScreen } from "./screens/fleet"
 import { annotationRows } from "./review-rows"
@@ -247,6 +248,7 @@ export function App() {
   const [confirmPause, setConfirmPause] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [freshOpen, setFreshOpen] = useState(false)
+  const [freshProjectId, setFreshProjectId] = useState<string | undefined>(undefined)
   const [freshStarting, setFreshStarting] = useState(false)
   const [freshProblem, setFreshProblem] = useState("")
   const [freshRefusal, setFreshRefusal] = useState<PhoneRefusal | undefined>(undefined)
@@ -314,7 +316,16 @@ export function App() {
     fault,
   })
   const waiting = snapshot ? waitingCount(snapshot) : 0
-  const freshReadiness = snapshot ? freshSessionReadiness(snapshot) : undefined
+  const projects = snapshot ? workspaceProjects(snapshot) : []
+  const freshReadiness = snapshot ? freshSessionReadiness(snapshot, freshOpen ? freshProjectId : snapshot.project?.id) : undefined
+  const freshProject = projects.find((project) => project.id === freshProjectId)
+  const beginFresh = () => {
+    if (!snapshot) return
+    setFreshProjectId(defaultFreshProjectId(snapshot, openSessionId ?? (tablet ? snapshot.activeSessionId ?? undefined : undefined)))
+    setFreshProblem("")
+    setFreshRefusal(undefined)
+    setFreshOpen(true)
+  }
   // No daemon has been named at all. That is a different screen from a daemon
   // that will not answer: every tab has its own reason for being empty, and
   // Settings is not empty at all. ShellNotice answers the reaching and refused
@@ -855,12 +866,12 @@ export function App() {
     setFreshProblem("")
     setFreshRefusal(undefined)
     try {
-      const sessionId = await startFreshSession(snapshot, prompt, mutate, client)
+      const sessionId = await startFreshSession(snapshot, prompt, mutate, client, freshProjectId)
       setFreshOpen(false)
       if (sessionId !== openSessionId) dropQueue()
       setOpenSessionId(sessionId)
     } catch (cause) {
-      setFreshRefusal(refusalOf(cause))
+      setFreshRefusal(phoneRefusalFrom(cause, freshProject?.name ?? "this repository", snapshot.machine.name))
       setFreshProblem(cause instanceof Error ? cause.message : "The session was not started")
     } finally {
       setFreshStarting(false)
@@ -1118,11 +1129,7 @@ export function App() {
               setOpenApprovalId(undefined)
               setDraft("")
             }}
-            onNewSession={() => {
-              setFreshProblem("")
-              setFreshRefusal(undefined)
-              setFreshOpen(true)
-            }}
+            onNewSession={beginFresh}
             onOpenMachines={() => {
               // Leaving for Machines is leaving, as the phone's tab bar is.
               dropQueue()
@@ -1146,7 +1153,11 @@ export function App() {
           />
           <FreshSessionSheet
             open={freshOpen}
-            project={snapshot.project?.name ?? snapshot.project?.path ?? "the open project"}
+            projects={projects}
+            projectId={freshProjectId}
+            machine={snapshot?.machine.name ?? "the machine"}
+            disabledReason={clientAccess === "watching" ? watchingReason : freshReadiness?.canStart === false ? freshReadiness.reason : undefined}
+            onChooseProject={(id) => { setFreshProjectId(id); setFreshProblem(""); setFreshRefusal(undefined) }}
             starting={freshStarting}
             problem={freshProblem}
             refusal={freshRefusal}
@@ -1325,14 +1336,10 @@ export function App() {
                 fleetNow={fleetNow(fleet, now)}
                 onOpenApproval={setOpenApprovalId}
                 onRefresh={() => void refreshWorkspace()}
-                onStartSession={() => {
-                  setFreshProblem("")
-                  setFreshRefusal(undefined)
-                  setFreshOpen(true)
-                }}
+                onStartSession={beginFresh}
                 startDisabledReason={clientAccess === "watching"
                   ? watchingReason
-                  : freshReadiness?.canStart === false ? freshReadiness.reason : undefined}
+                  : projects.length <= 1 && freshReadiness?.canStart === false ? freshReadiness.reason : undefined}
                 onOpenSession={(sessionId) => {
                   // A draft is written for one session. Carrying it into
                   // another one would let a reply meant for one agent start a
@@ -1420,7 +1427,11 @@ export function App() {
         </BlurBackdrop>
         <FreshSessionSheet
           open={freshOpen}
-          project={snapshot?.project?.name ?? snapshot?.project?.path ?? "the open project"}
+          projects={projects}
+          projectId={freshProjectId}
+          machine={snapshot?.machine.name ?? "the machine"}
+          disabledReason={clientAccess === "watching" ? watchingReason : freshReadiness?.canStart === false ? freshReadiness.reason : undefined}
+          onChooseProject={(id) => { setFreshProjectId(id); setFreshProblem(""); setFreshRefusal(undefined) }}
           starting={freshStarting}
           problem={freshProblem}
           refusal={freshRefusal}

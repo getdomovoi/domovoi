@@ -1648,3 +1648,33 @@ describe("App", () => {
     })
   })
 })
+
+
+describe("fresh sessions across projects", () => {
+  it("starts in the tablet's selected session project while another project is focused", async () => {
+    const native = jest.requireActual<typeof import("react-native")>("react-native")
+    const dimensions = jest.spyOn(native, "useWindowDimensions").mockReturnValue({ width: 1024, height: 768, scale: 2, fontScale: 1 })
+    try {
+      const snapshot = workspace()
+      const b = { ...snapshot.project!, id: "project-b", name: "Project B" }
+      snapshot.projects = [snapshot.project!, b]
+      snapshot.sessions.find((s) => s.id === audit.id)!.projectId = b.id
+      snapshot.machine.providers = [{ id: audit.runtime.provider, command: "codex", status: "ready", sessionCapable: true }]
+      const { socket } = await openApp(snapshot)
+      await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+      await fireEvent.press(screen.getByRole("button", { name: "New session" }))
+      expect(screen.getByRole("button", { name: "Project Project B" })).toBeOnTheScreen()
+      await fireEvent.changeText(screen.getByLabelText("What to do"), "Work in B")
+      await fireEvent.press(screen.getByRole("button", { name: "Start" }))
+      await act(async () => { socket.answer("runtime.discover", {
+        machineId: snapshot.machine.id, provider: audit.runtime.provider, status: "ready",
+        models: [{ provider: audit.runtime.provider, id: audit.runtime.model, displayName: audit.runtime.model, description: "", supportedReasoningEfforts: [audit.runtime.reasoning], defaultReasoningEffort: audit.runtime.reasoning, isDefault: true }], defaultRuntime: audit.runtime, permissionModes: [audit.runtime.permissionMode], supportsAuto: audit.runtime.permissionMode === "build",
+      }) })
+      await settle()
+      expect(socket.requests("session.create")[0]?.params).toMatchObject({ projectId: b.id })
+      expect(socket.requests("project.open")).toHaveLength(0)
+      expect(socket.requests("project.close")).toHaveLength(0)
+      expect(socket.requests("project.list")).toHaveLength(0)
+    } finally { dimensions.mockRestore() }
+  })
+})
