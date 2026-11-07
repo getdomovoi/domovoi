@@ -1,7 +1,7 @@
 import { isIPv4, isIPv6 } from "node:net"
 import { isAbsolute, join, posix, win32 } from "node:path"
 
-import { credentialSchema, maximumWebAppUrlLength, webAppUrlSchema } from "@getdomovoi/protocol"
+import { credentialSchema, maximumProjectCap, maximumWebAppUrlLength, webAppUrlSchema } from "@getdomovoi/protocol"
 import { relayIdentityPublicKeyIsValid } from "@getdomovoi/protocol/relay-admission"
 
 import { configuredSshTunnelsSchema, isLoopbackHost, maximumSshConfigurationBytes, tailnetHostSchema, type ConfiguredSshTunnel } from "./transport-config.js"
@@ -26,6 +26,7 @@ export type DaemonEnvironmentConfig = {
   profileDirectory?: string
   host: string
   port: number
+  projectCap?: number
   tls?: DaemonTlsMaterial
   tailnetListener?: DaemonTailnetListener
   advertiseHost?: string
@@ -115,6 +116,7 @@ export function parseDaemonEnvironment(
     profileDirectory,
     host,
     port,
+    ...(environment.DOMOVOI_PROJECT_CAP !== undefined ? { projectCap: parseProjectCap(environment.DOMOVOI_PROJECT_CAP) } : {}),
     ...(tls ? { tls } : {}),
     ...(tailnetListener ? { tailnetListener } : {}),
     ...(advertiseHost ? { advertiseHost } : {}),
@@ -130,6 +132,13 @@ export function parseDaemonEnvironment(
     ...(webDirectory !== undefined ? { webDirectory } : {}),
     allowRemoteTransport,
   }
+}
+
+function parseProjectCap(value: string): number {
+  if (!/^[1-9][0-9]*$/u.test(value) || Number(value) > maximumProjectCap) {
+    throw new DaemonConfigurationError(`DOMOVOI_PROJECT_CAP must be an integer from 1 to ${maximumProjectCap}`)
+  }
+  return Number(value)
 }
 
 function parseWebDirectory(value: string | undefined): string | undefined {

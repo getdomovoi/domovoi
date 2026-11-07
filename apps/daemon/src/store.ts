@@ -5,6 +5,7 @@ import { dirname, join } from "node:path"
 import { DatabaseSync, type SQLInputValue } from "node:sqlite"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { Worker } from "node:worker_threads"
+import { ZodError } from "zod"
 
 import {
   executionResolutionSchema,
@@ -16,6 +17,7 @@ import {
   resolvedExecutionSchema,
   sessionSendParamsSchema,
   workspaceSnapshotSchema,
+  workspaceProjects,
   type QueuedSessionSend,
   type SessionAttachment,
   type SessionSendReview,
@@ -190,8 +192,7 @@ export type WorkspaceWriter = {
 }
 
 export type WorkspaceStoreOptions = {
-  // S2a exposes storage support without enabling unsafe single-project RPC
-  // routing. S2b opts in when the daemon can keep every restored project live.
+  // Restoration is enabled by default. False exercises the downgrade guard.
   restoreActiveProjects?: boolean
   legacySnapshots?: WorkspaceSnapshot[]
   manageDirectoryPermissions?: boolean
@@ -502,11 +503,9 @@ export class NewerWorkspaceStateError extends Error {
   }
 }
 
-// A newer Domovoi keeps several projects active and lists them in `projects`.
-// This daemon keeps one open at a time (J31 S1), and would otherwise serve
-// another project's sessions as if they were open. That state is that
-// version's to open: it is left exactly as it is and this daemon does not
-// start (ruling Q257).
+// Retained for the explicit legacy-reader mode and its downgrade regression.
+// Readers that keep one project open must refuse multi-project state before
+// writing, rather than serve another project's records under their focus.
 export class MultiProjectWorkspaceStateError extends NewerWorkspaceStateError {
   constructor(path: string, storedProtocolVersion: string) {
     super(path, storedProtocolVersion, protocolVersion)
@@ -517,8 +516,8 @@ export class MultiProjectWorkspaceStateError extends NewerWorkspaceStateError {
 
 // Stored state lists a project other than the focused one, or holds a session
 // or approval rule of another project, with or without a list (ruling Q258).
-// Such state does not parse as this daemon's snapshot, and moving it aside as
-// corrupt would replace that project's work with the seed.
+// Legacy readers refuse it; current readers must restore every active row.
+// Moving it aside as corrupt would replace that project's work with the seed.
 function keepsSeveralProjects(value: unknown): boolean {
   if (!isRecord(value)) return false
   const focused = isRecord(value.project) ? value.project.id : undefined
@@ -568,26 +567,30 @@ export class UnreadableActiveProjectStateError extends Error {
 function restoreActiveWorkspace(value: unknown, database: DatabaseSync): WorkspaceSnapshot {
   try {
     const focused = workspaceSnapshotSchema.parse(value)
-    if (!focused.project || !focused.projects || focused.projects.length < 2) throw new Error("Missing active project list")
+    if (!focused.project || !focused.projects || focused.projects.length < 2) throw new UnreadableActiveProjectStateError()
     const { projects: _projects, projectCap: _cap, ...onlyFocused } = focused
     // The workspace row contains only focused-project records. Accepting a
     // mixed row here would silently discard records when rebuilding from rows.
     workspaceSnapshotSchema.parse(onlyFocused)
     const states = focused.projects.map((project) => {
       const row = database.prepare("SELECT state FROM workspace_projects WHERE project_id = ?").get(project.id) as StoredProjectWorkspace | undefined
-      if (!row) throw new Error("Missing active project row")
-      const raw: unknown = JSON.parse(row.state)
-      if (!holdsOneProject(raw, project.id)) throw new Error("Mixed project row")
+      if (!row) throw new UnreadableActiveProjectStateError()
+      let raw: unknown
+      try { raw = JSON.parse(row.state) } catch (error) {
+        if (error instanceof SyntaxError) throw new UnreadableActiveProjectStateError()
+        throw error
+      }
+      if (!holdsOneProject(raw, project.id)) throw new UnreadableActiveProjectStateError()
       const parsed = workspaceSnapshotSchema.parse({
         ...(raw as Record<string, unknown>), protocolVersion: focused.protocolVersion,
         machine: focused.machine, skillEnablements: [],
       })
-      if (JSON.stringify(parsed.project) !== JSON.stringify(project)) throw new Error("Project identity changed")
+      if (JSON.stringify(parsed.project) !== JSON.stringify(project)) throw new UnreadableActiveProjectStateError()
       if (project.id === focused.project!.id) {
         // Both copies are written in the same transaction and must agree.
         const rowState = { ...projectWorkspaceState(parsed), queuedSends: parsed.queuedSends, turns: parsed.turns }
         const focusState = { ...projectWorkspaceState(focused), queuedSends: focused.queuedSends, turns: focused.turns }
-        if (JSON.stringify(rowState) !== JSON.stringify(focusState)) throw new Error("Focused state disagrees")
+        if (JSON.stringify(rowState) !== JSON.stringify(focusState)) throw new UnreadableActiveProjectStateError()
       }
       return parsed
     })
@@ -603,10 +606,11 @@ function restoreActiveWorkspace(value: unknown, database: DatabaseSync): Workspa
       ...(states.some((state) => state.queuedSends !== undefined) ? { queuedSends: states.flatMap((state) => state.queuedSends ?? []) } : {}),
       ...(states.some((state) => state.turns !== undefined) ? { turns: states.flatMap((state) => state.turns ?? []) } : {}),
     })
-  } catch {
-    // No parser details here: a damaged row can carry secrets. This distinct
-    // error must never be mistaken for corrupt SQLite and trigger salvage.
-    throw new UnreadableActiveProjectStateError()
+  } catch (error) {
+    // Validation details can carry secrets. Operational errors and programming
+    // failures retain their identity instead of masquerading as damaged state.
+    if (error instanceof ZodError) throw new UnreadableActiveProjectStateError()
+    throw error
   }
 }
 
@@ -984,7 +988,8 @@ async function start() {
   )
   const saveProject = database.prepare(
     "INSERT INTO workspace_projects (project_id, state, updated_at) VALUES (?, ?, ?) " +
-    "ON CONFLICT(project_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
+    "ON CONFLICT(project_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at " +
+    "WHERE workspace_projects.state <> excluded.state",
   )
   parentPort.on("message", (message) => {
     try {
@@ -1128,7 +1133,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
 
   constructor(path: string, initial: WorkspaceSnapshot, options: WorkspaceStoreOptions = {}) {
     this.path = path
-    this.#restoreActiveProjects = options.restoreActiveProjects === true
+    this.#restoreActiveProjects = options.restoreActiveProjects !== false
     const manageDirectoryPermissions = options.manageDirectoryPermissions === true
     // The stored snapshot is read before the file is opened for writing, from
     // the file as it is or from a private copy when the write-ahead log holds
@@ -1207,7 +1212,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
           { restoreActiveProjects: this.#restoreActiveProjects },
         )
       } catch (error) {
-        if (error instanceof UnreadableActiveProjectStateError) {
+        if (error instanceof UnreadableActiveProjectStateError || (stored && keepsSeveralProjects(stored.value))) {
           this.#database.close()
           this.#databaseClosed = true
           throw error
@@ -1327,7 +1332,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     const origin = session?.transferredFrom
     if (
       validated.machine.id !== ownership.targetMachineId
-      || validated.project?.id !== ownership.targetProjectId
+      || !workspaceProjects(validated).some((project) => project.id === ownership.targetProjectId)
       || session?.projectId !== ownership.targetProjectId
       || session.workspacePath !== ownership.workspacePath
       || session.ownershipGeneration !== ownership.generation
@@ -1623,6 +1628,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
           ON CONFLICT(project_id) DO UPDATE SET
             state = excluded.state,
             updated_at = excluded.updated_at
+          WHERE workspace_projects.state <> excluded.state
         `)
         .run(state.project.id, JSON.stringify(state), updatedAt)
     }

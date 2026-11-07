@@ -61,7 +61,7 @@ export function freezeSourceSessionTransfer(
   if (
     intent.preview.sourceMachineId !== snapshot.machine.id
     || intent.preview.targetMachineId === snapshot.machine.id
-    || intent.preview.project.sourceProjectId !== snapshot.project?.id
+    || intent.preview.project.sourceProjectId !== session.projectId
     || (resumeState !== "idle" && resumeState !== "done" && resumeState !== "failed")
     || session.activeTurnId !== undefined
     || !session.workspacePath
@@ -105,7 +105,7 @@ export function stageSourceSessionCheckpoint(
     || session.transfer.nextGeneration !== manifest.ownership.toGeneration
     || (session.ownershipGeneration ?? 0) !== manifest.ownership.fromGeneration
     || snapshot.machine.id !== manifest.sourceMachineId
-    || snapshot.project?.id !== manifest.project.sourceProjectId
+    || session.projectId !== manifest.project.sourceProjectId
   ) {
     throw new SessionTransferStateError("session-state-changed")
   }

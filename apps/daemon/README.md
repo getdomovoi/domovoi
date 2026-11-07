@@ -40,6 +40,7 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | --- | --- |
 | `DOMOVOI_HOST` | Listener host |
 | `DOMOVOI_PORT` | Listener port; `0` selects an ephemeral port published in the owner record |
+| `DOMOVOI_PROJECT_CAP` | Active project cap, 1 through 16 (default: 3); saved in service configuration only when explicitly set |
 | `DOMOVOI_PROFILE_DIR` | Absolute profile directory, default `~/.domovoi` |
 | `DOMOVOI_AUTH_TOKEN` | Bearer token required by RPC requests |
 | `DOMOVOI_CREDENTIAL_PATH` | Generated daemon credential file path |

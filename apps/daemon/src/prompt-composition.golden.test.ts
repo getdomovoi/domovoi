@@ -178,7 +178,7 @@ async function sendFor(sections: Sections, options: PromptRunOptions = {}) {
     close: async () => {},
   } satisfies AgentAdapter
 
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0,
     store,
     agents: { [snapshot.sessions[0]!.runtime.provider]: agent },

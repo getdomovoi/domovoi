@@ -112,6 +112,7 @@ Options:
 Environment:
   DOMOVOI_HOST                    Listener host (default: 127.0.0.1)
   DOMOVOI_PORT                    Listener port (default: 47831)
+  DOMOVOI_PROJECT_CAP             Active project cap, 1 through 16 (default: 3)
   DOMOVOI_PROFILE_DIR             Absolute profile directory (default: ~/.domovoi)
   DOMOVOI_AUTH_TOKEN              Bearer token for daemon requests
   DOMOVOI_CREDENTIAL_PATH         Credential file (default: <profile>/daemon.token)

@@ -27,7 +27,6 @@ import {
   maximumTerminalOutputChunkCharacters,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
-  projectSwitchConfirmationSchema,
   protocolVersion,
   protocolVersionMismatchErrorCode,
   sessionHistoryPageSchema,
@@ -48,7 +47,8 @@ import {
   ActiveAssistantItemCache,
   artifactAccessMatches,
   frameAncestorsFor,
-  DomovoiDaemon,
+  DomovoiDaemon as RuntimeDaemon,
+  type DaemonServerOptions,
   helloProtocolCompatibility,
   persistenceFailureThreshold,
   persistenceUnavailableContext,
@@ -160,6 +160,14 @@ function checkpointingWorkspace(): WorkspaceService {
   return {
     inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(), restore: vi.fn(), checkpoint: vi.fn(),
     snapshot: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
+  }
+}
+
+// Synthetic repository fixtures declare folder availability; the missing-folder
+// behavior is exercised against restart and turn admission in queued-send-project-switch.test.ts.
+class DomovoiDaemon extends RuntimeDaemon {
+  constructor(options: DaemonServerOptions = {}) {
+    super({ projectDirectoryExists: async () => true, ...options })
   }
 }
 
@@ -6240,6 +6248,9 @@ describe("DomovoiDaemon", () => {
 
   it("interrupts scoped and global turns and records who paused them", async () => {
     const snapshot = structuredClone(demoWorkspace)
+    const otherProject = { ...snapshot.project!, id: "project-other", path: "/code/other" }
+    snapshot.projects = [snapshot.project!, otherProject]
+    snapshot.sessions[1]!.projectId = otherProject.id
     snapshot.sessions[0]!.state = "active"
     snapshot.sessions[0]!.runtime.provider = "codex"
     snapshot.sessions[0]!.providerThreadId = "thread-billing"
@@ -7610,13 +7621,16 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
-  it("records a project-scoped rule for standing approval", async () => {
+  it.each([false, true])("records A's standing approval under B focus unless its session is gone: %s", async (missingSession) => {
     const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-standing-rule-"))
     scratchDirectories.push(workspacePath)
     await writeFile(join(workspacePath, "package.json"), JSON.stringify({
       scripts: { test: "vitest run" },
     }))
     const snapshot = structuredClone(demoWorkspace)
+    snapshot.projects = [snapshot.project!, { ...snapshot.project!, id: "project-b", path: "/code/b" }]
+    snapshot.project = snapshot.projects[1]!
+    snapshot.activeSessionId = null
     snapshot.approvals[0]!.risk = "normal"
     snapshot.approvals[0]!.operation = "Run the test suite"
     snapshot.approvals[0]!.command = "pnpm test"
@@ -7659,6 +7673,21 @@ describe("DomovoiDaemon", () => {
       socket.once("error", reject)
     })
     await identifyClient(socket)
+
+    if (missingSession) {
+      const departed = snapshot.sessions.shift()!
+      const refused = new Promise<Record<string, unknown>>((resolve) => {
+        socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>))
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: 77, method: "approval.resolve", params: {
+        approvalId: "approval-migrate", decision: "allow-once", revision: 0, client: "desktop",
+      } }))
+      try {
+        await expect(refused).resolves.toMatchObject({ error: { code: -32602, message: "Approval has no active session project" } })
+        expect(agent.resolveApproval).not.toHaveBeenCalled()
+      } finally { snapshot.sessions.unshift(departed); socket.close() }
+      return
+    }
 
     const approvalResponse = new Promise<Record<string, unknown>>((resolve) => {
       socket.on("message", (data) => {
@@ -9381,11 +9410,6 @@ describe("DomovoiDaemon", () => {
       socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
       return response
     }
-    const confirmationFor = async (path: string) => {
-      const refused = await rpc("project.open", { path, client: "desktop" })
-      expect(refused).toMatchObject({ error: { code: -32010 } })
-      return projectSwitchConfirmationSchema.parse((refused.error as { data?: unknown }).data)
-    }
     const runtime = {
       provider: "codex",
       model: "gpt-5.6-sol",
@@ -9435,18 +9459,17 @@ describe("DomovoiDaemon", () => {
     const switched = await rpc("project.open", {
       path: "/code/elsewhere",
       client: "desktop",
-      confirmation: await confirmationFor("/code/elsewhere"),
     })
     expect(switched).toMatchObject({
       result: {
         project: { name: "elsewhere", path: "/code/elsewhere", branch: "develop" },
-        sessions: [],
+        sessions: [expect.objectContaining({ id: sessionId, activeTurnId: "provider-turn-1" })],
         activeSessionId: null,
-        approvals: [],
+        approvals: [expect.objectContaining({ sessionId })],
       },
     })
-    expect(agent.interruptTurn).toHaveBeenCalledWith("provider-thread-1", "provider-turn-1")
-    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-1")
+    expect(agent.interruptTurn).not.toHaveBeenCalled()
+    expect(agent.stopThread).not.toHaveBeenCalled()
     expect(workspaceService.removeSessionWorkspace).not.toHaveBeenCalled()
 
     const elsewhereCreated = await rpc("session.create", {
@@ -9461,50 +9484,44 @@ describe("DomovoiDaemon", () => {
     const returned = await rpc("project.open", {
       path: "/code/domovoi",
       client: "desktop",
-      confirmation: await confirmationFor("/code/domovoi"),
     })
     expect(returned).toMatchObject({
       result: {
         project: { name: "domovoi", path: "/code/domovoi", branch: "main" },
         activeSessionId: sessionId,
-        approvals: [],
-        sessions: [expect.objectContaining({
+        approvals: [expect.objectContaining({ sessionId })],
+        sessions: expect.arrayContaining([expect.objectContaining({
           id: sessionId,
           title: "Work in domovoi",
-          state: "idle",
+          state: "waiting",
           workspacePath: `/worktrees/${sessionId}`,
           providerThreadId: "provider-thread-1",
-        })],
+        })]),
         thread: expect.arrayContaining([
           expect.objectContaining({ kind: "user", body: "Start the migration" }),
           expect.objectContaining({ sessionId, kind: "checkpoint", reason: "session-start", commit: "a".repeat(40) }),
-          expect.objectContaining({
-            kind: "system",
-            body: "Switching projects interrupted the active turn.",
-          }),
         ]),
       },
     })
     expect((returned.result as {
       sessions: Array<Record<string, unknown>>
-    }).sessions[0]).not.toHaveProperty("activeTurnId")
+    }).sessions[0]).toHaveProperty("activeTurnId", "provider-turn-1")
     expect(workspaceService.removeSessionWorkspace).not.toHaveBeenCalled()
 
     const elsewhereReturn = await rpc("project.open", {
       path: "/code/elsewhere",
       client: "desktop",
-      confirmation: await confirmationFor("/code/elsewhere"),
     })
     expect(elsewhereReturn).toMatchObject({
       result: {
         project: { path: "/code/elsewhere" },
-        sessions: [expect.objectContaining({ id: elsewhereSessionId })],
+        sessions: expect.arrayContaining([expect.objectContaining({ id: elsewhereSessionId }), expect.objectContaining({ id: sessionId })]),
       },
     })
     socket.close()
   })
 
-  it("quarantines a provider thread that refuses to stop during a switch", async () => {
+  it("does not stop or quarantine a provider when another project opens", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-per-project-"))
     scratchDirectories.push(scratch)
     const statePath = join(scratch, "state.sqlite")
@@ -9585,11 +9602,6 @@ describe("DomovoiDaemon", () => {
       socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
       return response
     }
-    const confirmationFor = async (path: string) => {
-      const refused = await rpc("project.open", { path, client: "desktop" })
-      expect(refused).toMatchObject({ error: { code: -32010 } })
-      return projectSwitchConfirmationSchema.parse((refused.error as { data?: unknown }).data)
-    }
     const runtime = {
       provider: "codex",
       model: "gpt-5.6-sol",
@@ -9635,53 +9647,24 @@ describe("DomovoiDaemon", () => {
     const switched = await rpc("project.open", {
       path: "/code/elsewhere",
       client: "desktop",
-      confirmation: await confirmationFor("/code/elsewhere"),
     })
     expect(switched).toMatchObject({
       result: {
         project: { name: "elsewhere", path: "/code/elsewhere", branch: "develop" },
-        sessions: [],
+        sessions: [expect.objectContaining({ id: sessionId, activeTurnId: "provider-turn-1" })],
         activeSessionId: null,
-        approvals: [],
+        approvals: [expect.objectContaining({ sessionId })],
       },
     })
-    expect(agent.interruptTurn).toHaveBeenCalledWith("provider-thread-1", "provider-turn-1")
-    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-1")
+    expect(agent.interruptTurn).not.toHaveBeenCalled()
+    expect(agent.stopThread).not.toHaveBeenCalled()
     expect(workspaceService.removeSessionWorkspace).not.toHaveBeenCalled()
 
-    // A thread that would not stop may still be writing to the worktree, so the
-    // session must come back asking for a restart rather than looking idle.
-    // The project just switched to holds no sessions, so returning needs no
-    // confirmation.
     const back = await rpc("project.open", { path: "/code/domovoi", client: "desktop" })
     const restored = (back.result as { sessions: Array<Record<string, unknown>> }).sessions[0]!
-    expect(restored).toMatchObject({ state: "failed" })
-    expect(restored.activeTurnId).toBeUndefined()
-    // The thread would not stop, so its identity is kept: a second agent must
-    // not be started in a worktree something may still be writing to.
-    expect(restored.providerThreadId).toBe("provider-thread-1")
-    const refusedRestart = await rpc("session.restartProviderThread", {
-      sessionId: restored.id as string,
-      client: "desktop",
-    })
-    expect(refusedRestart).toMatchObject({
-      error: { message: "Session already has a live provider thread" },
-    })
-    const refusedSend = await rpc("session.send", {
-      sessionId: restored.id as string,
-      prompt: "Continue in the preserved worktree",
-      client: "desktop",
-    })
-    expect(refusedSend).toMatchObject({
-      error: { message: "Provider thread requires recovery after emergency stop" },
-    })
+    expect(restored).toMatchObject({ state: "waiting", activeTurnId: "provider-turn-1", providerThreadId: "provider-thread-1" })
+    expect(agent.startThread).toHaveBeenCalledTimes(1)
     expect(agent.startTurn).toHaveBeenCalledTimes(1)
-    agent.stopThread.mockImplementationOnce(async () => {})
-    await expect(rpc("session.setRuntime", { sessionId, runtime, client: "desktop" })).resolves.toMatchObject({
-      result: { thread: expect.arrayContaining([
-        expect.objectContaining({ sessionId, kind: "checkpoint", reason: "before-provider-recovery", commit: "b".repeat(40) }),
-      ]) },
-    })
     socket.close()
   })
 
@@ -10212,82 +10195,15 @@ describe("DomovoiDaemon", () => {
 
     agent.stopThread.mockClear()
     workspaceService.removeSessionWorkspace.mockClear()
-    const savesBeforeRejectedSwitch = store.save.mock.calls.length
-    const rejectedSwitch = await rpc("project.open", { path: "/code/elsewhere", client: "desktop" })
-    expect(rejectedSwitch).toMatchObject({
-      error: {
-        code: -32010,
-        data: {
-          kind: "project-switch-confirmation",
-          requestedPath: "/code/elsewhere",
-          sessionCount: 1,
-          worktreeCount: 1,
-          sessions: [{
-            id: sessionId,
-            title: "Build persistence",
-            state: "active",
-            workspacePath: `/worktrees/${sessionId}`,
-          }],
-        },
-      },
-    })
+    const switched = await rpc("project.open", { path: "/code/elsewhere", client: "desktop" })
+    expect(switched).toMatchObject({ result: {
+      project: { path: "/code/elsewhere" }, activeSessionId: null,
+      sessions: [expect.objectContaining({ id: sessionId, activeTurnId: "late-turn" })],
+    } })
     expect(agent.stopThread).not.toHaveBeenCalled()
     expect(workspaceService.removeSessionWorkspace).not.toHaveBeenCalled()
-    expect(store.save).toHaveBeenCalledTimes(savesBeforeRejectedSwitch)
 
-    const firstConfirmation = projectSwitchConfirmationSchema.parse(
-      (rejectedSwitch.error as { data?: unknown }).data,
-    )
-    const racedSession = await rpc("session.create", {
-      title: "Created while confirmation was open",
-      runtime,
-      client: "desktop",
-    })
-    expect(racedSession).toMatchObject({
-      result: { sessions: expect.arrayContaining([
-        expect.objectContaining({ title: "Created while confirmation was open" }),
-      ]) },
-    })
-    agent.stopThread.mockClear()
-    workspaceService.removeSessionWorkspace.mockClear()
-    const savesBeforeStaleConfirmation = store.save.mock.calls.length
-    const staleConfirmation = await rpc("project.open", {
-      path: "/code/elsewhere",
-      client: "desktop",
-      confirmation: firstConfirmation,
-    })
-    expect(staleConfirmation).toMatchObject({
-      error: {
-        code: -32010,
-        data: { sessionCount: 2, worktreeCount: 2 },
-      },
-    })
-    expect(agent.stopThread).not.toHaveBeenCalled()
-    expect(workspaceService.removeSessionWorkspace).not.toHaveBeenCalled()
-    expect(store.save).toHaveBeenCalledTimes(savesBeforeStaleConfirmation)
-
-    const currentConfirmation = projectSwitchConfirmationSchema.parse(
-      (staleConfirmation.error as { data?: unknown }).data,
-    )
-
-    const switched = await rpc("project.open", {
-      path: "/code/elsewhere",
-      client: "desktop",
-      confirmation: currentConfirmation,
-    })
-    expect(switched).toMatchObject({
-      result: {
-        project: { name: "elsewhere", path: "/code/elsewhere", branch: "develop" },
-        activeSessionId: null,
-        sessions: [],
-      },
-    })
-    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-1")
-    expect(workspaceService.removeSessionWorkspace).not.toHaveBeenCalledWith(
-      `/worktrees/${sessionId}`,
-      expect.any(AbortSignal),
-    )
-
+    agent.startThread.mockResolvedValue("provider-thread-2")
     const quarantineCreated = await rpc("session.create", {
       title: "Quarantine timed-out turn",
       runtime,
@@ -10309,12 +10225,12 @@ describe("DomovoiDaemon", () => {
     expect(turnTimedOut).toMatchObject({
       error: { code: -32603, message: "Agent turn timed out" },
     })
-    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-1")
+    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-2")
     resolveTimedOutTurn!("provider-turn-after-timeout")
     for (const listener of agentListeners) {
       listener({
         type: "text-delta",
-        threadId: "provider-thread-1",
+        threadId: "provider-thread-2",
         turnId: "provider-turn-after-timeout",
         delta: "must not be recorded",
       })
@@ -10326,10 +10242,10 @@ describe("DomovoiDaemon", () => {
     const quarantined = await rpc("workspace.get", {})
     expect(quarantined).toMatchObject({
       result: {
-        sessions: [expect.objectContaining({
+        sessions: expect.arrayContaining([expect.objectContaining({
           id: quarantineSessionId,
           state: "failed",
-        })],
+        })]),
         thread: expect.arrayContaining([expect.objectContaining({
           sessionId: quarantineSessionId,
           kind: "system",
@@ -10338,9 +10254,9 @@ describe("DomovoiDaemon", () => {
       },
     })
     expect((quarantined.result as {
-      sessions: Array<{ providerThreadId?: string }>
+      sessions: Array<{ id: string; providerThreadId?: string }>
       thread: Array<{ body?: string }>
-    }).sessions[0]).not.toHaveProperty("providerThreadId")
+    }).sessions.find((entry) => entry.id === quarantineSessionId)).not.toHaveProperty("providerThreadId")
     expect((quarantined.result as {
       thread: Array<{ body?: string }>
     }).thread).not.toEqual(expect.arrayContaining([
@@ -10358,11 +10274,11 @@ describe("DomovoiDaemon", () => {
     })
     expect(restarted).toMatchObject({
       result: {
-        sessions: [expect.objectContaining({
+        sessions: expect.arrayContaining([expect.objectContaining({
           id: quarantineSessionId,
           state: "idle",
-          providerThreadId: "provider-thread-1",
-        })],
+          providerThreadId: "provider-thread-2",
+        })]),
         thread: expect.arrayContaining([expect.objectContaining({
           sessionId: quarantineSessionId,
           kind: "system",
@@ -10405,7 +10321,7 @@ describe("DomovoiDaemon", () => {
     expect(steeringTimedOut).toMatchObject({
       error: { code: -32603, message: "Agent steering timed out" },
     })
-    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-1")
+    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-2")
     const steeringQuarantined = await rpc("workspace.get", {})
     expect(steeringQuarantined).toMatchObject({
       result: {
@@ -10433,7 +10349,7 @@ describe("DomovoiDaemon", () => {
     })).toMatchObject({
       error: { code: -32603, message: "Internal daemon error" },
     })
-    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-1")
+    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-2")
     expect(await rpc("workspace.get", {})).toMatchObject({
       result: { sessions: expect.arrayContaining([expect.objectContaining({
         id: steeringSessionId,
@@ -11959,16 +11875,10 @@ describe("DomovoiDaemon", () => {
       return { projectPath, session, codex, errorSink, workspaceService, call }
     }
 
-    it.each(["cursor-agent", "grok"])("keeps a %s session as it was when its project closes", async (provider) => {
+    it.each(["cursor-agent", "grok"])("keeps a %s session as it was when another project opens", async (provider) => {
       const { projectPath, session, codex, errorSink, call } = await turnedOffSession(provider)
 
-      const refusedOpen = await call("project.open", { path: "/code/elsewhere", client: "desktop" })
-      expect(refusedOpen).toMatchObject({ error: { code: -32010 } })
-      await call("project.open", {
-        path: "/code/elsewhere",
-        client: "desktop",
-        confirmation: projectSwitchConfirmationSchema.parse((refusedOpen.error as { data?: unknown }).data),
-      })
+      expect(await call("project.open", { path: "/code/elsewhere", client: "desktop" })).toHaveProperty("result")
       const back = await call("project.open", { path: projectPath, client: "desktop" })
 
       const result = back.result as { sessions: unknown[]; thread: Array<{ sessionId: string; body?: string }> }
@@ -16535,7 +16445,7 @@ describe("adversarially deep JSON-RPC payloads", () => {
 })
 
 describe("DomovoiDaemon transfers", () => {
-  const running: DomovoiDaemon[] = []
+const running: DomovoiDaemon[] = []
 
   function stubWorkspaceService() {
     return {
@@ -16794,7 +16704,7 @@ describe("DomovoiDaemon transfers", () => {
 })
 
 describe("DomovoiDaemon session transfer requests", () => {
-  const running: DomovoiDaemon[] = []
+const running: DomovoiDaemon[] = []
   const sourceMachineId = `machine-${"a".repeat(32)}`
   const transferBaseCommit = "a".repeat(40)
   const transferCheckpointCommit = "b".repeat(40)

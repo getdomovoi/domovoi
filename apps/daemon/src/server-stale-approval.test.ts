@@ -431,9 +431,7 @@ describe("stored approval cards in another project's saved state", () => {
     }, { timeout: 5_000 })
     const staleCard = (await firstWorkspace()).approvals[0]!
     const staleCardId = staleCard.id
-    const refused = await firstRpc("project.open", { path: rootB, client: "desktop" })
-    const confirmation = (refused.error as unknown as { data: unknown }).data
-    expect((await firstRpc("project.open", { path: rootB, client: "desktop", confirmation })).error).toBeUndefined()
+    expect((await firstRpc("project.open", { path: rootB, client: "desktop" })).error).toBeUndefined()
     await first.stop()
 
     // Second process: it starts in project B, then the person opens A again.
@@ -480,7 +478,7 @@ describe("stored approval cards in another project's saved state", () => {
     const after = await workspace()
     expect(after.approvals.map(({ id }) => id)).toEqual([liveCard.id])
     expect(append).toHaveBeenCalledWith(expect.objectContaining({
-      actor: { kind: "daemon", component: "project-open" },
+      actor: { kind: "daemon", component: "startup-recovery" },
       action: "approval.expired",
       outcome: "cancelled",
       sessionId: staleSessionId,
@@ -489,23 +487,20 @@ describe("stored approval cards in another project's saved state", () => {
     }))
   })
 
-  it("moves a session that was only waiting on a card saved with its project to idle", async () => {
+  it("keeps a waiting session and its live approval across refocus", async () => {
     const { workspace, provider, switchAwayAndBack } = await projectDaemon()
     provider.request(staleSessionId, { threadId: "thread-billing", itemId: "item-stale", command: "touch stale.txt", reason: "Write a stale file" })
     await vi.waitFor(async () => expect((await workspace()).approvals).toHaveLength(1), { timeout: 5_000 })
     expect((await workspace()).sessions.find((session) => session.id === staleSessionId)?.state).toBe("waiting")
 
     const opened = await switchAwayAndBack()
-    expect(opened.approvals).toEqual([])
-    expect(opened.sessions.find((session) => session.id === staleSessionId)?.state).toBe("idle")
-    // The project closed; the daemon did not restart. Wording ruled 2026-09-24.
-    const lines = projectClosedNoticesIn(opened)
-    expect(lines).toEqual([expect.objectContaining({ sessionId: staleSessionId, kind: "system", body: projectClosedNotice })])
-    expect(lines[0]).not.toHaveProperty("detail")
+    expect(opened.approvals).toHaveLength(1)
+    expect(opened.sessions.find((session) => session.id === staleSessionId)?.state).toBe("waiting")
+    expect(projectClosedNoticesIn(opened)).toEqual([])
     expect(noticesIn(opened)).toEqual([])
   })
 
-  it("gives each session one project line, not the restart line, when a reopen in the same daemon run expires its cards", async () => {
+  it("keeps every live card and emits no expiry notice when focus changes", async () => {
     const { workspace, provider, liveSessionId, liveWorkspace, switchAwayAndBack } = await projectDaemon()
     provider.request(staleSessionId, { threadId: "thread-billing", itemId: "item-stale", command: "touch stale.txt", reason: "Write a stale file" })
     provider.request(staleSessionId, { threadId: "thread-billing", itemId: "item-stale-2", command: "touch stale-2.txt", reason: "Write another stale file" })
@@ -515,14 +510,13 @@ describe("stored approval cards in another project's saved state", () => {
     await vi.waitFor(async () => expect((await workspace()).approvals).toHaveLength(3), { timeout: 5_000 })
 
     const opened = await switchAwayAndBack()
-    expect(opened.approvals).toEqual([])
-    expect(projectClosedNoticesIn(opened).map(({ sessionId }) => sessionId).sort())
-      .toEqual([liveSessionId, staleSessionId].sort())
+    expect(opened.approvals).toHaveLength(3)
+    expect(projectClosedNoticesIn(opened)).toEqual([])
     expect(noticesIn(opened)).toEqual([])
   })
 
-  it("keeps no requested file, hidden record or hidden command for a card that expired when its project reopened", async () => {
-    const { daemon, workspace, provider, liveSessionId, liveWorkspace, switchAwayAndBack } = await projectDaemon()
+  it("retains hidden approval context across refocus and removes it when denied", async () => {
+    const { daemon, rpc, workspace, provider, liveSessionId, liveWorkspace, switchAwayAndBack } = await projectDaemon()
     const envFile = join(liveWorkspace, ".env")
     // A file tool's card keeps the file it was raised for, and one on a
     // credential file also keeps the execution record that names it. A
@@ -546,7 +540,11 @@ describe("stored approval cards in another project's saved state", () => {
     expect([...daemon.fileApprovalTargetIds].sort()).toEqual(cardIds)
 
     const opened = await switchAwayAndBack()
-    expect(opened.approvals).toEqual([])
+    expect(opened.approvals.map(({ id }) => id).sort()).toEqual(cardIds)
+    expect([...daemon.fileApprovalTargetIds].sort()).toEqual(cardIds)
+    for (const card of opened.approvals) {
+      expect((await rpc("approval.resolve", { approvalId: card.id, decision: "deny", revision: card.revision, client: "desktop" })).error).toBeUndefined()
+    }
     expect(daemon.fileApprovalTargetIds).toEqual([])
   })
 })
@@ -586,11 +584,9 @@ async function projectDaemon() {
   const rpc = await connect(daemon, (await daemon.start()).port)
   const workspace = async () => workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
   const switchAwayAndBack = async () => {
-    const refused = await rpc("project.open", { path: rootB, client: "desktop" })
-    const confirmation = (refused.error as unknown as { data: unknown }).data
-    expect((await rpc("project.open", { path: rootB, client: "desktop", confirmation })).error).toBeUndefined()
+    expect((await rpc("project.open", { path: rootB, client: "desktop" })).error).toBeUndefined()
     expect((await rpc("project.open", { path: rootA, client: "desktop" })).error).toBeUndefined()
     return workspace()
   }
-  return { daemon, workspace, provider, liveSessionId, liveWorkspace, switchAwayAndBack }
+  return { daemon, rpc, workspace, provider, liveSessionId, liveWorkspace, switchAwayAndBack }
 }

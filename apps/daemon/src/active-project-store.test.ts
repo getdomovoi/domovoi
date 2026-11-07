@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
 import { createEmptyWorkspace, demoWorkspace, sessionTransferContractVersion, workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { MultiProjectWorkspaceStateError, SqliteWorkspaceStore } from "./store.js"
 import { redactWorkspaceCopies } from "./workspace-redaction.js"
@@ -129,7 +129,7 @@ describe.each(["sync", "worker"] as const)("active project persistence (%s)", (m
       expect(reopened.recovery).toBeUndefined()
     } finally { await reopened.close() }
     const before = bytes(path)
-    expect(() => new SqliteWorkspaceStore(path, historical)).toThrow(MultiProjectWorkspaceStateError)
+    expect(() => new SqliteWorkspaceStore(path, historical, { restoreActiveProjects: false })).toThrow(MultiProjectWorkspaceStateError)
     expect(bytes(path)).toEqual(before)
   })
 
@@ -197,6 +197,65 @@ describe.each(["sync", "worker"] as const)("active project persistence (%s)", (m
       expect(restored.projects![1]!.unavailableReason).toBe("folder-missing")
     } finally { await reopened.close() }
   })
+
+  it("writes only changed project rows while another project's thread streams", async () => {
+    const path = await statePath()
+    const snapshot = several()
+    const store = new SqliteWorkspaceStore(path, projectCopy("a"), restoreOptions)
+    const db = new DatabaseSync(path)
+    try {
+      await save(store, snapshot)
+      db.exec("CREATE TABLE project_writes (id TEXT); CREATE TRIGGER observe_project_write AFTER UPDATE ON workspace_projects BEGIN INSERT INTO project_writes VALUES (NEW.project_id); END")
+      await save(store, snapshot)
+      expect(db.prepare("SELECT id FROM project_writes").all()).toEqual([])
+      snapshot.thread.push({ id: "streamed-a", sessionId: snapshot.sessions[0]!.id, kind: "assistant", body: "More output", createdAt: "2026-11-06T12:00:00.000Z" })
+      await save(store, snapshot)
+      expect(db.prepare("SELECT id FROM project_writes").all()).toEqual([{ id: snapshot.project!.id }])
+    } finally { db.close(); await store.close() }
+  })
+})
+
+it.each([Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" }), new Error("unexpected reader failure")])(
+  "preserves non-validation errors during active-project restoration: %s", async (failure) => {
+    const path = await statePath()
+    const store = new SqliteWorkspaceStore(path, projectCopy("a"), restoreOptions)
+    store.save(several())
+    await store.close()
+    const before = bytes(path)
+    const original = DatabaseSync.prototype.prepare
+    const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql: string) {
+      if (sql.includes("SELECT state FROM workspace_projects")) throw failure
+      return original.call(this, sql)
+    })
+    try {
+      let caught: unknown
+      try { new SqliteWorkspaceStore(path, projectCopy("a"), restoreOptions) } catch (error) { caught = error }
+      expect(caught).toBe(failure)
+      expect(bytes(path)).toEqual(before)
+    } finally { spy.mockRestore() }
+  },
+)
+
+it("does not quarantine a read failure after active-row preflight succeeded", async () => {
+  const path = await statePath()
+  const store = new SqliteWorkspaceStore(path, projectCopy("a"), restoreOptions)
+  store.save(several())
+  await store.close()
+  const before = rows(path)
+  const failure = Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" })
+  const original = DatabaseSync.prototype.prepare
+  let reads = 0
+  const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql: string) {
+    if (sql.includes("SELECT state FROM workspace_projects") && ++reads === 3) throw failure
+    return original.call(this, sql)
+  })
+  try {
+    let caught: unknown
+    try { new SqliteWorkspaceStore(path, projectCopy("a"), restoreOptions) } catch (error) { caught = error }
+    expect(caught).toBe(failure)
+    expect(rows(path)).toEqual(before)
+    expect(readdirSync(directories.at(-1)!).some((name) => name.includes("corrupt"))).toBe(false)
+  } finally { spy.mockRestore() }
 })
 
 it.each(["missing", "invalid-json", "mixed", "wrong-key", "wrong-project", "duplicate-session", "focused-mismatch"])(

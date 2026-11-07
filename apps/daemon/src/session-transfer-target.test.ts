@@ -70,6 +70,20 @@ describe("target transfer preflight", () => {
     persistOwnership: true,
   }
 
+  it("selects the only active lineage match and refuses ambiguous matches", async () => {
+    const snapshot = targetWorkspace()
+    const target = snapshot.project!
+    const other = { ...target, id: "project-other", path: "/target/other" }
+    snapshot.projects = [target, other]
+    snapshot.project = other
+    await expect(preflightSessionTransferTarget(snapshot, params, async (path) => path === target.path, capabilities))
+      .resolves.toMatchObject({ allowed: true, targetProjectId: target.id })
+    await expect(preflightSessionTransferTarget(snapshot, params, async () => true, capabilities))
+      .resolves.toEqual({ allowed: false, reason: "target-project-ambiguous" })
+    await expect(preflightSessionTransferTarget(snapshot, params, async () => false, capabilities))
+      .resolves.toEqual({ allowed: false, reason: "target-project-mismatch" })
+  })
+
   it("requires the open target project to share the source lineage", async () => {
     const workspace = targetWorkspace()
     const projectHasLineage = vi.fn(async () => true)
@@ -295,7 +309,13 @@ describe("target transfer commit", () => {
     expect(accepted.restored).toBe(1)
   })
 
-  it("restores every resource before publishing one runnable target session", async () => {
+  it.each([false, true])("restores every resource with another project focused: %s", async (anotherFocused) => {
+    const snapshot = targetWorkspace()
+    if (anotherFocused) {
+      const target = snapshot.project!
+      snapshot.project = { ...target, id: "project-other", path: "/target/other" }
+      snapshot.projects = [target, snapshot.project]
+    }
     const { packaged, transactions, usage } = await preparedTransfer()
     const restoreSessionFromBundle = vi.fn(async () => ({
       path: "/target/session-billing",
@@ -322,11 +342,11 @@ describe("target transfer commit", () => {
     const save = vi.fn(async () => {})
 
     const committed = await commitPreparedSessionTransfer({
-      snapshot: targetWorkspace(),
+      snapshot,
       transferId: packaged.manifest.transferId,
       manifestDigest: packaged.manifestDigest,
       transactions,
-      projectHasLineage: async () => true,
+      projectHasLineage: async (path) => path === "/target/project",
       workspace: {
         restoreSessionFromBundle,
         writeTransferredArtifactSource,
@@ -363,6 +383,8 @@ describe("target transfer commit", () => {
     }))
     expect(replaceTransferredSession).toHaveBeenCalledWith("session-billing", usage)
     expect(save).toHaveBeenCalledOnce()
+    expect(committed.snapshot.project).toEqual(snapshot.project)
+    expect(committed.snapshot.projects).toEqual(snapshot.projects)
     expect(committed.snapshot.sessions[0]).toMatchObject({
       id: "session-billing",
       state: "idle",
@@ -385,7 +407,7 @@ describe("target transfer commit", () => {
       transferId: packaged.manifest.transferId,
       manifestDigest: packaged.manifestDigest,
       transactions,
-      projectHasLineage: async () => true,
+      projectHasLineage: async (path) => path === "/target/project",
       workspace: { restoreSessionFromBundle, writeTransferredArtifactSource },
       annotationVisualContext: { storeUpload },
       usageLedger: { replaceTransferredSession },
@@ -394,6 +416,8 @@ describe("target transfer commit", () => {
     })
     expect(restoreSessionFromBundle).toHaveBeenCalledOnce()
     expect(save).toHaveBeenCalledOnce()
+    expect(committed.snapshot.project).toEqual(snapshot.project)
+    expect(committed.snapshot.projects).toEqual(snapshot.projects)
 
     const failed = await preparedTransfer()
     await failed.transactions.markFailed(
@@ -408,7 +432,7 @@ describe("target transfer commit", () => {
       transferId: failed.packaged.manifest.transferId,
       manifestDigest: failed.packaged.manifestDigest,
       transactions: failed.transactions,
-      projectHasLineage: async () => true,
+      projectHasLineage: async (path) => path === "/target/project",
       workspace: { restoreSessionFromBundle, writeTransferredArtifactSource },
       annotationVisualContext: { storeUpload },
       usageLedger: { replaceTransferredSession },
@@ -496,4 +520,21 @@ describe("target transfer commit", () => {
       reason: "persistence-failed",
     })
   })
+})
+
+it("refuses a second matching active project opened between preview and commit", async () => {
+  const { packaged, transactions } = await preparedTransfer()
+  const snapshot = targetWorkspace()
+  snapshot.projects = [snapshot.project!, { ...snapshot.project!, id: "project-clone", path: "/target/clone" }]
+  const restoreSessionFromBundle = vi.fn()
+  const save = vi.fn()
+  const committed = await commitPreparedSessionTransfer({
+    snapshot, transferId: packaged.manifest.transferId, manifestDigest: packaged.manifestDigest, transactions,
+    projectHasLineage: async () => true, workspace: { restoreSessionFromBundle },
+    annotationVisualContext: { storeUpload: vi.fn() }, usageLedger: { replaceTransferredSession: vi.fn() },
+    save, now: () => "2026-09-03T21:01:00.000Z",
+  })
+  expect(committed.result).toMatchObject({ state: "refused", reason: "target-project-ambiguous" })
+  expect(restoreSessionFromBundle).not.toHaveBeenCalled()
+  expect(save).not.toHaveBeenCalled()
 })

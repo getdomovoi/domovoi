@@ -91,7 +91,7 @@ async function start(extraAnnotations: Annotation[] = []) {
     onEvent: vi.fn((listener: (event: AgentEvent) => void) => { emit = listener; return () => {} }),
     close: vi.fn(async () => {}),
   } satisfies AgentAdapter
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0, store: new SqliteWorkspaceStore(":memory:", reviewWorkspace(extraAnnotations)),
     agents: { codex: provider }, errorSink: vi.fn(),
   })

@@ -83,7 +83,7 @@ async function daemonWith(workspace: WorkspaceSnapshot, agent?: AgentAdapter, wr
   // The profile and the skill catalog stay in scratch, never the real home.
   const profileDirectory = await mkdtemp(join(tmpdir(), "domovoi-fence-"))
   scratchDirectories.push(profileDirectory)
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0, store: (wrapStore ?? ((store) => store))(new SqliteWorkspaceStore(":memory:", workspace)), profileDirectory,
     skillCatalog: { list: async () => [], read: async () => { throw new Error("No skills here") } },
     ...(agent ? { agent } : { agents: {} }),
@@ -306,7 +306,7 @@ describe("the service handoff fence", () => {
   it.skipIf(remoteAddress === undefined)("refuses the daemon credential from a non-loopback peer with the local-owner code", async () => {
     const profileDirectory = await mkdtemp(join(tmpdir(), "domovoi-fence-"))
     scratchDirectories.push(profileDirectory)
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0, host: "0.0.0.0", allowRemoteTransport: true, profileDirectory, agents: {},
       store: new SqliteWorkspaceStore(":memory:", quiet()),
       skillCatalog: { list: async () => [], read: async () => { throw new Error("No skills here") } },
@@ -707,7 +707,7 @@ async function daemonOnFile(statePath: string, workspace: WorkspaceSnapshot, opt
   scratchDirectories.push(profileDirectory)
   const { agent, emit } = agentWithHeldTurns(options.heldTurns ?? false)
   const store = new SqliteWorkspaceStore(statePath, workspace)
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0, store: options.wrap ? options.wrap(store) : store, profileDirectory, agent,
     skillCatalog: { list: async () => [], read: async () => { throw new Error("No skills here") } },
     ...(options.errorSink ? { errorSink: options.errorSink } : {}),
@@ -832,7 +832,7 @@ describe("the service handoff fence and an emergency stop", () => {
       process: "bash", write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
       onData: vi.fn(() => ({ dispose: vi.fn() })), onExit: vi.fn(() => ({ dispose: vi.fn() })),
     } satisfies TerminalProcess
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0, store, profileDirectory, agents: {},
       skillCatalog: { list: async () => [], read: async () => { throw new Error("No skills here") } },
       terminalService: { spawn: vi.fn(() => terminal) },

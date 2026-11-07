@@ -130,8 +130,8 @@ describe("workspace projects", () => {
     expect(workspaceSnapshotSchema.safeParse(tooMany).success).toBe(false)
   })
 
-  it("keeps a missing-folder project active with a validated availability reason", () => {
-    const unavailable = { ...second, unavailableReason: "folder-missing" as const }
+  it.each(["folder-missing", "folder-check-failed"] as const)("keeps an unavailable project active with a validated reason: %s", (unavailableReason) => {
+    const unavailable = { ...second, unavailableReason }
     expect(projectSchema.parse(unavailable)).toEqual(unavailable)
     const snapshot = { ...twoProjects(), projects: [focused, unavailable] }
     expect(workspaceSnapshotSchema.parse(snapshot).projects).toEqual([focused, unavailable])

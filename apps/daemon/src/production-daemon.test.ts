@@ -689,6 +689,7 @@ describe("createProductionDaemon", () => {
       parseEnvironment: () => ({
         host: "127.0.0.1",
         port: 47_831,
+        projectCap: 5,
         credentialPath: join(homeDirectory, ".domovoi", "daemon.token"),
         machineIdentityPath: join(homeDirectory, ".domovoi", "machine.json"),
         allowRemoteTransport: false,
@@ -707,6 +708,7 @@ describe("createProductionDaemon", () => {
     expect(daemonOptions).toMatchObject({
       host: "127.0.0.1",
       port: 47_831,
+      projectCap: 5,
       authToken,
       machineIdentity,
       providerProbe,

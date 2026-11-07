@@ -57,7 +57,7 @@ async function defaultDaemon(snapshot: WorkspaceSnapshot, providerProbe?: Provid
   const home = await mkdtemp(join(tmpdir(), "domovoi-kilo-off-"))
   scratchDirectories.push(home)
   vi.stubEnv("HOME", home)
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0,
     store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
     profileDirectory: join(home, ".domovoi"),

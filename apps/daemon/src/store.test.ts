@@ -254,7 +254,7 @@ describe("SqliteWorkspaceStore", () => {
     } finally { durable.close() }
   })
 
-  it("keeps committed transfer ownership after restart and active project changes", async () => {
+  it.each([false, true])("keeps committed ownership after restart with another project focused: %s", async (anotherFocused) => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-ownership-"))
     scratchDirectories.push(scratch)
     const databasePath = join(scratch, "state.sqlite")
@@ -292,6 +292,12 @@ describe("SqliteWorkspaceStore", () => {
     imported.annotations = imported.annotations.filter((annotation) => annotation.sessionId === session.id)
     imported.approvals = imported.approvals.filter((approval) => approval.sessionId === session.id)
 
+    if (anotherFocused) {
+      const target = imported.project
+      imported.project = { ...target, id: "project-focused", path: "/target/focused" }
+      imported.projects = [target, imported.project]
+      imported.activeSessionId = null
+    }
     const store = new SqliteWorkspaceStore(databasePath, imported)
     store.saveTransferredSnapshot(imported, {
       version: 2,
@@ -300,7 +306,7 @@ describe("SqliteWorkspaceStore", () => {
       sessionId: session.id,
       sourceMachineId,
       targetMachineId,
-      targetProjectId: imported.project.id,
+      targetProjectId: "project-target",
       workspacePath: session.workspacePath,
       checkpointCommit,
       generation: 2,
@@ -312,6 +318,7 @@ describe("SqliteWorkspaceStore", () => {
       id: "project-other",
       path: "/target/other",
     }
+    delete other.projects
     other.sessions = []
     other.activeSessionId = null
     other.thread = []

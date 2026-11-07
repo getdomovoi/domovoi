@@ -59,7 +59,7 @@ async function fixture(
     }, close: async () => {},
   }
   const store = new SqliteWorkspaceStore(statePath, snapshot)
-  const daemon = new DomovoiDaemon({ port: 0, store, agents: { [session.runtime.provider]: agent },
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { [session.runtime.provider]: agent },
     artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
   })
   daemons.push(daemon)

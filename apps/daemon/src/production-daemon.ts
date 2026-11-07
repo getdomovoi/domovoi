@@ -303,6 +303,7 @@ export async function createProductionDaemonWithDependencies(
       localOwner: { secret, identity },
       host: config.host,
       port: config.port,
+      ...(config.projectCap !== undefined ? { projectCap: config.projectCap } : {}),
       ...(config.allowedOrigins ? { allowedOrigins: config.allowedOrigins } : {}),
       ...(config.webAppUrl ? { webAppUrl: config.webAppUrl } : {}),
       webApp,

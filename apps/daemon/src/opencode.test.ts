@@ -930,7 +930,7 @@ describe.each([
     snapshot.approvalRules = []
     snapshot.workingPlans = []
     const store = new SqliteWorkspaceStore(":memory:", workspaceSnapshotSchema.parse(snapshot))
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0, statePath: ":memory:", profileDirectory: directory, store, agents: { [provider]: adapter },
       artifactWatcherFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn() }),
     })
@@ -4521,7 +4521,7 @@ describe("an approval answered outside Domovoi, through the daemon", () => {
     snapshot.approvalRules = []
     snapshot.workingPlans = []
     const store = new SqliteWorkspaceStore(":memory:", workspaceSnapshotSchema.parse(snapshot))
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0, statePath: ":memory:", profileDirectory: profile, store, agents: { opencode: adapter },
       artifactWatcherFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn() }),
     })

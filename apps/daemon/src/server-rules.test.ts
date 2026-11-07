@@ -70,7 +70,7 @@ async function setup(permissionMode: "ask" | "build" = "build") {
   const path = join(directory, "state.sqlite")
   const store = new SqliteWorkspaceStore(path, snapshot)
   const errorSink = vi.fn()
-  const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent }, errorSink })
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { "claude-code": agent }, errorSink })
   daemons.push(daemon)
   const address = await daemon.start()
   const socket = new WebSocket(`ws://127.0.0.1:${address.port}/rpc`)

@@ -113,7 +113,7 @@ async function start({ workspacePath = "/worktrees/session-billing", storePath =
   } satisfies WorkspaceService
   const { append, auditLog } = recordingAuditLog()
   const store = new SqliteWorkspaceStore(storePath, openCodeSession(workspacePath))
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0, store, auditLog,
     agents: { opencode: provider }, workspaceService, errorSink: vi.fn(),
   })
