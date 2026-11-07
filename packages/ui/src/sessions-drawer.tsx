@@ -213,6 +213,7 @@ function savedSessionNote(session: KnownProjectSession, now: number): string {
   if (session.state === "archived") return "archived"
   if (session.state === "archiving") return "archiving"
   if (session.state === "transferred") return "moved to another machine"
+  if (session.state === "ownership-conflict") return "ownership conflict"
   if (session.state === "failed") return `failed ${elapsed(session.updatedAt, now)} ago`
   return `idle ${elapsed(session.updatedAt, now)}`
 }
@@ -508,7 +509,7 @@ export function SessionsDrawerColumn({
                     <span data-session-meta="" className="mt-[3px] font-machine text-[10.5px] text-faint">{`${machine} · ${note}`}</span>
                   </span>
                   <span aria-hidden className="order-first mt-[5px] flex opacity-80">
-                    <StatusDot meaning={session.state === "failed" ? "offline" : "idle"} label={note} size="inline" labelHidden />
+                    <StatusDot meaning={session.state === "failed" || session.state === "ownership-conflict" ? "offline" : "idle"} label={note} size="inline" labelHidden />
                   </span>
                 </>
               )

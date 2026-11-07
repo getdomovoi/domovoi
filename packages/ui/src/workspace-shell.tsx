@@ -754,22 +754,63 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // never asks.
   const [knownProjectList, setKnownProjectList] = useState<{ machineId: string; projects: KnownProject[] } | null>(null)
   const knownProjectsMachineId = attached?.machineId ?? snapshot?.machine.id ?? ""
+  const activeProjectIdsKey = snapshot ? workspaceProjects(snapshot).map((project) => project.id).join("\u0000") : ""
   const knownProjectsKey = snapshot
-    ? `${knownProjectsMachineId}\u0000${snapshot.project?.id ?? ""}\u0000${workspaceProjects(snapshot).map((project) => project.id).join("\u0000")}`
+    ? `${knownProjectsMachineId}\u0000${snapshot.project?.id ?? ""}\u0000${activeProjectIdsKey}`
     : ""
+  // Each active project as the snapshot last had it. A project that stops
+  // being active may have sessions the last list never saw, so until the list
+  // is read again those projects are drawn from here, and a reread that fails
+  // keeps them too.
+  const lastLiveProjects = useRef(new Map<string, KnownProject>())
+  const [leftActive, setLeftActive] = useState<{ machineId: string; projects: KnownProject[] } | null>(null)
+  useEffect(() => {
+    if (!snapshot) return
+    const machineId = attached?.machineId ?? snapshot.machine.id
+    for (const project of workspaceProjects(snapshot)) {
+      lastLiveProjects.current.set(`${machineId}\u0000${project.id}`, {
+        project,
+        savedAt: new Date().toISOString(),
+        folder: "present",
+        sessions: snapshot.sessions
+          .filter((session) => session.projectId === project.id)
+          .map(({ id, title, state, updatedAt }) => ({ id, title, state, updatedAt })),
+      })
+    }
+  }, [snapshot, attached?.machineId])
   useEffect(() => {
     if (!connected || !knownProjectsKey || handheld) return
     let current = true
     const machineId = knownProjectsMachineId
+    const active = new Set(activeProjectIdsKey.split("\u0000"))
+    const left = [...lastLiveProjects.current.entries()]
+      .filter(([key, entry]) => key.startsWith(`${machineId}\u0000`) && !active.has(entry.project.id))
+      .map(([, entry]) => entry)
+    setLeftActive({ machineId, projects: left })
     listProjects().then(
-      (result) => { if (current) setKnownProjectList({ machineId, projects: result.projects }) },
+      (result) => {
+        if (!current) return
+        setKnownProjectList({ machineId, projects: result.projects })
+        setLeftActive(null)
+      },
       // A daemon that cannot list its projects still has the open one, which
-      // the snapshot names.
-      () => { if (current) setKnownProjectList(null) },
+      // the snapshot names, and the list it gave last time stands.
+      () => {},
     )
     return () => { current = false }
-  }, [connected, knownProjectsKey, knownProjectsMachineId, handheld, listProjects])
-  const knownProjects = knownProjectList?.machineId === knownProjectsMachineId ? knownProjectList.projects : null
+  }, [connected, knownProjectsKey, knownProjectsMachineId, activeProjectIdsKey, handheld, listProjects])
+  const knownProjects = useMemo(() => {
+    const listed = knownProjectList?.machineId === knownProjectsMachineId ? knownProjectList.projects : null
+    const newer = leftActive?.machineId === knownProjectsMachineId ? leftActive.projects : []
+    if (newer.length === 0) return listed
+    const replaced = new Map(newer.map((entry) => [entry.project.id, entry]))
+    const merged = (listed ?? []).map((entry) => {
+      const live = replaced.get(entry.project.id)
+      return live ? { ...live, folder: entry.folder, savedAt: entry.savedAt } : entry
+    })
+    const listedIds = new Set(merged.map((entry) => entry.project.id))
+    return [...merged, ...newer.filter((entry) => !listedIds.has(entry.project.id))]
+  }, [knownProjectList, leftActive, knownProjectsMachineId])
   // What runs in a project once a switch to it is made: a start from the
   // launcher, or a session chosen in the sidebar. It runs in the render after
   // the new snapshot lands, through the latest handlers, so it acts in the

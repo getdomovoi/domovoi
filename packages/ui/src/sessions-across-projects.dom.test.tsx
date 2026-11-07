@@ -142,6 +142,33 @@ describe("the session sidebar across projects", () => {
     for (const session of demoWorkspace.sessions) expect(within(acme).getByText(session.title)).toBeTruthy()
   })
 
+  // The list was read when acme-api opened; a session made since is only in
+  // the snapshot. It must survive the switch, before the list is read again
+  // and when that read fails.
+  it("keeps a session made after the last list through the switch and a failed reread", async () => {
+    const user = userEvent.setup()
+    const socket = await openShell()
+    await answerProjectList(socket, [known(projectA, demoWorkspace.sessions)])
+    const fresh = { ...demoWorkspace.sessions[2]!, id: "session-fresh", title: "Fix the flaky upload test", updatedAt: "2026-11-06T11:00:00.000Z" }
+    await act(async () => {
+      socket.receive({ jsonrpc: "2.0", method: "workspace.changed", params: workspaceSnapshot({ sessions: [...demoWorkspace.sessions, fresh] }) })
+    })
+    await settle()
+    await act(async () => {
+      socket.receive({ jsonrpc: "2.0", method: "workspace.changed", params: snapshotB() })
+    })
+    await settle()
+    await openDrawer(user)
+    expect(within(projectSection("acme-api")).getByText("Fix the flaky upload test")).toBeTruthy()
+    await act(async () => {
+      fail(socket, "project.list", { code: -32603, message: "Domovoi hit an internal error" })
+    })
+    await settle()
+    const acme = projectSection("acme-api")
+    expect(within(acme).getByText("Fix the flaky upload test")).toBeTruthy()
+    for (const session of demoWorkspace.sessions) expect(within(acme).getByText(session.title)).toBeTruthy()
+  })
+
   // Ruling Q193 A: NEEDS YOU leads, across every project, so a waiting gate is
   // never inside a section below the fold; each project's section keeps its
   // RUNNING and QUIET. Two active projects is the J31 S2 shape, built here
@@ -231,6 +258,26 @@ describe("the session sidebar across projects", () => {
     await settle()
     const dialog = await screen.findByRole("dialog", { name: "Start a session" })
     expect(within(dialog).getByRole("button", { name: /^Project/ }).textContent).toContain("pdf-worker")
+  })
+
+  // A project that is not active answers nothing until it opens, so its rows
+  // stay in its own section (the design's NEEDS YOU holds active work only),
+  // but each says how its session was left.
+  it("says how each session in a project that is not active was left", async () => {
+    const user = userEvent.setup()
+    const socket = await openShell()
+    const left = [
+      { ...audit, id: "session-conflict", title: "Conflicted move", state: "ownership-conflict" as const },
+      { ...audit, id: "session-failed", title: "Failed upgrade", state: "failed" as const },
+      { ...audit, id: "session-moved", title: "Moved away", state: "transferred" as const },
+    ]
+    await answerProjectList(socket, [known(projectA, demoWorkspace.sessions), known(projectB, left)])
+    await openDrawer(user)
+    const section = projectSection("pdf-worker")
+    const meta = (title: string) => within(section).getByRole("button", { name: new RegExp(`^${title}`) }).textContent
+    expect(meta("Conflicted move")).toContain("ownership conflict")
+    expect(meta("Failed upgrade")).toMatch(/failed .* ago/)
+    expect(meta("Moved away")).toContain("moved to another machine")
   })
 
   it("lists a project whose folder is gone and says so", async () => {
