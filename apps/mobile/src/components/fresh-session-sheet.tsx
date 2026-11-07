@@ -1,10 +1,11 @@
 import { useState } from "react"
-import { Modal, Pressable, ScrollView, TextInput, View } from "react-native"
+import { Modal, Pressable, TextInput, View } from "react-native"
 
 import type { Project } from "@getdomovoi/protocol"
 
 import type { PhoneRefusal } from "../session-refusal"
 import { useTheme } from "../theme/theme-provider"
+import { PageScroller } from "./page-scroller"
 import { RefusalCard } from "./refusal-card"
 import { Button } from "./ui/button"
 import { Text } from "./ui/text"
@@ -44,7 +45,7 @@ export function FreshSessionSheet({ open, projects, projectId, machine, disabled
           <Button title="Cancel" variant="ghost" onPress={close} className="px-2" disabled={starting} />
         </View>
         {picking ? (
-          <ScrollView className="max-h-80">
+          <PageScroller className="max-h-80">
             {projects.map((candidate) => (
               <Pressable
                 key={candidate.id}
@@ -60,7 +61,7 @@ export function FreshSessionSheet({ open, projects, projectId, machine, disabled
                 {candidate.unavailableReason ? <Text variant="note">{candidate.unavailableReason === "folder-missing" ? "folder not found" : "could not check the project folder"}</Text> : null}
               </Pressable>
             ))}
-          </ScrollView>
+          </PageScroller>
         ) : (
           <>
           {projects.length > 1 ? (
