@@ -57,6 +57,8 @@ async function fixture(options: { root?: string; initial?: WorkspaceSnapshot } =
   const watchers: Array<{ root: string; stop: ReturnType<typeof vi.fn>; onChange: (change: ArtifactFileChange) => void }> = []
   const terminals: Array<TerminalProcess & { kill: ReturnType<typeof vi.fn>; output: (text: string) => void }> = []
   const store = new SqliteWorkspaceStore(join(root, "state.sqlite"), options.initial ?? createEmptyWorkspace(demoWorkspace.machine))
+  const loaded = store.load()
+  vi.spyOn(store, "load").mockReturnValueOnce(loaded)
   const daemon = new DomovoiDaemon({ port: 0, store, profileDirectory: root, projectDirectoryExists,
     agents: { "claude-code": agent }, workspaceService, agentTimeoutMs: 500,
     usageLedger: new UsageLedger(join(root, "usage.sqlite")),
@@ -116,7 +118,7 @@ async function fixture(options: { root?: string; initial?: WorkspaceSnapshot } =
     expect(first.error.code).toBe(-32022)
     return rpc<RpcResult<"project.close">>("project.close", { projectId, client: "desktop", confirmation: first.error.data })
   }
-  return { rpc, open, close, store, root, daemon, socket, stopThread, startTurn, startThread, agent, inspect, projectDirectoryExists, watchers, terminals,
+  return { rpc, open, close, store, loaded, root, daemon, socket, stopThread, startTurn, startThread, agent, inspect, projectDirectoryExists, watchers, terminals,
     emit: (event: AgentEvent) => { for (const listener of listeners) listener(event) } }
 }
 
@@ -444,4 +446,33 @@ it("preserves focus when closing an unfocused project immediately after reconstr
   await first.daemon.stop()
   const restarted = await fixture({ root: first.root })
   expect((await restarted.close(b.projectId)).result!.snapshot.project!.id).toBe(a.projectId)
+})
+
+
+it.each(["added", "retargeted"] as const)("renews confirmation for an injected %s session after a close await", async (change) => {
+  const initial = createEmptyWorkspace(demoWorkspace.machine)
+  initial.project = demoWorkspace.project
+  const session = { ...demoWorkspace.sessions[0]!, state: "idle" as const, runtime: { ...runtime, permissionMode: "build" as const }, workspacePath: "/synthetic/close" }
+  delete session.activeTurnId
+  delete session.providerThreadId
+  initial.sessions = [session]
+  const { rpc, loaded, terminals, store } = await fixture({ initial })
+  const projectId = initial.project!.id
+  await rpc("terminal.create", { terminalId: "paused-exit", sessionId: session.id, cols: 80, rows: 24, client: "desktop", clientId: "close-client" })
+  const terminal = terminals[0]!
+  const finish = terminal.kill.getMockImplementation()! as () => void
+  const entered = deferred()
+  terminal.kill.mockImplementation(() => { entered.resolve() })
+  const confirmation = (await rpc("project.close", { projectId, client: "desktop" })).error!.data
+  const closing = rpc("project.close", { projectId, client: "desktop", confirmation })
+  await entered.promise
+  // Inject an out-of-band writer at the store boundary. Normal RPC and
+  // transfer writers are excluded by the queue, but close must fail safely
+  // if a background writer changes the set while terminal shutdown awaits.
+  if (change === "added") loaded.sessions.push({ ...session, id: "new-session", title: "New session" })
+  else loaded.sessions[0]!.workspacePath = "/synthetic/changed"
+  finish()
+  expect((await closing).error).toMatchObject({ code: -32022 })
+  expect((await rpc("workspace.get")).result!.project!.id).toBe(projectId)
+  expect(store.load().project!.id).toBe(projectId)
 })

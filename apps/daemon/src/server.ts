@@ -3062,7 +3062,7 @@ export class DomovoiDaemon {
     return [...outcomes].map(([sessionId, outcome]) => ({ sessionId, outcome }))
   }
 
-  async #closeProjectSessions(projectId: string): Promise<RpcResult<"project.close">["sessions"]> {
+  async #closeProjectSessions(projectId: string, checkMembership: () => void): Promise<RpcResult<"project.close">["sessions"]> {
     const sessions = this.#snapshot.sessions.filter((session) => session.projectId === projectId)
     const ids = new Set(sessions.map((session) => session.id))
     const claims = new Map<string, { sessionId: string; provider: string; threadId: string; turnId?: string; trusted?: TrustedThread }>()
@@ -3137,11 +3137,13 @@ export class DomovoiDaemon {
             await withTimeout(this.#agents.require(claim.provider).interruptTurn(claim.threadId, claim.turnId),
               this.#agentTimeoutMs, "Project close turn interrupt timed out")
           } catch (error) { this.#reportError("Domovoi could not interrupt a closing project's turn", error) }
+          checkMembership()
         }
         await this.#stopAbandonedThread(claim.provider, claim.threadId, "Project close thread stop timed out")
         confirmed = !trustedStopUnconfirmedProviders.has(claim.provider)
       } catch (error) { this.#reportError("Domovoi could not confirm a closing project's thread stopped", error) }
       finally {
+        checkMembership()
         this.#claimedTrustThreads.delete(key)
         this.#closingThreadClaims.delete(key)
       }
@@ -3159,7 +3161,9 @@ export class DomovoiDaemon {
         if (ids.has(claim.sessionId)) outcomes.set(claim.sessionId, "unconfirmed")
       } else this.#repositoryTrustStopConfirmed(key, claim.sessionId)
     }))
+    checkMembership()
     await this.#awaitTerminalExits(exits)
+    checkMembership()
     for (const session of sessions) {
       const unconfirmed = outcomes.get(session.id) === "unconfirmed"
       if (unconfirmed && !sessionIsReadOnly(session)) session.state = "failed"
@@ -3173,8 +3177,9 @@ export class DomovoiDaemon {
     return [...outcomes].map(([sessionId, outcome]) => ({ sessionId, outcome }))
   }
 
-  async #commitProjectClose(projectId: string): Promise<void> {
-    await this.#serializeSnapshotPersistence(async () => {
+  async #commitProjectClose(projectId: string, stillConfirmed: () => boolean): Promise<boolean> {
+    return this.#serializeSnapshotPersistence(async () => {
+      if (!stillConfirmed()) return false
       const partition = (snapshot: WorkspaceSnapshot, retain: boolean): WorkspaceSnapshot => {
         const projects = workspaceProjects(snapshot).filter((project) => (project.id === projectId) === retain)
         const sessions = snapshot.sessions.filter((session) => (session.projectId === projectId) === retain)
@@ -3213,6 +3218,7 @@ export class DomovoiDaemon {
       for (const session of closed.sessions) this.#queuedSessionSends.delete(session.id)
       this.#sessionHistory.invalidate()
       this.#forgetDepartedApprovalContext()
+      return true
     })
   }
 
@@ -7025,7 +7031,7 @@ export class DomovoiDaemon {
       let alreadyPersisted = false
       if (method === "project.close") {
         const params = paramsResult.data as RpcParams<"project.close">
-        const confirm = () => {
+        const confirm = (renew = false) => {
           if (!this.#projectById(params.projectId)) {
             this.#error(socket, request.id, invalidParams, projectNotOpenRefusal)
             return false
@@ -7035,7 +7041,7 @@ export class DomovoiDaemon {
             .sort((a, b) => a.id.localeCompare(b.id))
           const confirmation = projectCloseConfirmationSchema.parse({ kind: "project-close-confirmation", projectId: params.projectId,
             sessions, sessionCount: sessions.length, worktreeCount: sessions.filter((session) => session.workspacePath).length })
-          if (sessions.length === 0 || JSON.stringify(params.confirmation) === JSON.stringify(confirmation)) return true
+          if (!renew && (sessions.length === 0 || JSON.stringify(params.confirmation) === JSON.stringify(confirmation))) return true
           this.#error(socket, request.id, projectCloseConfirmationErrorCode, "Confirm the sessions this project close stops", confirmation)
           return false
         }
@@ -7048,11 +7054,31 @@ export class DomovoiDaemon {
         signal?.throwIfAborted()
         // Beyond the claim, emergency cancellation does not abandon cleanup.
         // The close owns these threads, as a revoke owns its claimed threads.
+        // The exclusive queue excludes create, fork, transfer and recovery
+        // writers through the disk write, even after cancellation. Recheck
+        // identity after cleanup awaits as a backstop for background writers.
+        // State and turn ids are omitted because this close ends those turns.
+        const identity = () => JSON.stringify(this.#snapshot.sessions
+          .filter((session) => session.projectId === params.projectId)
+          .map(({ id, title, workspacePath, runtime, providerThreadId }) =>
+            ({ id, title, workspacePath, provider: runtime.provider, providerThreadId }))
+          .sort((a, b) => a.id.localeCompare(b.id)))
+        const claimed = identity()
+        let membershipChanged = false
+        const checkMembership = () => {
+          membershipChanged ||= !this.#projectById(params.projectId) || identity() !== claimed
+        }
+        const stillConfirmed = () => {
+          checkMembership()
+          return !membershipChanged || confirm(true)
+        }
         let sessions: RpcResult<"project.close">["sessions"]
         try {
-          sessions = await this.#closeProjectSessions(params.projectId)
+          sessions = await this.#closeProjectSessions(params.projectId, checkMembership)
+          if (!stillConfirmed()) return
           await this.#settleEmergencyStops()
-          await this.#commitProjectClose(params.projectId)
+          if (!stillConfirmed()) return
+          if (!await this.#commitProjectClose(params.projectId, stillConfirmed)) return
         } finally {
           this.#closingProjects.delete(params.projectId)
           this.#syncArtifactWatchers()
