@@ -8756,7 +8756,7 @@ export class DomovoiDaemon {
       // load parts of the configuration under it (P6b, P6c) and the other
       // providers nothing yet; taking it back stops the threads that loaded it
       // (#restartRepositoryTrustThreads). Grants apply to active projects;
-      // an inactive project's revoke only deletes its grant. A reader failure
+      // an inactive project's revoke also retries its held threads. A reader failure
       // reaches the catch below and the daemon's internal error, which names no
       // path or value (rulings Q123, Q129 A).
       if (method === "repository.trust" || method === "repository.revokeTrust") {
@@ -8778,7 +8778,7 @@ export class DomovoiDaemon {
         const activeProject = this.#projectForCall(paramsResult.data as { projectId?: string })
         // An authenticated revoke must not retain trust because the closed
         // project's saved row is unreadable. The row is needed only to read
-        // the configuration digest for the response; no thread is restarted.
+        // the configuration digest for the response.
         if (method === "repository.revokeTrust" && !activeProject) revokeGrant()
         const project = activeProject ?? (method === "repository.revokeTrust"
           ? this.#store.loadProject?.(params.projectId, this.#snapshot.machine)?.project : undefined)
@@ -8799,7 +8799,7 @@ export class DomovoiDaemon {
           // from here on: the grant is gone, and stopping the threads is what
           // the emergency stop would do.
           await this.#settleEmergencyStops()
-          const threads = activeProject ? await this.#restartRepositoryTrustThreads(project.id) : []
+          const threads = await this.#restartRepositoryTrustThreads(project.id)
           if (threads.length > 0) {
             try {
               await this.#saveAgentState()
