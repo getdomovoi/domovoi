@@ -271,8 +271,8 @@ describe("project close ordered with repository revoke", () => {
     expect(agents["claude-code"].startTurn).not.toHaveBeenCalled()
   })
 
-  it("stops a trusted provider creation that arrives after close and keeps failed cleanup fenced on reopen", async () => {
-    const { agents, grants, rpc, ok, sessionNamed } = await fixture({ agentTimeoutMs: 100 })
+  it.each([true, false])("fences a provider creation arriving after close when reporting trust is %s", async (reportsTrust) => {
+    const { agents, grants, rpc, ok, sessionNamed } = await fixture({ agentTimeoutMs: 100, reportsTrust })
     grants.set(projectId, grant(projectId))
     const started = deferred()
     const start = agents["claude-code"].startThread.getMockImplementation()!
@@ -296,6 +296,9 @@ describe("project close ordered with repository revoke", () => {
     expect(snapshot.approvals).toEqual([])
     expect(JSON.stringify(snapshot.thread)).not.toContain("late creation output")
     expect(grants.get(projectId)).toEqual(grant(projectId))
+    agents["claude-code"].stopThread.mockResolvedValue()
+    await ok("session.restartProviderThread", { sessionId: "session-restart" })
+    expect(agents["claude-code"].startThread).toHaveBeenCalledTimes(2)
   })
 
   it.each(["saved row", "repository config"] as const)("deletes an inactive project's grant even when its %s cannot be read", async (failure) => {

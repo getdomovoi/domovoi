@@ -1973,6 +1973,7 @@ export class DomovoiDaemon {
   #closingProjects = new Set<string>()
   #closingThreadClaims = new Set<string>()
   #closedThreads = new Set<string>()
+  #lateClosedThreads = new Map<string, Omit<TrustedThread, "trustedDigest">>()
   #projectCloseGenerations = new Map<string, number>()
   #threadCloseGenerations = new Map<string, number>()
   #eventCloseGenerations = new WeakMap<AgentEvent, number>()
@@ -2772,12 +2773,17 @@ export class DomovoiDaemon {
       || this.#closingProjects.has(call.projectId) || !this.#projectById(call.projectId)
     const key = providerThreadKey(provider, threadId)
     if (closed) {
+      this.#lateClosedThreads.set(key, { projectId: call.projectId, sessionId, provider, threadId })
       this.#closedThreads.add(key)
       this.#emergencyBlockedThreads.add(key)
       this.#failedEmergencyThreads.add(key)
     }
     this.#trackRepositoryTrust(call, sessionId, provider, threadId)
     await this.#stopAbandonedThread(provider, threadId, "Late provider cleanup timed out")
+    if (closed && !trustedStopUnconfirmedProviders.has(provider)
+      && !this.#trustedThreads.has(key) && !this.#revokedTrustThreads.has(key)) {
+      this.#repositoryTrustStopConfirmed(key, sessionId)
+    }
   }
 
   // A stop of the thread that began at `startedAt` resolved. The thread leaves
@@ -2804,7 +2810,13 @@ export class DomovoiDaemon {
   // holds.
   async #repositoryTrustFenced(sessionId: string): Promise<boolean> {
     const held = () => {
-      const threads = new Map<string, TrustedThread>()
+      const threads = new Map<string, Omit<TrustedThread, "trustedDigest">>()
+      // A timed-out creation can arrive after close without applying trust.
+      // Its session never adopted the thread id, so the ordinary send fence
+      // cannot find it. Keep its owner until a stop is confirmed as well.
+      for (const [key, thread] of this.#lateClosedThreads) {
+        if (thread.sessionId === sessionId) threads.set(key, thread)
+      }
       // The session's own thread fenced by an emergency stop is not one of
       // these: the send guard refuses it, and recovery or a revoke settles it.
       for (const [threadKey, trusted] of this.#trustedThreads) {
@@ -2823,7 +2835,8 @@ export class DomovoiDaemon {
     }
     for (const [threadKey, { provider, threadId }] of held()) {
       // A claimed thread is being stopped by its revoke already.
-      if (this.#claimedTrustThreads.has(threadKey)) continue
+      if (this.#claimedTrustThreads.has(threadKey)
+        || (this.#lateClosedThreads.has(threadKey) && this.#trustInFlight.has(threadKey))) continue
       try {
         await this.#stopAbandonedThread(provider, threadId, "Fenced provider thread stop timed out")
       } catch (error) {
@@ -2848,6 +2861,7 @@ export class DomovoiDaemon {
   #repositoryTrustStopConfirmed(threadKey: string, sessionId: string): void {
     this.#failedEmergencyThreads.delete(threadKey)
     this.#emergencyBlockedThreads.delete(threadKey)
+    this.#lateClosedThreads.delete(threadKey)
     const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
     if (!session?.providerThreadId || session.state !== "failed" || sessionIsReadOnly(session)) return
     if (this.#failedEmergencyThreads.has(providerThreadKey(session.runtime.provider, session.providerThreadId))) return
@@ -3075,6 +3089,9 @@ export class DomovoiDaemon {
         claims.set(key, { sessionId: session.id, provider: session.runtime.provider, threadId: session.providerThreadId,
           ...(session.activeTurnId ? { turnId: session.activeTurnId } : {}) })
       }
+    }
+    for (const [key, thread] of this.#lateClosedThreads) {
+      if (thread.projectId === projectId) claims.set(key, thread)
     }
     for (const tracked of [this.#residualTrustedThreads, this.#trustedThreads]) {
       for (const [key, trusted] of tracked) {
