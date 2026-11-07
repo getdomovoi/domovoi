@@ -148,7 +148,7 @@ import {
   type WorkspaceStore,
 } from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
-import { knownProjectList } from "./known-projects.js"
+import { createProjectFolderProbe, knownProjectList } from "./known-projects.js"
 import { fleetClientSnapshot } from "./fleet-client-snapshot.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { defaultFleetHeartbeatIntervalMs, defaultFleetOperationTimeoutMs, FleetEnrollmentService } from "./fleet-enrollment.js"
@@ -1830,6 +1830,8 @@ export class DomovoiDaemon {
   #snapshot: WorkspaceSnapshot
   #localMachine: WorkspaceSnapshot["machine"]
   #store: WorkspaceStore
+  // project.list's folder checks, one at a time per folder.
+  readonly #projectFolders = createProjectFolderProbe()
   #stateRecovery: StateRecovery | undefined
   #queuedSessionSends = new Map<string, StoredQueuedSessionSend>()
   #persistenceFailures = 0
@@ -5945,6 +5947,7 @@ export class DomovoiDaemon {
         || request.method === "skill.list"
         || request.method === "skill.inventory"
         || request.method === "tool.inventory"
+        || request.method === "project.list"
         || request.method === "skill.read"
         || request.method === "skill.reviewRevision"
         || request.method === "skill.installPreview"
@@ -14024,7 +14027,7 @@ export class DomovoiDaemon {
     for (const projectId of listing.unreadable) {
       this.#reportError(`Domovoi could not read the saved project ${projectId} for the project list`, new Error("The saved row is not one project's state"))
     }
-    return knownProjectList(this.#snapshot, listing)
+    return knownProjectList(this.#snapshot, listing, this.#projectFolders)
   }
 
   async #suspendProjectSessions(): Promise<void> {

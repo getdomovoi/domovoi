@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { once } from "node:events"
 import { chmod, mkdir, mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
 import {
@@ -19,7 +19,7 @@ import {
 import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { knownProjectEntries, maximumProjectListBytes } from "./known-projects.js"
+import { createProjectFolderProbe, knownProjectEntries, maximumProjectListBytes, projectFolderCheckReuseMs } from "./known-projects.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -46,7 +46,7 @@ function projectIdFor(root: string): string {
 }
 
 function projectAt(root: string): Project {
-  return { id: projectIdFor(root), machineId: machine.id, name: root.split("/").at(-1)!, path: root, branch: "main" }
+  return { id: projectIdFor(root), machineId: machine.id, name: basename(root), path: root, branch: "main" }
 }
 
 function sessionIn(project: Project, index: number, updatedAt = "2026-11-01T10:00:00.000Z"): WorkspaceSnapshot["sessions"][number] {
@@ -89,7 +89,7 @@ async function scratchDirectory(): Promise<string> {
 // with a repository inspection that takes any path as the repository root.
 async function openDaemon(databasePath: string, seed: WorkspaceSnapshot = createEmptyWorkspace(machine)) {
   const workspaceService = {
-    inspect: async (path: string) => ({ root: path, name: path.split("/").at(-1), branch: "main", head: "a".repeat(40) }),
+    inspect: async (path: string) => ({ root: path, name: basename(path), branch: "main", head: "a".repeat(40) }),
   } as unknown as WorkspaceService
   const errorSink = vi.fn()
   const daemon = new DomovoiDaemon({
@@ -165,6 +165,76 @@ describe("the project list's live entries", () => {
     expect(projects[1]!.savedAt).toBe("2026-10-01T00:00:00.000Z")
     expect(projects[0]!.savedAt).toBe("2026-11-06T00:00:00.000Z")
     expect(omittedProjects).toBe(0)
+  })
+})
+
+// Security review on #907 (P2): a watching client calling project.list over
+// and over must not hold up the calls that change state, and a folder on a
+// hung mount must not pile up checks.
+describe("the project list's cost", () => {
+  it("answers while a state-changing call holds the mutation queue", async () => {
+    const scratch = await scratchDirectory()
+    let release: () => void = () => {}
+    const held = new Promise<void>((resolve) => { release = resolve })
+    const workspaceService = {
+      inspect: async (path: string) => {
+        await held
+        return { root: path, name: basename(path), branch: "main", head: "a".repeat(40) }
+      },
+    } as unknown as WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(join(scratch, "state.sqlite"), createEmptyWorkspace(machine)),
+      workspaceService,
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+      errorSink: vi.fn(),
+    })
+    daemons.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    sockets.push(socket)
+    await once(socket, "open")
+    const replies = new Map<number, Record<string, unknown>>()
+    socket.on("message", (data) => {
+      const message = JSON.parse(String(data)) as Record<string, unknown>
+      if (typeof message.id === "number") replies.set(message.id, message)
+    })
+    const send = (id: number, method: string, params: Record<string, unknown>) => socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+    send(1, "system.hello", { client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken })
+    await vi.waitFor(() => expect(replies.has(1)).toBe(true))
+    try {
+      send(2, "project.open", { path: join(scratch, "repo"), client: "desktop" })
+      send(3, "project.list", {})
+      await vi.waitFor(() => expect(replies.get(3)?.result).toBeDefined())
+      expect(replies.has(2)).toBe(false)
+    } finally {
+      release()
+    }
+    await vi.waitFor(() => expect(replies.has(2)).toBe(true))
+  })
+
+  it("checks each folder once at a time and reuses a recent answer", async () => {
+    let calls = 0
+    let finish: () => void = () => {}
+    const stat = vi.fn(() => {
+      calls += 1
+      return new Promise<{ isDirectory: () => boolean }>((resolve) => { finish = () => resolve({ isDirectory: () => true }) })
+    })
+    let now = 0
+    const probe = createProjectFolderProbe({ stat, now: () => now })
+    const first = probe("/code/slow")
+    const second = probe("/code/slow")
+    expect(calls).toBe(1)
+    finish()
+    expect(await first).toBe("present")
+    expect(await second).toBe("present")
+    expect(await probe("/code/slow")).toBe("present")
+    expect(calls).toBe(1)
+    now += projectFolderCheckReuseMs + 1
+    const third = probe("/code/slow")
+    expect(calls).toBe(2)
+    finish()
+    expect(await third).toBe("present")
   })
 })
 

@@ -99,15 +99,20 @@ function newestFirst(left: KnownProjectSession, right: KnownProjectSession): num
 // How long project.list waits on one project folder before it says the
 // folder could not be read. A path on an unreachable network mount can hang.
 export const projectFolderCheckTimeoutMs = 2_000
+// How long one folder's answer is reused. A client may ask for the list over
+// and over; the folders are checked at most this often.
+export const projectFolderCheckReuseMs = 5_000
+
+type FolderStat = (path: string) => Promise<{ isDirectory(): boolean }>
 
 // Whether a known project's folder is still there. Gone, or replaced by a
 // file, is missing; any other answer, a permission refusal or a check that
 // does not return in time, is unreadable, because the daemon could not tell.
-export async function projectFolderState(path: string): Promise<KnownProject["folder"]> {
+async function projectFolderState(path: string, check: FolderStat): Promise<KnownProject["folder"]> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     const entry = await Promise.race([
-      stat(path),
+      check(path),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => reject(new Error("Project folder check timed out")), projectFolderCheckTimeoutMs)
       }),
@@ -121,13 +126,38 @@ export async function projectFolderState(path: string): Promise<KnownProject["fo
   }
 }
 
+// One check per folder at a time (security review on #907): a request that
+// arrives while a folder is being checked, or within a few seconds of an
+// answer, gets that answer. A check that hangs on a dead mount is therefore
+// started once, not once per request.
+export function createProjectFolderProbe(options: { stat?: FolderStat; now?: () => number } = {}): (path: string) => Promise<KnownProject["folder"]> {
+  const check = options.stat ?? stat
+  const now = options.now ?? Date.now
+  const answers = new Map<string, { at: number; answer: Promise<KnownProject["folder"]> }>()
+  return (path) => {
+    const held = answers.get(path)
+    if (held && now() - held.at <= projectFolderCheckReuseMs) return held.answer
+    const answer = projectFolderState(path, check)
+    const entry = { at: now(), answer }
+    answers.set(path, entry)
+    // The reuse window starts when the answer arrives, so a slow check is
+    // never followed at once by another.
+    void answer.then(() => { if (answers.get(path) === entry) entry.at = now() })
+    if (answers.size > 256) {
+      for (const [key, value] of answers) if (now() - value.at > projectFolderCheckReuseMs) answers.delete(key)
+    }
+    return answer
+  }
+}
+
 export async function knownProjectList(
   snapshot: WorkspaceSnapshot,
   listing: SavedProjectListing,
+  folderOf: (path: string) => Promise<KnownProject["folder"]>,
 ): Promise<RpcResult<"project.list">> {
   const { projects, omittedProjects } = knownProjectEntries(snapshot, listing)
   return {
-    projects: await Promise.all(projects.map(async (known) => ({ ...known, folder: await projectFolderState(known.project.path) }))),
+    projects: await Promise.all(projects.map(async (known) => ({ ...known, folder: await folderOf(known.project.path) }))),
     ...(omittedProjects > 0 ? { omittedProjects } : {}),
   }
 }
