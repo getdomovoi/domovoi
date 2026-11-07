@@ -49,7 +49,47 @@ export function knownProjectEntries(
   })
   entries.push(...listing.projects.filter((known) => !liveIds.has(known.project.id)))
   const listed = entries.slice(0, maximumKnownProjects)
-  return { projects: listed, omittedProjects: entries.length - listed.length }
+  const budgeted = withinByteBudget(listed)
+  return { projects: budgeted.projects, omittedProjects: entries.length - listed.length + budgeted.omittedProjects }
+}
+
+// The most the serialized list may take. The daemon closes a socket whose
+// unsent frames pass 1 MiB (rpcWebSocketHighWaterBytes), so one answer stays
+// well under it with room for whatever else is queued.
+export const maximumProjectListBytes = 512 * 1024
+
+// Spends the byte budget in list order: each project's own fields first, at
+// their longest (an unreadable folder, a seven-digit omitted count), then its
+// sessions newest first while they fit. What does not fit is counted, never
+// dropped silently; a project whose own fields no longer fit is left out
+// whole and counted with the omitted projects.
+function withinByteBudget(entries: readonly SavedProject[]): { projects: SavedProject[]; omittedProjects: number } {
+  let used = Buffer.byteLength(JSON.stringify({ projects: [], omittedProjects: 1_000_000 }))
+  const projects: SavedProject[] = []
+  let omittedProjects = 0
+  for (const entry of entries) {
+    const fields = Buffer.byteLength(JSON.stringify({ ...entry, folder: "unreadable", sessions: [], omittedSessions: 1_000_000 })) + 1
+    if (used + fields > maximumProjectListBytes) {
+      omittedProjects += 1
+      continue
+    }
+    used += fields
+    const sessions: KnownProjectSession[] = []
+    for (const session of entry.sessions) {
+      const bytes = Buffer.byteLength(JSON.stringify(session)) + 1
+      if (used + bytes > maximumProjectListBytes) break
+      used += bytes
+      sessions.push(session)
+    }
+    const omittedSessions = (entry.omittedSessions ?? 0) + entry.sessions.length - sessions.length
+    projects.push({
+      project: entry.project,
+      savedAt: entry.savedAt,
+      sessions,
+      ...(omittedSessions > 0 ? { omittedSessions } : {}),
+    })
+  }
+  return { projects, omittedProjects }
 }
 
 function newestFirst(left: KnownProjectSession, right: KnownProjectSession): number {

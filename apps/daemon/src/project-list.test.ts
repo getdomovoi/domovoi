@@ -19,7 +19,7 @@ import {
 import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { knownProjectEntries } from "./known-projects.js"
+import { knownProjectEntries, maximumProjectListBytes } from "./known-projects.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -168,6 +168,38 @@ describe("the project list's live entries", () => {
   })
 })
 
+// The daemon closes a socket whose unsent frames pass 1 MiB, so the list is
+// cut to a byte budget as well as to its counts, and says what it left out.
+describe("the project list's size", () => {
+  it("stays within its byte budget with long titles in every project, counting what it left out", () => {
+    const projects = Array.from({ length: 12 }, (_, index) => {
+      const project = projectAt(`/code/project-${index}`)
+      return {
+        project,
+        savedAt: "2026-11-01T00:00:00.000Z",
+        sessions: Array.from({ length: maximumKnownProjectSessions }, (_, session) => ({
+          id: `session-${index}-${session}`,
+          title: "t".repeat(400),
+          state: "idle" as const,
+          updatedAt: "2026-11-01T00:00:00.000Z",
+        })),
+      }
+    })
+    const { projects: listed, omittedProjects } = knownProjectEntries(createEmptyWorkspace(machine), { projects, unreadable: [] })
+    const result = projectListResultSchema.parse({
+      projects: listed.map((known) => ({ ...known, folder: "unreadable" })),
+      ...(omittedProjects > 0 ? { omittedProjects } : {}),
+    })
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(maximumProjectListBytes)
+    const kept = listed.reduce((count, known) => count + known.sessions.length, 0)
+    const left = listed.reduce((count, known) => count + (known.omittedSessions ?? 0), 0)
+    expect(kept).toBeGreaterThan(0)
+    expect(kept + left + omittedProjects * maximumKnownProjectSessions).toBe(12 * maximumKnownProjectSessions)
+    // The newest project keeps the most: the budget is spent in list order.
+    expect(listed[0]!.sessions.length).toBe(maximumKnownProjectSessions)
+  })
+})
+
 describe("project.list", () => {
   it("keeps the project that was open listed with its sessions after another project opens", async () => {
     const scratch = await scratchDirectory()
@@ -258,12 +290,18 @@ describe("project.list", () => {
     insertProjectRow(databasePath, "project-damaged", "{not json", "2026-11-06T00:00:00.000Z")
     const other = projectAt(join(scratch, "other"))
     insertProjectRow(databasePath, "project-mislabelled", projectRow(other, []), "2026-11-06T00:00:00.000Z")
+    // Valid JSON whose project or sessions is a string, not an object or an
+    // array: SQLite hands a string back unquoted.
+    insertProjectRow(databasePath, "project-string", JSON.stringify({ project: "broken", sessions: [] }), "2026-11-06T00:00:00.000Z")
+    insertProjectRow(databasePath, "project-string-sessions", JSON.stringify({ project: projectAt(join(scratch, "string-sessions")), sessions: "broken" }), "2026-11-06T00:00:00.000Z")
     const { listProjects, errorSink } = await openDaemon(databasePath)
     expect((await listProjects()).projects.map((known) => known.project.id)).toEqual([kept.id])
     const reported = errorSink.mock.calls.map(([report]) => (report as { context: string }).context)
     expect(reported).toEqual(expect.arrayContaining([
       "Domovoi could not read the saved project project-damaged for the project list",
       "Domovoi could not read the saved project project-mislabelled for the project list",
+      "Domovoi could not read the saved project project-string for the project list",
+      "Domovoi could not read the saved project project-string-sessions for the project list",
     ]))
   })
 

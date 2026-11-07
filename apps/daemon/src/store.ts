@@ -1545,16 +1545,26 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   // project's thread is never parsed here. A row that does not read as one
   // project's own state is named in unreadable and left out.
   listProjects(sessionLimit: number): SavedProjectListing {
+    // json_extract hands back a string scalar unquoted, so only an object
+    // project and an array of sessions are taken as JSON text.
     const rows = this.#database.prepare(`
       SELECT project_id, updated_at,
-        CASE WHEN json_valid(state) THEN json_extract(state, '$.project') END AS project,
-        CASE WHEN json_valid(state) THEN json_extract(state, '$.sessions') END AS sessions
+        CASE WHEN json_valid(state) AND json_type(state, '$.project') = 'object'
+          THEN json_extract(state, '$.project') END AS project,
+        CASE WHEN json_valid(state) AND json_type(state, '$.sessions') = 'array'
+          THEN json_extract(state, '$.sessions') END AS sessions
       FROM workspace_projects
       ORDER BY updated_at DESC, project_id
     `).all() as Array<{ project_id: string; updated_at: string; project: string | null; sessions: string | null }>
     const listing: SavedProjectListing = { projects: [], unreadable: [] }
     for (const row of rows) {
-      const saved = savedProjectListing(row, sessionLimit)
+      let saved: SavedProject | undefined
+      try {
+        saved = savedProjectListing(row, sessionLimit)
+      } catch {
+        // One row that does not parse costs that row, never the list.
+        saved = undefined
+      }
       if (saved) listing.projects.push(saved)
       else listing.unreadable.push(row.project_id)
     }
