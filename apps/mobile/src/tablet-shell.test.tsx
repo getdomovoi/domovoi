@@ -654,3 +654,20 @@ describe("tablet project sections", () => {
     expect(pane.queryByRole("button", { name: "Project B" })).toBeNull()
   })
 })
+
+
+describe("tablet session project facts", () => {
+  it("names B in the thread and Always here gate while A is focused", async () => {
+    const { props, approval } = await draw("normal", "full", (snapshot) => {
+      const b = { ...snapshot.project!, id: "project-b", name: "Project B", branch: "branch-b" }
+      snapshot.projects = [snapshot.project!, b]
+      snapshot.sessions.find((s) => s.id === snapshot.approvals[0]!.sessionId)!.projectId = b.id
+    })
+    expect(screen.getByText("Project B · branch-b · billing")).toBeOnTheScreen()
+    const thread = within(screen.getByTestId("tablet-thread"))
+    expect(thread.getByText("Project")).toBeOnTheScreen()
+    expect(thread.getByText("Project B")).toBeOnTheScreen()
+    await fireEvent.press(thread.getByRole("button", { name: "Always here" }))
+    expect(props.onResolve).toHaveBeenCalledWith(approval.id, "always-project", approval.revision)
+  })
+})

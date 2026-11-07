@@ -237,7 +237,8 @@ export function App() {
   // skills alone. An empty set is a deliberate "no skills this turn". The two
   // are different requests and the daemon treats them differently.
   const [chosenSkills, setChosenSkills] = useState<ReadonlySet<string> | undefined>(undefined)
-  const [skillCatalog, setSkillCatalog] = useState<SkillSummary[] | undefined>(undefined)
+  const [heldSkillCatalog, setSkillCatalog] = useState<{ projectId: string, entries: SkillSummary[] } | undefined>(undefined)
+  const skillsRead = useRef(0)
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillProblem, setSkillProblem] = useState("")
@@ -318,6 +319,12 @@ export function App() {
   const waiting = snapshot ? waitingCount(snapshot) : 0
   const projects = snapshot ? workspaceProjects(snapshot) : []
   const freshReadiness = snapshot ? freshSessionReadiness(snapshot, freshOpen ? freshProjectId : snapshot.project?.id) : undefined
+  const viewedSessionId = snapshot?.approvals.find((approval) => approval.id === openApprovalId)?.sessionId
+    ?? openSessionId ?? (tablet && tab === "sessions" ? snapshot?.activeSessionId ?? undefined : undefined)
+  const sessionProjectId = snapshot?.sessions.find((session) => session.id === viewedSessionId)?.projectId
+  const sessionProject = projects.find((project) => project.id === sessionProjectId)
+  // A catalog from another project is never rendered, even before the reset effect.
+  const skillCatalog = heldSkillCatalog?.projectId === sessionProjectId && status === "open" ? heldSkillCatalog?.entries : undefined
   const freshProject = projects.find((project) => project.id === freshProjectId)
   const beginFresh = () => {
     if (!snapshot) return
@@ -460,9 +467,9 @@ export function App() {
     () => selectableTurnSkills(
       skillCatalog ?? [],
       snapshot?.skillEnablements ?? [],
-      snapshot?.project?.id,
+      sessionProjectId,
     ),
-    [skillCatalog, snapshot],
+    [skillCatalog, snapshot, sessionProjectId],
   )
 
   const skillDescriptions = useMemo(
@@ -471,33 +478,38 @@ export function App() {
   )
 
   const loadSkills = useCallback(async () => {
+    if (!sessionProjectId) return
+    const read = ++skillsRead.current
     setSkillsLoading(true)
     setSkillProblem("")
     try {
-      setSkillCatalog(skillSummariesSchema.parse(await call("skill.list", {})))
+      const entries = skillSummariesSchema.parse(await call("skill.list", { projectId: sessionProjectId }))
+      if (read === skillsRead.current) setSkillCatalog({ projectId: sessionProjectId, entries })
     } catch (cause) {
-      setSkillProblem(cause instanceof Error ? cause.message : "The skill catalog could not be read")
+      if (read === skillsRead.current) setSkillProblem(cause instanceof Error ? cause.message : "The skill catalog could not be read")
     } finally {
-      setSkillsLoading(false)
+      if (read === skillsRead.current) setSkillsLoading(false)
     }
-  }, [call])
+  }, [call, sessionProjectId])
 
   const loadFleet = useCallback(() => fleetLoads.load(call), [call, fleetLoads])
 
-  // Ruling Q211: the Tools screen reads what the connected daemon's open
-  // repository holds back. It is asked for when the screen opens, again when
+  // Ruling Q211: the Tools screen reads what the chosen repository holds back. It is asked for when the screen opens, again when
   // the connection comes back, and on request, because a trust granted on
   // desktop or web is not pushed to the phone. Each read retires the one
   // before it, so a late answer cannot replace a newer one or reach a screen
   // that has closed.
   const [toolsOpen, setToolsOpen] = useState(false)
+  // A fresh-session refusal has a chosen project but no session yet.
+  const [toolsProjectOverride, setToolsProjectOverride] = useState<string | undefined>(undefined)
+  const toolsProjectId = toolsProjectOverride ?? sessionProjectId ?? snapshot?.project?.id
   const [toolsLoad, setToolsLoad] = useState<ToolsLoad>({ state: "loading" })
   const toolsRead = useRef(0)
   const loadTools = useCallback(async () => {
     const read = ++toolsRead.current
     setToolsLoad({ state: "loading" })
     try {
-      const answer = toolInventorySchema.safeParse(await call("tool.inventory", {}))
+      const answer = toolInventorySchema.safeParse(await call("tool.inventory", toolsProjectId ? { projectId: toolsProjectId } : {}))
       if (read !== toolsRead.current) return
       setToolsLoad(answer.success
         ? { state: "loaded", inventory: answer.data }
@@ -506,13 +518,14 @@ export function App() {
       if (read !== toolsRead.current) return
       setToolsLoad({ state: "error", message: cause instanceof Error ? cause.message : "The daemon did not answer." })
     }
-  }, [call])
+  }, [call, toolsProjectId])
   // Closing drops what was read, so Tools opened again, while disconnected or
   // on a restarted daemon, shows nothing read rather than an old inventory.
   const closeTools = useCallback(() => {
     toolsRead.current += 1
     setToolsLoad({ state: "loading" })
     setToolsOpen(false)
+    setToolsProjectOverride(undefined)
   }, [])
 
   // Phone v2 frame 04: the open session's terminals, read and never typed
@@ -673,13 +686,12 @@ export function App() {
   // Whether what the terminal views say is this connection's word.
   const terminalsConfirmed = status === "open" && terminalsListed
 
-  // The open project decides what the daemon reads. A project opened on any
-  // client while the screen is up is read again, so the screen never shows
-  // the last project's entries and trust as the open one's.
-  const openProjectId = snapshot?.project?.id
+  // Session views read their own project. The machine's Tools entry falls
+  // back to focus when no session or refusal supplies a project.
   useEffect(() => {
     if (toolsOpen && status === "open") void loadTools()
-  }, [loadTools, openProjectId, status, toolsOpen])
+    return () => { toolsRead.current += 1 }
+  }, [loadTools, status, toolsOpen])
 
   // Enablements ride the snapshot, so the phone is told the moment one changes
   // and never has to poll. What it cannot learn that way is the name of a skill
@@ -689,25 +701,30 @@ export function App() {
     () => enabledSkillsMissingFromCatalog(
       skillCatalog ?? [],
       snapshot?.skillEnablements ?? [],
-      snapshot?.project?.id,
+      sessionProjectId,
     ).length > 0,
-    [skillCatalog, snapshot],
+    [skillCatalog, snapshot, sessionProjectId],
   )
 
-  // The catalog is asked for when the picker is opened, for the same reason the
-  // fleet is: a phone should not hold what it is not showing. A reconnect drops
-  // what was read on the old connection, because a daemon that restarted may be
-  // serving a different project entirely.
+  // Invalidate pending reads as well as rendered entries when their project
+  // or connection changes. A late answer cannot repopulate another catalog.
   useEffect(() => {
-    if (status === "open") return
+    skillsRead.current += 1
     setSkillCatalog(undefined)
-  }, [status])
+    setSkillsLoading(false)
+    setSkillProblem("")
+    return () => { skillsRead.current += 1 }
+  }, [status, sessionProjectId])
 
   useEffect(() => {
-    if (!skillsOpen || status !== "open" || skillsLoading) return
+    setChosenSkills(undefined)
+  }, [sessionProjectId])
+
+  useEffect(() => {
+    if (!sessionProjectId || !skillsOpen || status !== "open" || skillsLoading) return
     if (skillCatalog && !catalogIncomplete) return
     void loadSkills()
-  }, [catalogIncomplete, loadSkills, skillCatalog, skillsLoading, skillsOpen, status])
+  }, [catalogIncomplete, loadSkills, skillCatalog, skillsLoading, skillsOpen, status, sessionProjectId])
 
   // The list is asked for when a tab that draws it is opened rather than
   // polled: Machines, and Sessions for its idle card's fleet rows and its
@@ -820,7 +837,7 @@ export function App() {
   // A start refused over a repository git filter reads as a refusal card with
   // the filters it names (Skills design step 16); any other failure keeps the
   // daemon's sentence.
-  const refusalOf = (cause: unknown) => phoneRefusalFrom(cause, snapshot?.project?.name ?? "this repository", snapshot?.machine.name ?? "the machine")
+  const refusalOf = (cause: unknown, projectId: string) => phoneRefusalFrom(cause, projects.find((project) => project.id === projectId)?.name ?? "this repository", snapshot?.machine.name ?? "the machine")
   const startLike = async (sessionId: string, prompt: string, mode: PermissionMode) => {
     const like = snapshot?.sessions.find((session) => session.id === sessionId)
     if (!like) return
@@ -830,6 +847,7 @@ export function App() {
     try {
       const request = startLikeRequest(like, prompt, mode)
       const created = workspaceSnapshotSchema.parse(await mutate("session.create", {
+        projectId: like.projectId,
         title: request.title,
         runtime: request.runtime,
         client,
@@ -844,7 +862,7 @@ export function App() {
       setSendProblem(startedId, "")
       dropQueue()
     } catch (cause) {
-      setStartRefusal(refusalOf(cause))
+      setStartRefusal(refusalOf(cause, like.projectId))
       setStartProblem(cause instanceof Error ? cause.message : "The session was not started")
     } finally {
       setStarting(false)
@@ -880,6 +898,7 @@ export function App() {
 
   // See what is held back: the refusal's way to the phone Tools screen.
   const seeHeldBack = () => {
+    setToolsProjectOverride(freshProjectId)
     setFreshOpen(false)
     setToolsOpen(true)
   }
@@ -1028,6 +1047,7 @@ export function App() {
           ) : (
             <ApprovalScreen
               approval={openApproval}
+              project={sessionProject?.name}
               sessionTitle={snapshot?.sessions.find((session) => session.id === openApproval.sessionId)?.title}
               plans={snapshot?.workingPlans}
               viewer={{ client, deviceId }}

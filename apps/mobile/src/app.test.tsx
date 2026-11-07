@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals"
-import { demoWorkspace, maximumReviewAnnotations, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, maximumReviewAnnotations, type SkillSummary, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { act, fireEvent, render, screen } from "@testing-library/react-native"
 import { AppState, type AppStateStatus } from "react-native"
 
@@ -878,7 +878,7 @@ describe("App", () => {
 
     await fireEvent.press(screen.getByRole("button", { name: `Tools on ${self.name}` }))
     await settle()
-    expect(socket.requests("tool.inventory").map((frame) => frame.params)).toEqual([{}])
+    expect(socket.requests("tool.inventory").map((frame) => frame.params)).toEqual([{ projectId: demoWorkspace.project!.id }])
     expect(screen.getByText(`Reading the agents' files on ${self.name}.`)).toBeOnTheScreen()
 
     await act(async () => {
@@ -1036,7 +1036,7 @@ describe("App", () => {
 
     await fireEvent.press(screen.getByRole("button", { name: "See what is held back" }))
     await settle()
-    expect(socket.requests("tool.inventory").map((frame) => frame.params)).toEqual([{}])
+    expect(socket.requests("tool.inventory").map((frame) => frame.params)).toEqual([{ projectId: demoWorkspace.project!.id }])
     expect(screen.getByText(`Reading the agents' files on ${snapshot.machine.name}.`)).toBeOnTheScreen()
     expect(socket.sent.filter((frame) => frame.method.startsWith("repository."))).toEqual([])
   })
@@ -1676,5 +1676,112 @@ describe("fresh sessions across projects", () => {
       expect(socket.requests("project.close")).toHaveLength(0)
       expect(socket.requests("project.list")).toHaveLength(0)
     } finally { dimensions.mockRestore() }
+  })
+})
+
+
+function twoProjects(): WorkspaceSnapshot {
+  const snapshot = workspace()
+  const b = { ...snapshot.project!, id: "project-b", name: "Project B", branch: "branch-b" }
+  snapshot.projects = [snapshot.project!, b]
+  snapshot.sessions.find((s) => s.id === audit.id)!.projectId = b.id
+  for (const session of snapshot.sessions) {
+    session.workspacePath = `/worktrees/${session.id}`
+    session.providerThreadId = `thread-${session.id}`
+  }
+  return snapshot
+}
+
+const projectSkill: SkillSummary = {
+  id: "skill-aaaaaaaaaaaa", name: "b-skill", description: "Project instructions", path: "/repo-b/SKILL.md",
+  scope: "project", source: "agents", manifest: { version: 1, capabilities: ["filesystem.read"] },
+  contentDigest: `sha256:${"a".repeat(64)}`, signature: { state: "unsigned" }, trust: { state: "untrusted", reason: "unsigned" },
+}
+
+function enableProjectSkill(snapshot: WorkspaceSnapshot, projectId: string) {
+  snapshot.skillEnablements = [{
+    projectId, skillId: projectSkill.id, enabled: true, contentDigest: projectSkill.contentDigest,
+    manifest: projectSkill.manifest, reviewedAt: "2026-09-03T10:00:00.000Z", reviewedBy: { client: "phone" },
+  }]
+}
+
+describe("session project facts", () => {
+  it("requests and offers the session project's skills while another project is focused", async () => {
+    const snapshot = twoProjects()
+    enableProjectSkill(snapshot, "project-b")
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    await fireEvent(screen.getByLabelText("Reply to this session"), "focus")
+    await fireEvent.press(screen.getByRole("button", { name: /Skills for this turn/ }))
+    expect(socket.requests("skill.list")[0]?.params).toEqual({ projectId: "project-b" })
+    await act(async () => { socket.answer("skill.list", [projectSkill]) })
+    expect(screen.getByRole("checkbox", { name: projectSkill.name })).toBeOnTheScreen()
+  })
+
+  it("reloads missing enabled skills for the session project", async () => {
+    const snapshot = twoProjects()
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    await fireEvent(screen.getByLabelText("Reply to this session"), "focus")
+    await fireEvent.press(screen.getByRole("button", { name: /Skills for this turn/ }))
+    await act(async () => { socket.answer("skill.list", []) })
+    enableProjectSkill(snapshot, "project-b")
+    await act(async () => { socket.push("workspace.changed", snapshot) })
+    await settle()
+    expect(socket.requests("skill.list")).toHaveLength(2)
+    expect(socket.requests("skill.list")[1]?.params).toEqual({ projectId: "project-b" })
+  })
+
+  it("retires a previous project's pending catalog after switching sessions", async () => {
+    const snapshot = twoProjects()
+    snapshot.approvals = []
+    enableProjectSkill(snapshot, snapshot.project!.id)
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    await fireEvent(screen.getByLabelText("Reply to this session"), "focus")
+    await fireEvent.press(screen.getByRole("button", { name: /Skills for this turn/ }))
+    await fireEvent.press(screen.getByRole("button", { name: "Done" }))
+    await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    await fireEvent(screen.getByLabelText("Reply to this session"), "focus")
+    await fireEvent.press(screen.getByRole("button", { name: /Skills for this turn/ }))
+    expect(socket.requests("skill.list")).toHaveLength(2)
+    expect(socket.requests("skill.list")[1]?.params).toEqual({ projectId: snapshot.project!.id })
+    await act(async () => { socket.answer("skill.list", [{ ...projectSkill, name: "a-skill" }], 1) })
+    await act(async () => { socket.answer("skill.list", [projectSkill], 0) })
+    expect(screen.getByRole("checkbox", { name: "a-skill" })).toBeOnTheScreen()
+    expect(screen.queryByRole("checkbox", { name: "b-skill" })).toBeNull()
+  })
+
+  it("names the approval's session project even when the focused project differs", async () => {
+    const snapshot = twoProjects()
+    snapshot.sessions.find((s) => s.id === billing.id)!.projectId = "project-b"
+    await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    expect(screen.getByText("Project")).toBeOnTheScreen()
+    expect(screen.getByText("Project B")).toBeOnTheScreen()
+    expect(screen.queryByText(snapshot.project!.name)).toBeNull()
+  })
+
+  it("creates like the session in B and reads B's tools after its refusal", async () => {
+    const snapshot = twoProjects()
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    await fireEvent.press(screen.getByRole("button", { name: "Start another like this one" }))
+    await fireEvent.changeText(screen.getByLabelText("What to do"), "Stay in B")
+    await fireEvent.press(screen.getByRole("button", { name: "Start" }))
+    const create = socket.requests("session.create")[0]!
+    expect(create.params).toMatchObject({ projectId: "project-b" })
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: create.id, error: {
+        code: -32020, message: "Filter blocked", data: {
+          kind: "repository-git-filter", projectId: "project-b", configDigest: `sha256:${"a".repeat(64)}`,
+          trust: { state: "untrusted", reason: "not-trusted" }, drivers: [{ name: "sops", scope: "local" }], omittedDrivers: 0,
+        },
+      } }) })
+    })
+    expect(screen.getByText(`Checking out Project B would run the sops filter driver, which is not trusted on ${snapshot.machine.name}.`)).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("button", { name: "See what is held back" }))
+    expect(socket.requests("tool.inventory")[0]?.params).toEqual({ projectId: "project-b" })
   })
 })

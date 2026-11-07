@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react"
 import { Modal, Pressable, TextInput, View } from "react-native"
-import type {
-  ApprovalDecision,
-  ApprovalRequest,
-  ClientAccess,
-  WorkspaceSnapshot,
+import {
+  workspaceProjects,
+  type ApprovalDecision,
+  type ApprovalRequest,
+  type ClientAccess,
+  type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
 import { artifactBody, artifactRows, diffLines } from "./artifact-rows"
@@ -142,7 +143,7 @@ export function TabletThreadHeader({ snapshot, detail, onOpenReview }: {
   const { resolved, setPreference } = useTheme()
   const session = snapshot.sessions.find((candidate) => candidate.id === detail.id)
   const worktree = session?.workspacePath?.split(/[\\/]/u).at(-1)
-  const project = snapshot.project
+  const project = workspaceProjects(snapshot).find((candidate) => candidate.id === session?.projectId)
   const files = changedFilesLabel(snapshot, detail.id)
   return (
     <View className="min-h-[60px] flex-row items-center gap-3 border-b border-border px-5 py-3">
@@ -165,8 +166,9 @@ export function TabletThreadHeader({ snapshot, detail, onOpenReview }: {
   )
 }
 
-export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = false, pending = false, problem = "" }: {
+export function TabletGateCard({ approval, project, onResolve, onDenyExplain, watching = false, pending = false, problem = "" }: {
   approval: ApprovalRequest
+  project?: string | undefined
   // The revision is the one this card shows, so the daemon can refuse an
   // Allow given to a card it has since rewritten.
   onResolve: (approvalId: string, decision: TabletDecision, revision: number) => void
@@ -196,7 +198,7 @@ export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = 
         </View>
       </View>
       <View className="flex-row flex-wrap border-t border-warn-border">
-        {approvalFacts(approval).map((fact) => (
+        {approvalFacts(approval, project).map((fact) => (
           <View key={fact.key} className="w-1/2 border-b border-warn-border px-4 py-3">
             <Text variant="label" className="text-warn-dim">{fact.key}</Text>
             <Text variant="machine" className="mt-1 text-warn-fg">{fact.value}</Text>
@@ -337,6 +339,7 @@ export function TabletThread({ snapshot, detail, approval, access, deciding, dec
         ? (
           <TabletGateCard
             approval={approval}
+            project={workspaceProjects(snapshot).find((project) => project.id === snapshot.sessions.find((session) => session.id === approval.sessionId)?.projectId)?.name}
             onResolve={onResolve}
             onDenyExplain={onDenyExplain}
             watching={access !== "full"}
