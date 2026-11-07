@@ -10,6 +10,8 @@ import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import type { WorkspaceService } from "./workspace.js"
 import type { ArtifactFileChange } from "./artifact-watcher.js"
+import { UsageLedger } from "./usage.js"
+import { resolveExecution } from "./execution-resolution.js"
 import type { TerminalProcess } from "./terminal.js"
 
 const runtime = { provider: "claude-code", model: "sonnet", reasoning: "high", permissionMode: "build", auto: false }
@@ -21,8 +23,8 @@ function deferred() {
   return { promise, resolve }
 }
 
-async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "project-close-"))
+async function fixture(options: { root?: string; initial?: WorkspaceSnapshot } = {}) {
+  const root = options.root ?? await mkdtemp(join(tmpdir(), "project-close-"))
   const listeners = new Set<(event: AgentEvent) => void>()
   let thread = 0
   let turn = 0
@@ -54,9 +56,10 @@ async function fixture() {
   } as unknown as WorkspaceService
   const watchers: Array<{ root: string; stop: ReturnType<typeof vi.fn>; onChange: (change: ArtifactFileChange) => void }> = []
   const terminals: Array<TerminalProcess & { kill: ReturnType<typeof vi.fn>; output: (text: string) => void }> = []
-  const store = new SqliteWorkspaceStore(join(root, "state.sqlite"), createEmptyWorkspace(demoWorkspace.machine))
+  const store = new SqliteWorkspaceStore(join(root, "state.sqlite"), options.initial ?? createEmptyWorkspace(demoWorkspace.machine))
   const daemon = new DomovoiDaemon({ port: 0, store, profileDirectory: root, projectDirectoryExists,
     agents: { "claude-code": agent }, workspaceService, agentTimeoutMs: 500,
+    usageLedger: new UsageLedger(join(root, "usage.sqlite")),
     terminalService: { spawn: () => {
       const exits = new Set<(event: { exitCode: number; signal?: number }) => void>()
       const outputs = new Set<(text: string) => void>()
@@ -113,7 +116,7 @@ async function fixture() {
     expect(first.error.code).toBe(-32022)
     return rpc<RpcResult<"project.close">>("project.close", { projectId, client: "desktop", confirmation: first.error.data })
   }
-  return { rpc, open, close, store, stopThread, startTurn, startThread, agent, inspect, projectDirectoryExists, watchers, terminals,
+  return { rpc, open, close, store, root, daemon, socket, stopThread, startTurn, startThread, agent, inspect, projectDirectoryExists, watchers, terminals,
     emit: (event: AgentEvent) => { for (const listener of listeners) listener(event) } }
 }
 
@@ -309,4 +312,136 @@ it("rejects callbacks from a stopped watcher after reopen while accepting the re
   expect((await rpc("workspace.get")).result!.artifacts).toEqual([])
   watchers.at(-1)!.onChange({ ...change, title: "current plan", content: "current" })
   await expect.poll(async () => (await rpc("workspace.get")).result!.artifacts.map((artifact) => artifact.title)).toEqual(["current plan"])
+})
+
+it("waits for an emergency before claiming close and renews the confirmation", async () => {
+  const { rpc, open, stopThread, agent } = await fixture()
+  const a = await open("a")
+  await rpc("session.send", { sessionId: a.sessionId, prompt: "work", client: "desktop" })
+  const initial = await rpc("project.close", { projectId: a.projectId, client: "desktop" })
+  const entered = deferred()
+  const stopped = deferred()
+  vi.mocked(agent.interruptTurn).mockImplementationOnce(async () => { entered.resolve(); await stopped.promise })
+  const emergency = rpc("system.emergencyStop", { client: "desktop" })
+  await entered.promise
+  const closing = rpc("project.close", { projectId: a.projectId, client: "desktop", confirmation: initial.error!.data })
+  stopped.resolve()
+  expect((await emergency).error).toBeUndefined()
+  expect((await closing).error).toMatchObject({ code: -32022 })
+  expect(stopThread).not.toHaveBeenCalled()
+  expect((await rpc("workspace.get")).result!.project!.id).toBe(a.projectId)
+})
+
+it("preserves an emergency stop of B while A's atomic close write is in flight", async () => {
+  const { rpc, open, close, store, agent } = await fixture()
+  const a = await open("a")
+  const b = await open("b")
+  await rpc("session.send", { sessionId: b.sessionId, prompt: "work", client: "desktop" })
+  const entered = deferred()
+  const persist = deferred()
+  const save = store.saveProjectCloseAsync.bind(store)
+  vi.spyOn(store, "saveProjectCloseAsync").mockImplementationOnce(async (...args) => {
+    entered.resolve()
+    await persist.promise
+    await save(...args)
+  })
+  const closing = close(a.projectId)
+  await entered.promise
+  const emergency = rpc("system.emergencyStop", { client: "desktop" })
+  await expect.poll(() => vi.mocked(agent.interruptTurn).mock.calls.some(([id]) => id === b.threadId)).toBe(true)
+  persist.resolve()
+  expect((await closing).error).toBeUndefined()
+  expect((await emergency).error).toBeUndefined()
+  const live = workspaceSnapshotSchema.parse((await rpc("workspace.get")).result)
+  for (const snapshot of [live, store.load()]) {
+    expect(workspaceProjects(snapshot).map((project) => project.id)).toEqual([b.projectId])
+    expect(snapshot.sessions).toEqual([expect.objectContaining({ id: b.sessionId, state: "idle" })])
+    expect(snapshot.sessions[0]).not.toHaveProperty("activeTurnId")
+  }
+})
+
+it("keeps the close claim through a terminal wait and refuses queued creation in the closed project", async () => {
+  const { rpc, open, close, terminals, stopThread, startThread } = await fixture()
+  const a = await open("a")
+  await rpc("terminal.create", { terminalId: "a-terminal", sessionId: a.sessionId, cols: 80, rows: 24, client: "desktop", clientId: "close-client" })
+  const terminal = terminals[0]!
+  const finish = terminal.kill.getMockImplementation()! as () => void
+  const entered = deferred()
+  terminal.kill.mockImplementation(() => { entered.resolve() })
+  const closing = close(a.projectId)
+  await entered.promise
+  await expect.poll(() => stopThread.mock.calls.length).toBe(1)
+  expect((await rpc("system.emergencyStop", { client: "desktop" })).error).toBeUndefined()
+  const creation = rpc("session.create", { title: "late", projectId: a.projectId, runtime, client: "desktop" })
+  finish()
+  expect((await closing).error).toBeUndefined()
+  expect((await creation).error).toBeDefined()
+  expect(startThread).toHaveBeenCalledOnce()
+  expect(stopThread).toHaveBeenCalledOnce()
+})
+
+it("saves rules, expires approvals with an audit, and restores held sends and ended turns after restart", async () => {
+  const first = await fixture()
+  const a = await first.open("a")
+  const b = await first.open("b")
+  await first.close(a.projectId)
+  const saved = first.store.loadProject(a.projectId)!
+  const execution = await resolveExecution({ workspaceRoot: saved.sessions[0]!.workspacePath!, cwd: saved.sessions[0]!.workspacePath!, command: "echo rule" })
+  if (execution.state !== "resolved") throw new Error("Test rule must resolve")
+  saved.approvalRules = [{ id: "rule-kept", projectId: a.projectId, operation: "Test rule", command: "echo rule", status: "active", execution,
+    createdBy: "desktop", createdAt: new Date().toISOString(), useCount: 0 }]
+  first.store.saveProjectClose(first.store.load(), { ...createEmptyWorkspace(demoWorkspace.machine), ...saved })
+  await first.open("a", false)
+  await first.rpc("session.send", { sessionId: a.sessionId, prompt: "work", client: "desktop" })
+  await first.rpc("session.send", { sessionId: a.sessionId, prompt: "held", delivery: "next-turn-replace", client: "desktop" })
+  first.emit({ type: "approval-requested", threadId: a.threadId, requestId: 99, command: "rm important-file" })
+  await expect.poll(async () => (await first.rpc("workspace.get")).result!.approvals.length).toBe(1)
+  const approval = (await first.rpc("workspace.get")).result!.approvals[0]!
+  expect((await first.close(a.projectId)).error).toBeUndefined()
+  const audit = first.store.auditLog.query({ limit: 100 })
+  expect(audit.entries).toContainEqual(expect.objectContaining({ action: "approval.expired", target: approval.id, sessionId: a.sessionId, projectId: a.projectId, actor: { kind: "daemon", component: "project-close" } }))
+  expect(first.store.loadProject(a.projectId)!.approvalRules).toEqual(saved.approvalRules)
+  expect(first.store.loadProject(a.projectId)!.approvals).toEqual([])
+  first.socket.terminate()
+  await first.daemon.stop()
+  const restarted = await fixture({ root: first.root })
+  expect((await restarted.rpc("workspace.get")).result!.project!.id).toBe(b.projectId)
+  await restarted.open("a", false)
+  const reopened = (await restarted.rpc("workspace.get")).result!
+  expect(reopened.approvalRules).toEqual(saved.approvalRules)
+  expect(reopened.approvals).toEqual([])
+  expect(reopened.sessions.find((session) => session.id === a.sessionId)).toMatchObject({ state: "idle" })
+  expect(reopened.sessions.find((session) => session.id === a.sessionId)).not.toHaveProperty("activeTurnId")
+  expect(reopened.queuedSends).toContainEqual(expect.objectContaining({ sessionId: a.sessionId, state: "held" }))
+  expect(reopened.turns).toContainEqual(expect.objectContaining({ sessionId: a.sessionId, status: "interrupted", completedAt: expect.any(String) }))
+  expect(restarted.startThread).not.toHaveBeenCalled()
+  expect(restarted.startTurn).not.toHaveBeenCalled()
+})
+
+it("keeps unconfirmed fences through reopen but a new daemon clears only the in-memory fence", async () => {
+  const first = await fixture()
+  const a = await first.open("a")
+  first.stopThread.mockRejectedValue(new Error("old provider still alive"))
+  expect((await first.close(a.projectId)).result!.sessions).toEqual([{ sessionId: a.sessionId, outcome: "unconfirmed" }])
+  await first.open("a", false)
+  expect((await first.rpc("session.send", { sessionId: a.sessionId, prompt: "blocked", client: "desktop" })).error).toBeDefined()
+  first.socket.terminate()
+  await first.daemon.stop()
+  const restarted = await fixture({ root: first.root })
+  // Reconstruction does not ask the old adapter to prove that its process exited.
+  first.stopThread.mockClear()
+  expect((await restarted.rpc("session.send", { sessionId: a.sessionId, prompt: "explicit send", client: "desktop" })).error).toBeUndefined()
+  expect(restarted.startTurn).toHaveBeenCalledOnce()
+  expect(first.stopThread).not.toHaveBeenCalled()
+})
+
+it("preserves focus when closing an unfocused project immediately after reconstruction", async () => {
+  const first = await fixture()
+  const a = await first.open("a")
+  const b = await first.open("b")
+  await first.rpc("session.activate", { sessionId: a.sessionId, client: "desktop" })
+  first.socket.terminate()
+  await first.daemon.stop()
+  const restarted = await fixture({ root: first.root })
+  expect((await restarted.close(b.projectId)).result!.snapshot.project!.id).toBe(a.projectId)
 })
