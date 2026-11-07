@@ -44,7 +44,7 @@ afterEach(async () => {
   await Promise.all(daemons.splice(0).map((daemon) => daemon.stop()))
 })
 
-const projectId = "project-acme"
+const projectId = `project-${createHash("sha256").update("/code/acme").digest("hex").slice(0, 12)}`
 const digest = `sha256:${"a".repeat(64)}`
 const claude: Runtime = { provider: "claude-code", model: "sonnet", reasoning: "high", permissionMode: "build", auto: false }
 const codex: Runtime = { provider: "codex", model: "gpt-5.6-sol", reasoning: "high", permissionMode: "build", auto: false }
@@ -156,6 +156,7 @@ async function fixture(options: { agentTimeoutMs?: number; reportsTrust?: boolea
   const reportsTrust = options.reportsTrust ?? true
   const agents = { "claude-code": agentFor(claude, reportsTrust), codex: agentFor(codex, reportsTrust) }
   const errorSink = vi.fn()
+  const repositoryProviderConfig = vi.fn(async () => config)
   const store = new SqliteWorkspaceStore(":memory:", snapshot)
   const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0,
@@ -164,7 +165,7 @@ async function fixture(options: { agentTimeoutMs?: number; reportsTrust?: boolea
     agents,
     workspaceService,
     repositoryTrust,
-    repositoryProviderConfig: async () => config,
+    repositoryProviderConfig,
     errorSink,
     ...(options.agentTimeoutMs ? { agentTimeoutMs: options.agentTimeoutMs } : {}),
   })
@@ -200,7 +201,7 @@ async function fixture(options: { agentTimeoutMs?: number; reportsTrust?: boolea
   const notices = async (id: string) => (await live()).thread
     .filter((item) => item.sessionId === id && item.kind === "system")
     .map((item) => (item as { body: string }).body)
-  return { agents, grants, rpc, ok, revoke, sessionNamed, notices, errorSink, store, workspaceService }
+  return { agents, grants, rpc, ok, revoke, sessionNamed, notices, errorSink, store, workspaceService, repositoryProviderConfig }
 }
 
 const trustOf = (call: object | undefined) => (call as { repositoryTrust?: unknown } | undefined)?.repositoryTrust
@@ -264,6 +265,50 @@ describe("project close ordered with repository revoke", () => {
     const closed = await ok("project.close", { projectId, confirmation: (initial.error as { data: unknown }).data })
     expect(closed.result).toMatchObject({ sessions: expect.arrayContaining([{ sessionId: "session-restart", outcome: "unconfirmed" }]) })
     expect(agents.codex.stopThread.mock.calls).toEqual([["codex-started"], ["codex-started"]])
+    await ok("project.open", { path: "/code/acme" })
+    expect(await rpc("session.send", { sessionId: "session-restart", prompt: "still fenced", client: "desktop" }))
+      .toMatchObject({ error: { message: expect.stringContaining("requires recovery") } })
+    expect(agents["claude-code"].startTurn).not.toHaveBeenCalled()
+  })
+
+  it("stops a trusted provider creation that arrives after close and keeps failed cleanup fenced on reopen", async () => {
+    const { agents, grants, rpc, ok, sessionNamed } = await fixture({ agentTimeoutMs: 100 })
+    grants.set(projectId, grant(projectId))
+    const started = deferred()
+    const start = agents["claude-code"].startThread.getMockImplementation()!
+    agents["claude-code"].startThread.mockImplementationOnce(async (input) => { await started.promise; return start(input) })
+    expect(await rpc("session.restartProviderThread", { sessionId: "session-restart", client: "desktop" })).toHaveProperty("error")
+    const initial = await rpc("project.close", { projectId, client: "desktop" })
+    await ok("project.close", { projectId, confirmation: (initial.error as { data: unknown }).data })
+    agents["claude-code"].stopThread.mockRejectedValue(new Error("late provider still alive"))
+    started.resolve()
+    await waitForDaemon(() => expect(agents["claude-code"].stopThread).toHaveBeenCalledWith("claude-code-started"))
+    expect((await rpc("workspace.get", {})).result).toMatchObject({ project: null, sessions: [], approvals: [] })
+    await ok("project.open", { path: "/code/acme" })
+    agents["claude-code"].emit({ type: "approval-requested", threadId: "claude-code-started", requestId: 101, command: "echo late" })
+    agents["claude-code"].emit({ type: "text-delta", threadId: "claude-code-started", delta: "late creation output" })
+    expect(await rpc("session.restartProviderThread", { sessionId: "session-restart", client: "desktop" }))
+      .toMatchObject({ error: { message: expect.stringContaining("requires recovery") } })
+    expect(agents["claude-code"].startThread).toHaveBeenCalledOnce()
+    expect(await sessionNamed("session-restart")).not.toHaveProperty("providerThreadId")
+    const snapshot = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+    expect(snapshot.sessions).toHaveLength(4)
+    expect(snapshot.approvals).toEqual([])
+    expect(JSON.stringify(snapshot.thread)).not.toContain("late creation output")
+    expect(grants.get(projectId)).toEqual(grant(projectId))
+  })
+
+  it.each(["saved row", "repository config"] as const)("deletes an inactive project's grant even when its %s cannot be read", async (failure) => {
+    const { agents, grants, rpc, ok, store, repositoryProviderConfig } = await fixture()
+    grants.set(projectId, grant(projectId))
+    const initial = await rpc("project.close", { projectId, client: "desktop" })
+    await ok("project.close", { projectId, confirmation: (initial.error as { data: unknown }).data })
+    if (failure === "saved row") vi.spyOn(store, "loadProject").mockImplementationOnce(() => { throw new Error("unreadable saved row") })
+    else repositoryProviderConfig.mockRejectedValueOnce(new Error("unreadable repository config"))
+    expect(await rpc("repository.revokeTrust", { projectId, client: "desktop" })).toHaveProperty("error")
+    expect(grants.has(projectId)).toBe(false)
+    expect(agents["claude-code"].startThread).not.toHaveBeenCalled()
+    expect(agents["claude-code"].stopThread).not.toHaveBeenCalled()
   })
 })
 

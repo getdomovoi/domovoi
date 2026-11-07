@@ -8749,24 +8749,31 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Repository trust is unavailable")
           return
         }
+        const trustedBy = this.#repositoryTrustGrantor(socket, params.client)
+        if (!trustedBy) {
+          this.#error(socket, request.id, daemonAuthenticationErrorCode, repositoryTrustCredentialRefusal)
+          return
+        }
+        const revokeGrant = () => {
+          store.revoke(params.projectId)
+          this.#repositoryTrustGenerations.set(params.projectId, this.#repositoryTrustGeneration(params.projectId) + 1)
+        }
         const activeProject = this.#projectForCall(paramsResult.data as { projectId?: string })
+        // An authenticated revoke must not retain trust because the closed
+        // project's saved row is unreadable. The row is needed only to read
+        // the configuration digest for the response; no thread is restarted.
+        if (method === "repository.revokeTrust" && !activeProject) revokeGrant()
         const project = activeProject ?? (method === "repository.revokeTrust"
           ? this.#store.loadProject?.(params.projectId, this.#snapshot.machine)?.project : undefined)
         if (!project || project.id !== params.projectId) {
           this.#error(socket, request.id, invalidParams, repositoryTrustProjectRefusal)
           return
         }
-        const trustedBy = this.#repositoryTrustGrantor(socket, params.client)
-        if (!trustedBy) {
-          this.#error(socket, request.id, daemonAuthenticationErrorCode, repositoryTrustCredentialRefusal)
-          return
-        }
         const read = this.#repositoryProviderConfig ?? readRepositoryProviderConfig
         if (method === "repository.revokeTrust") {
           // Taken back before the configuration is read, so a reader failure
           // still leaves the repository untrusted.
-          store.revoke(project.id)
-          this.#repositoryTrustGenerations.set(project.id, this.#repositoryTrustGeneration(project.id) + 1)
+          if (activeProject) revokeGrant()
           // Then the threads that opened under the grant stop (rulings Q4,
           // Q146 A), before the configuration is read, so a reader failure
           // leaves none of them running. An emergency stop that is running
