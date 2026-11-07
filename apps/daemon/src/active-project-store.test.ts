@@ -180,6 +180,23 @@ describe.each(["sync", "worker"] as const)("active project persistence (%s)", (m
       expect(rows(path)).toEqual(before)
     } finally { await store.close() }
   })
+
+  it("retains over-cap projects and missing-folder markers across restart", async () => {
+    const path = await statePath()
+    const snapshot = several()
+    snapshot.projectCap = 1
+    snapshot.projects![1]!.unavailableReason = "folder-missing"
+    const store = new SqliteWorkspaceStore(path, projectCopy("a"), restoreOptions)
+    try { await save(store, snapshot) } finally { await store.close() }
+    const reopened = new SqliteWorkspaceStore(path, projectCopy("a"), restoreOptions)
+    try {
+      const restored = reopened.load()
+      expect(restored).toEqual(redactWorkspaceCopies(snapshot))
+      expect(restored.projectCap).toBe(1)
+      expect(restored.projects).toHaveLength(2)
+      expect(restored.projects![1]!.unavailableReason).toBe("folder-missing")
+    } finally { await reopened.close() }
+  })
 })
 
 it.each(["missing", "invalid-json", "mixed", "wrong-key", "wrong-project", "duplicate-session", "focused-mismatch"])(

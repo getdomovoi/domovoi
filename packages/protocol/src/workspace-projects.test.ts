@@ -109,7 +109,7 @@ describe("workspace projects", () => {
     expect(workspaceSnapshotSchema.parse({ ...createEmptyWorkspace(demoWorkspace.machine), projects: [], projectCap: 3 }).projects).toEqual([])
   })
 
-  it("lists each project once, on this machine, within the stated cap", () => {
+  it("lists each project once, on this machine", () => {
     const duplicate = twoProjects()
     duplicate.projects = [focused, second, { ...second }]
     expect(issues(duplicate)).toContain("Active projects must be unique")
@@ -117,10 +117,34 @@ describe("workspace projects", () => {
     const elsewhere = twoProjects()
     elsewhere.projects = [focused, { ...second, machineId: `machine-${"b".repeat(32)}` }]
     expect(issues(elsewhere)).toContain("Project must belong to the workspace machine")
+  })
 
-    const overCap = twoProjects()
-    overCap.projectCap = 1
-    expect(issues(overCap)).toContain("Active projects cannot exceed the project cap")
+  it("reports the configured cap even when more projects survive a restart", () => {
+    const snapshot = twoProjects()
+    snapshot.projectCap = 1
+    expect(workspaceSnapshotSchema.parse(snapshot)).toEqual(snapshot)
+    const tooMany = twoProjects()
+    tooMany.projects = Array.from({ length: maximumProjectCap + 1 }, (_, index) => (
+      index === 0 ? focused : { ...second, id: index === 1 ? second.id : `project-extra-${index}` }
+    ))
+    expect(workspaceSnapshotSchema.safeParse(tooMany).success).toBe(false)
+  })
+
+  it("keeps a missing-folder project active with a validated availability reason", () => {
+    const unavailable = { ...second, unavailableReason: "folder-missing" as const }
+    expect(projectSchema.parse(unavailable)).toEqual(unavailable)
+    const snapshot = { ...twoProjects(), projects: [focused, unavailable] }
+    expect(workspaceSnapshotSchema.parse(snapshot).projects).toEqual([focused, unavailable])
+    expect(projectSchema.safeParse({ ...second, unavailableReason: "arbitrary" }).success).toBe(false)
+    expect(projectSchema.safeParse({ ...second, unavailableReason: null }).success).toBe(false)
+    expect(projectSchema.parse(second)).not.toHaveProperty("unavailableReason")
+  })
+
+  it("requires the focused project's availability to agree with its active entry", () => {
+    const snapshot = { ...twoProjects(), project: { ...focused, unavailableReason: "folder-missing" as const } }
+    expect(issues(snapshot)).toContain("The focused project must be one of the active projects")
+    snapshot.projects![0] = snapshot.project
+    expect(workspaceSnapshotSchema.parse(snapshot).project).toEqual(snapshot.project)
   })
 
   // Every project a snapshot lists can be named in a project-scoped call and
