@@ -151,6 +151,23 @@ export function projectWorkspaceState(snapshot: WorkspaceSnapshot): ProjectWorks
   return workspaceStorageRows(snapshot).projects.find((state) => state.project.id === snapshot.project?.id)
 }
 
+// A close writes the saved project and the remaining active workspace in one
+// transaction. Shared with the worker so neither path can omit the saved row.
+function closedProjectRows(snapshot: WorkspaceSnapshot, closed: WorkspaceSnapshot): ProjectWorkspaceState[] {
+  const projects = closed.projects ?? (closed.project ? [closed.project] : [])
+  if (projects.length !== 1 || !closed.project || closed.machine.id !== snapshot.machine.id
+    || (snapshot.projects ?? (snapshot.project ? [snapshot.project] : [])).some((project) => project.id === closed.project!.id)
+    || closed.sessions.some((session) => session.activeTurnId !== undefined)
+    || closed.approvals.length > 0) throw new Error("Invalid closed project state")
+  const rows = workspaceStorageRows(closed).projects
+  // One-project legacy rows omit these optional fields on ordinary saves.
+  // A closed row must retain its final turn and queued-send metadata too.
+  return rows.map((row) => ({ ...row,
+    ...(closed.turns === undefined ? {} : { turns: closed.turns }),
+    ...(closed.queuedSends === undefined ? {} : { queuedSends: closed.queuedSends }),
+  }))
+}
+
 export interface WorkspaceStore {
   readonly auditLog?: AuditLog
   readonly devices?: DeviceRegistry
@@ -167,6 +184,8 @@ export interface WorkspaceStore {
   loadProject?(projectId: string, machine?: WorkspaceSnapshot["machine"]): ProjectWorkspaceState | undefined
   save(snapshot: WorkspaceSnapshot): void
   saveAsync?(snapshot: WorkspaceSnapshot): Promise<void>
+  saveProjectClose?(snapshot: WorkspaceSnapshot, closed: WorkspaceSnapshot): void
+  saveProjectCloseAsync?(snapshot: WorkspaceSnapshot, closed: WorkspaceSnapshot): Promise<void>
   saveTransferredSnapshot?(
     snapshot: WorkspaceSnapshot,
     ownership: CommittedTransferOwnership,
@@ -188,6 +207,7 @@ export interface WorkspaceStore {
 export type WorkspaceWriter = {
   readonly failed: boolean
   write(snapshot: WorkspaceSnapshot): Promise<void>
+  writeProjectClose?(snapshot: WorkspaceSnapshot, closed: WorkspaceSnapshot): Promise<void>
   close(): Promise<void>
 }
 
@@ -964,7 +984,8 @@ type WriterResponse = {
 }
 
 const workspaceWriterSource = String.raw`
-const storageRows = ${workspaceStorageRows.toString()}
+const workspaceStorageRows = ${workspaceStorageRows.toString()}
+const closedProjectRows = ${closedProjectRows.toString()}
 const { existsSync, chmodSync } = require("node:fs")
 const { DatabaseSync } = require("node:sqlite")
 const { parentPort, workerData } = require("node:worker_threads")
@@ -999,7 +1020,8 @@ async function start() {
         return
       }
       const validated = workspaceSnapshotSchema.parse(redact(message.snapshot))
-      const rows = storageRows(validated)
+      const rows = workspaceStorageRows(validated)
+      if (message.closed) rows.projects.push(...closedProjectRows(validated, workspaceSnapshotSchema.parse(redact(message.closed))))
       database.exec("BEGIN IMMEDIATE")
       try {
         save.run(JSON.stringify(rows.workspace), message.updatedAt)
@@ -1075,6 +1097,10 @@ class AsyncWorkspaceWriter {
 
   write(snapshot: WorkspaceSnapshot): Promise<void> {
     return this.#request({ snapshot, updatedAt: new Date().toISOString() })
+  }
+
+  writeProjectClose(snapshot: WorkspaceSnapshot, closed: WorkspaceSnapshot): Promise<void> {
+    return this.#request({ snapshot, closed, updatedAt: new Date().toISOString() })
   }
 
   close(): Promise<void> {
@@ -1301,6 +1327,24 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   save(snapshot: WorkspaceSnapshot): void {
     const validated = workspaceSnapshotSchema.parse(redactWorkspaceCopies(snapshot))
     this.#writeValidated(validated)
+  }
+
+  saveProjectClose(snapshot: WorkspaceSnapshot, closed: WorkspaceSnapshot): void {
+    const validated = workspaceSnapshotSchema.parse(redactWorkspaceCopies(snapshot))
+    const retained = workspaceSnapshotSchema.parse(redactWorkspaceCopies(closed))
+    this.#writeValidated(validated, closedProjectRows(validated, retained))
+  }
+
+  async saveProjectCloseAsync(snapshot: WorkspaceSnapshot, closed: WorkspaceSnapshot): Promise<void> {
+    this.#migratedAtOpen = undefined
+    if (this.path === ":memory:") {
+      this.saveProjectClose(snapshot, closed)
+      return
+    }
+    if (this.#writer?.failed && !this.#writerClosed) this.#writer = undefined
+    this.#writer ??= this.#writerFactory?.(this.path) ?? new AsyncWorkspaceWriter(this.path)
+    if (!this.#writer.writeProjectClose) throw new Error("Workspace writer cannot atomically close a project")
+    await this.#writer.writeProjectClose(redactWorkspaceCopies(snapshot), redactWorkspaceCopies(closed))
   }
 
   async saveAsync(snapshot: WorkspaceSnapshot): Promise<void> {
@@ -1595,11 +1639,11 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       .run(state.project.id, JSON.stringify(state), new Date().toISOString())
   }
 
-  #writeValidated(snapshot: WorkspaceSnapshot): void {
+  #writeValidated(snapshot: WorkspaceSnapshot, closed: ProjectWorkspaceState[] = []): void {
     const updatedAt = new Date().toISOString()
     this.#database.exec("BEGIN IMMEDIATE")
     try {
-      this.#writeValidatedRows(snapshot, updatedAt)
+      this.#writeValidatedRows(snapshot, updatedAt, closed)
       this.#database.exec("COMMIT")
     } catch (error) {
       rollBackIfOpen(this.#database)
@@ -1608,9 +1652,10 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.#restrictFilePermissions()
   }
 
-  #writeValidatedRows(snapshot: WorkspaceSnapshot, updatedAt: string): void {
+  #writeValidatedRows(snapshot: WorkspaceSnapshot, updatedAt: string, closed: ProjectWorkspaceState[] = []): void {
     this.#migratedAtOpen = undefined
     const rows = workspaceStorageRows(snapshot)
+    rows.projects.push(...closed)
     this.#database
       .prepare(`
         INSERT INTO workspace_state (id, snapshot, updated_at)
