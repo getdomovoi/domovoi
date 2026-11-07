@@ -1,11 +1,12 @@
 import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   demoWorkspace,
   projectCapErrorCode,
   projectSwitchConfirmationErrorCode,
+  repositoryGitFilterErrorCode,
   type KnownProject,
   type Project,
   type WorkspaceSnapshot,
@@ -33,6 +34,12 @@ import {
 // project and opens another one as part of the start.
 
 let harness: FakeWebSocketHarness
+
+// The launcher's code loads on first open; loaded here, every test can be
+// run on its own.
+beforeAll(async () => {
+  await import("./launcher-dialog")
+})
 
 beforeEach(() => {
   try {
@@ -330,7 +337,7 @@ describe("starting a session in another project", () => {
       while (sentRequests(socket, "runtime.models").some((request) => !socket.answered.has(request.id))) respond(socket, "runtime.models", models)
     })
     await settle()
-    await user.click(within(dialog).getByRole("button", { name: /^Project/ }))
+    await user.click(await within(dialog).findByRole("button", { name: /^Project/ }))
     await user.click(screen.getByRole("menuitem", { name: new RegExp(project) }))
     await user.type(within(dialog).getByLabelText("Session goal"), "Render Cyrillic invoices")
     await user.click(within(dialog).getByRole("button", { name: "Create session" }))
@@ -432,15 +439,40 @@ describe("starting a session in another project", () => {
     expect(within(dialog).getByRole<HTMLButtonElement>("button", { name: "Create session" }).disabled).toBe(false)
   })
 
-  // J31 S2: an active project takes a session as it is; nothing opens and
-  // nothing asks.
-  it("starts in another active project without opening it", async () => {
+  // J31 S2: another active project is refocused (project.open refocuses and
+  // asks nothing), so the start, and any refusal of it, belongs to that
+  // project's name and inventory.
+  it("refocuses another active project without asking, then starts there", async () => {
     const user = userEvent.setup()
     const socket = await openShell("desktop", workspaceSnapshot({ projects: [projectA, projectB] }))
     await answerProjectList(socket, [known(projectA, demoWorkspace.sessions), known(projectB, [])])
     await startIn(user, socket, "pdf-worker")
-    expect(sentRequests(socket, "project.open")).toHaveLength(0)
+    const refocus = pendingRequest(socket, "project.open")
+    expect(refocus.params).toMatchObject({ path: projectB.path })
+    expect(refocus.params).not.toHaveProperty("confirmation")
+    await act(async () => {
+      respond(socket, "project.open", workspaceSnapshot({ project: projectB, projects: [projectA, projectB], activeSessionId: null }))
+    })
+    await settle()
+    expect(screen.queryByRole("alertdialog")).toBeNull()
     expect(pendingRequest(socket, "session.create").params).toMatchObject({ title: "Render Cyrillic invoices", projectId: projectB.id })
+    await act(async () => {
+      fail(socket, "session.create", {
+        code: repositoryGitFilterErrorCode,
+        message: "This repository's own Git config sets the filter \"sops\".",
+        data: {
+          kind: "repository-git-filter",
+          projectId: projectB.id,
+          configDigest: `sha256:${"a".repeat(64)}`,
+          trust: { state: "untrusted", reason: "not-trusted" },
+          drivers: [{ name: "sops", scope: "local" }],
+          omittedDrivers: 0,
+        },
+      })
+    })
+    await settle()
+    const card = await screen.findByRole("region", { name: "Domovoi did not start this session" })
+    expect(within(card).getByText(`Checking out pdf-worker would run the sops filter driver, which is not trusted on ${demoWorkspace.machine.name}.`)).toBeTruthy()
   })
 
   // Opening a project past the daemon's cap is refused (project_cap); the

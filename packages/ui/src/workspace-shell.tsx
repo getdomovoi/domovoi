@@ -1482,10 +1482,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // switch the person did not confirm starts nothing and leaves the launcher
   // open.
   const startSessionIn = async (title: string, runtime: Runtime, projectPath: string): Promise<LauncherStartOutcome> => {
-    // J31 S2: an active project, focused or not, takes the session as it is.
-    const active = snapshot ? workspaceProjects(snapshot).find((project) => project.path === projectPath) : undefined
-    if (active) {
-      await startSession({ kind: "create", title, runtime, projectId: active.id })
+    // The focused project takes the session as it is. Another active project
+    // (J31 S2) is refocused first through project.open, which asks nothing
+    // for an active project, so the start and any refusal of it carry that
+    // project's name and read its inventory.
+    const focused = snapshot?.project
+    if (focused && projectPath === focused.path) {
+      await startSession({ kind: "create", title, runtime, projectId: focused.id })
       return "started"
     }
     const machineId = knownProjectsMachineId
