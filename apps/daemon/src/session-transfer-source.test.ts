@@ -573,3 +573,15 @@ describe("prepared source transfer delivery", () => {
     expect(call).toHaveBeenCalledOnce()
   })
 })
+
+it("freezes and checkpoints A after focus moves to B", async () => {
+  const { source, intent, packaged, session } = await transferFixture()
+  const project = source.project!
+  source.project = { ...project, id: "project-b", path: "/code/b" }
+  source.projects = [project, source.project]
+  source.activeSessionId = null
+  const frozen = freezeSourceSessionTransfer(source, intent, packaged.manifest.transferId, "2026-09-03T22:00:00.000Z", { client: "desktop" })
+  const staged = stageSourceSessionCheckpoint(frozen, packaged.manifest)
+  expect(staged.project).toEqual(source.project)
+  expect(staged.sessions.find((entry) => entry.id === session.id)?.projectId).toBe(project.id)
+})

@@ -147,7 +147,7 @@ describe("terminal RPC", () => {
       onExit: vi.fn(() => ({ dispose: vi.fn() })),
     } satisfies TerminalProcess
     const store = { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, terminalService: { spawn: vi.fn(() => terminal) }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, terminalService: { spawn: vi.fn(() => terminal) }, errorSink: vi.fn() })
     running.push(daemon)
     const address = await daemon.start()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
@@ -200,7 +200,7 @@ describe("terminal RPC", () => {
       save: vi.fn(() => { throw new Error(`persist-${"x".repeat(1_000)}`) }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       terminalService: { spawn: vi.fn(() => terminal) },
@@ -274,7 +274,7 @@ describe("terminal RPC", () => {
       }),
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", snapshot),
       agent,
@@ -367,7 +367,7 @@ describe("terminal RPC", () => {
       interruptTurn: vi.fn(async () => {}), resolveApproval: vi.fn(),
       onEvent: vi.fn(() => () => {}), close: vi.fn(async () => {}),
     } satisfies AgentAdapter
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", snapshot),
       agent,
@@ -440,7 +440,7 @@ describe("terminal RPC", () => {
       })),
       resolveApproval: vi.fn(), onEvent: vi.fn(() => () => {}), close: vi.fn(async () => {}),
     } satisfies AgentAdapter
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", snapshot),
       agent,
@@ -553,7 +553,7 @@ describe("terminal RPC", () => {
       checkpoint: vi.fn(async () => ({ commit: "f".repeat(40), changedFiles: [] })),
       restore: vi.fn(),
     } satisfies WorkspaceService
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
       agent,
@@ -758,7 +758,7 @@ describe("terminal RPC", () => {
       save: (next: typeof snapshot) => sqliteStore.save(next),
       close: () => sqliteStore.close(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       agent,
@@ -974,7 +974,7 @@ describe("terminal RPC", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
     session.workspacePath = "/worktrees/terminal-redaction"
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
       terminalService: { spawn: vi.fn(() => terminal) },
@@ -1094,7 +1094,7 @@ describe("terminal RPC", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
     session.workspacePath = "/worktrees/terminal-replay"
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
       terminalService: { spawn: vi.fn(() => terminal) },
@@ -1156,7 +1156,7 @@ describe("terminal RPC", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
     session.workspacePath = "/worktrees/terminal-ownership"
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
       terminalService: { spawn: vi.fn(() => terminal) },
@@ -1264,7 +1264,7 @@ describe("terminal RPC", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
     session.workspacePath = "/worktrees/terminal-reap"
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
       terminalService: { spawn: vi.fn(() => terminal) },
@@ -1343,7 +1343,7 @@ describe("terminal RPC", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
     session.workspacePath = "/worktrees/terminal-reclaim"
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
       terminalService: { spawn: vi.fn(() => terminal) },
@@ -1428,7 +1428,7 @@ describe("terminal RPC", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
     session.workspacePath = "/worktrees/terminal-reconnect"
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
       terminalService: { spawn: vi.fn(() => terminal) },
@@ -1583,7 +1583,7 @@ describe("terminal RPC", () => {
     session.providerThreadId = "thread-billing"
     session.activeTurnId = "turn-billing"
     const activateTurns = deferLiveTurns(snapshot)
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
       agent,

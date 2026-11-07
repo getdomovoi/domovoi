@@ -5,6 +5,7 @@ import { dirname, join } from "node:path"
 import { DatabaseSync, type SQLInputValue } from "node:sqlite"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { Worker } from "node:worker_threads"
+import { ZodError } from "zod"
 
 import {
   dateTimeSchema,
@@ -21,6 +22,7 @@ import {
   resolvedExecutionSchema,
   sessionSendParamsSchema,
   workspaceSnapshotSchema,
+  workspaceProjects,
   type KnownProject,
   type KnownProjectSession,
   type QueuedSessionSend,
@@ -160,24 +162,46 @@ export type ProjectWorkspaceState = {
   artifacts: WorkspaceSnapshot["artifacts"]
   workingPlans: WorkspaceSnapshot["workingPlans"]
   annotations: WorkspaceSnapshot["annotations"]
+  queuedSends?: WorkspaceSnapshot["queuedSends"]
+  turns?: WorkspaceSnapshot["turns"]
 }
 
-export function projectWorkspaceState(
-  snapshot: WorkspaceSnapshot,
-): ProjectWorkspaceState | undefined {
-  const project = snapshot.project
-  if (!project) return undefined
-  return {
-    project,
-    sessions: snapshot.sessions,
-    activeSessionId: snapshot.activeSessionId,
-    approvals: snapshot.approvals,
-    approvalRules: snapshot.approvalRules,
-    thread: snapshot.thread,
-    artifacts: snapshot.artifacts,
-    workingPlans: snapshot.workingPlans,
-    annotations: snapshot.annotations,
+// Self-contained: the worker embeds this same function, so synchronous and
+// asynchronous persistence cannot disagree about which project owns a record.
+function workspaceStorageRows(snapshot: WorkspaceSnapshot): { workspace: WorkspaceSnapshot; projects: ProjectWorkspaceState[] } {
+  const projects = snapshot.projects ?? (snapshot.project ? [snapshot.project] : [])
+  const several = projects.length > 1
+  const states = projects.map((project): ProjectWorkspaceState => {
+    const sessions = snapshot.sessions.filter((session) => session.projectId === project.id)
+    const ids = new Set(sessions.map((session) => session.id))
+    return {
+      project, sessions,
+      activeSessionId: snapshot.activeSessionId !== null && ids.has(snapshot.activeSessionId) ? snapshot.activeSessionId : null,
+      approvals: snapshot.approvals.filter((approval) => ids.has(approval.sessionId)),
+      approvalRules: snapshot.approvalRules.filter((rule) => rule.projectId === project.id),
+      thread: snapshot.thread.filter((item) => ids.has(item.sessionId)),
+      artifacts: snapshot.artifacts.filter((artifact) => ids.has(artifact.sessionId)),
+      workingPlans: snapshot.workingPlans.filter((plan) => ids.has(plan.sessionId)),
+      annotations: snapshot.annotations.filter((annotation) => ids.has(annotation.sessionId)),
+      ...(several && snapshot.queuedSends !== undefined ? { queuedSends: snapshot.queuedSends.filter((queued) => ids.has(queued.sessionId)) } : {}),
+      ...(several && snapshot.turns !== undefined ? { turns: snapshot.turns.filter((turn) => ids.has(turn.sessionId)) } : {}),
+    }
+  })
+  const focused = states.find((state) => state.project.id === snapshot.project?.id)
+  if (several && focused?.activeSessionId !== snapshot.activeSessionId) {
+    throw new Error("The active session must belong to the focused project")
   }
+  const { projects: _projects, projectCap: _cap, ...legacy } = snapshot
+  return {
+    // The projects list is also the downgrade guard: the S1 reader recognizes
+    // another active id and refuses before opening the database for writes.
+    workspace: several ? { ...snapshot, ...focused } : legacy,
+    projects: states,
+  }
+}
+
+export function projectWorkspaceState(snapshot: WorkspaceSnapshot): ProjectWorkspaceState | undefined {
+  return workspaceStorageRows(snapshot).projects.find((state) => state.project.id === snapshot.project?.id)
 }
 
 export interface WorkspaceStore {
@@ -222,6 +246,8 @@ export type WorkspaceWriter = {
 }
 
 export type WorkspaceStoreOptions = {
+  // Restoration is enabled by default. False exercises the downgrade guard.
+  restoreActiveProjects?: boolean
   legacySnapshots?: WorkspaceSnapshot[]
   manageDirectoryPermissions?: boolean
   integrityCheckMaximumBytes?: number
@@ -343,7 +369,7 @@ function appendSystemReceipt(
   })
 }
 
-function migrateStoredWorkspace(value: unknown, options: { repairLegacyEffort?: boolean } = {}): {
+function migrateStoredWorkspace(value: unknown, options: { repairLegacyEffort?: boolean; restoreActiveProjects?: boolean } = {}): {
   snapshot: WorkspaceSnapshot
   repaired: boolean
   inactivatedRules: Array<{ id: string; projectId: string; inactivatedAt: string }>
@@ -352,12 +378,12 @@ function migrateStoredWorkspace(value: unknown, options: { repairLegacyEffort?: 
     return finalizeStoredWorkspace(workspaceSnapshotSchema.parse(value), false, [])
   }
   const migrated = structuredClone(value)
-  // This daemon keeps one project open and derives the list it sends from it.
-  // A stored list names only the focused project by now (keepsSeveralProjects
-  // refused any other), so it is dropped here and no later change of project
-  // can save it stale. The row keeps it until the next save.
-  delete migrated.projects
-  delete migrated.projectCap
+  // Single-project storage keeps its legacy shape. A validated multi-project
+  // load keeps the active list; dropping it would orphan the rehydrated records.
+  if (!options.restoreActiveProjects || !Array.isArray(migrated.projects) || migrated.projects.length <= 1) {
+    delete migrated.projects
+    delete migrated.projectCap
+  }
   let repaired = false
   // These reviewed predecessors retain their state. Rules from 0.6 gain a zero
   // use count below; full validation still runs before any migrated write.
@@ -531,11 +557,9 @@ export class NewerWorkspaceStateError extends Error {
   }
 }
 
-// A newer Domovoi keeps several projects active and lists them in `projects`.
-// This daemon keeps one open at a time (J31 S1), and would otherwise serve
-// another project's sessions as if they were open. That state is that
-// version's to open: it is left exactly as it is and this daemon does not
-// start (ruling Q257).
+// Retained for the explicit legacy-reader mode and its downgrade regression.
+// Readers that keep one project open must refuse multi-project state before
+// writing, rather than serve another project's records under their focus.
 export class MultiProjectWorkspaceStateError extends NewerWorkspaceStateError {
   constructor(path: string, storedProtocolVersion: string) {
     super(path, storedProtocolVersion, protocolVersion)
@@ -546,8 +570,8 @@ export class MultiProjectWorkspaceStateError extends NewerWorkspaceStateError {
 
 // Stored state lists a project other than the focused one, or holds a session
 // or approval rule of another project, with or without a list (ruling Q258).
-// Such state does not parse as this daemon's snapshot, and moving it aside as
-// corrupt would replace that project's work with the seed.
+// Legacy readers refuse it; current readers must restore every active row.
+// Moving it aside as corrupt would replace that project's work with the seed.
 function keepsSeveralProjects(value: unknown): boolean {
   if (!isRecord(value)) return false
   const focused = isRecord(value.project) ? value.project.id : undefined
@@ -585,6 +609,63 @@ function holdsOneProject(value: unknown, projectId: string): boolean {
 function refuseSeveralProjects(path: string, value: unknown): MultiProjectWorkspaceStateError {
   const stored = isRecord(value) && typeof value.protocolVersion === "string" ? value.protocolVersion : protocolVersion
   return new MultiProjectWorkspaceStateError(path, stored)
+}
+
+export class UnreadableActiveProjectStateError extends Error {
+  constructor() {
+    super("An active project state is unreadable or inconsistent. Domovoi did not start and left the stored state unchanged. Restore a complete state backup or use the Domovoi version that wrote it.")
+    this.name = "UnreadableActiveProjectStateError"
+  }
+}
+
+function restoreActiveWorkspace(value: unknown, database: DatabaseSync): WorkspaceSnapshot {
+  try {
+    const focused = workspaceSnapshotSchema.parse(value)
+    if (!focused.project || !focused.projects || focused.projects.length < 2) throw new UnreadableActiveProjectStateError()
+    const { projects: _projects, projectCap: _cap, ...onlyFocused } = focused
+    // The workspace row contains only focused-project records. Accepting a
+    // mixed row here would silently discard records when rebuilding from rows.
+    workspaceSnapshotSchema.parse(onlyFocused)
+    const states = focused.projects.map((project) => {
+      const row = database.prepare("SELECT state FROM workspace_projects WHERE project_id = ?").get(project.id) as StoredProjectWorkspace | undefined
+      if (!row) throw new UnreadableActiveProjectStateError()
+      let raw: unknown
+      try { raw = JSON.parse(row.state) } catch (error) {
+        if (error instanceof SyntaxError) throw new UnreadableActiveProjectStateError()
+        throw error
+      }
+      if (!holdsOneProject(raw, project.id)) throw new UnreadableActiveProjectStateError()
+      const parsed = workspaceSnapshotSchema.parse({
+        ...(raw as Record<string, unknown>), protocolVersion: focused.protocolVersion,
+        machine: focused.machine, skillEnablements: [],
+      })
+      if (JSON.stringify(parsed.project) !== JSON.stringify(project)) throw new UnreadableActiveProjectStateError()
+      if (project.id === focused.project!.id) {
+        // Both copies are written in the same transaction and must agree.
+        const rowState = { ...projectWorkspaceState(parsed), queuedSends: parsed.queuedSends, turns: parsed.turns }
+        const focusState = { ...projectWorkspaceState(focused), queuedSends: focused.queuedSends, turns: focused.turns }
+        if (JSON.stringify(rowState) !== JSON.stringify(focusState)) throw new UnreadableActiveProjectStateError()
+      }
+      return parsed
+    })
+    return workspaceSnapshotSchema.parse({
+      ...focused,
+      sessions: states.flatMap((state) => state.sessions),
+      approvals: states.flatMap((state) => state.approvals),
+      approvalRules: states.flatMap((state) => state.approvalRules),
+      thread: states.flatMap((state) => state.thread),
+      artifacts: states.flatMap((state) => state.artifacts),
+      workingPlans: states.flatMap((state) => state.workingPlans),
+      annotations: states.flatMap((state) => state.annotations),
+      ...(states.some((state) => state.queuedSends !== undefined) ? { queuedSends: states.flatMap((state) => state.queuedSends ?? []) } : {}),
+      ...(states.some((state) => state.turns !== undefined) ? { turns: states.flatMap((state) => state.turns ?? []) } : {}),
+    })
+  } catch (error) {
+    // Validation details can carry secrets. Operational errors and programming
+    // failures retain their identity instead of masquerading as damaged state.
+    if (error instanceof ZodError) throw new UnreadableActiveProjectStateError()
+    throw error
+  }
 }
 
 function quarantineStamp(): string {
@@ -646,15 +727,15 @@ export function storedProtocolVersion(path: string): string | undefined {
 // The stored workspace snapshot, read the same way and with the same limits,
 // before the store opens the file: the protocol that wrote it and whether it
 // keeps several projects decide whether this daemon opens it at all.
-function storedSnapshotValue(path: string): unknown {
+function storedSnapshotValue(path: string, restoreActiveProjects = false): unknown {
   return readStoredState(path, (database) => {
     const row = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get() as StoredWorkspace | undefined
     if (!row) return undefined
-    try {
-      return JSON.parse(row.snapshot) as unknown
-    } catch {
-      return undefined
-    }
+    let value: unknown
+    try { value = JSON.parse(row.snapshot) } catch { return undefined }
+    return restoreActiveProjects && newerStoredProtocol(value) === undefined && keepsSeveralProjects(value)
+      ? restoreActiveWorkspace(value, database)
+      : value
   })
 }
 
@@ -937,6 +1018,7 @@ type WriterResponse = {
 }
 
 const workspaceWriterSource = String.raw`
+const storageRows = ${workspaceStorageRows.toString()}
 const { existsSync, chmodSync } = require("node:fs")
 const { DatabaseSync } = require("node:sqlite")
 const { parentPort, workerData } = require("node:worker_threads")
@@ -960,7 +1042,8 @@ async function start() {
   )
   const saveProject = database.prepare(
     "INSERT INTO workspace_projects (project_id, state, updated_at) VALUES (?, ?, ?) " +
-    "ON CONFLICT(project_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
+    "ON CONFLICT(project_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at " +
+    "WHERE workspace_projects.state <> excluded.state",
   )
   parentPort.on("message", (message) => {
     try {
@@ -970,23 +1053,17 @@ async function start() {
         return
       }
       const validated = workspaceSnapshotSchema.parse(redact(message.snapshot))
-      save.run(JSON.stringify(validated), message.updatedAt)
-      if (validated.project) {
-        saveProject.run(
-          validated.project.id,
-          JSON.stringify({
-            project: validated.project,
-            sessions: validated.sessions,
-            activeSessionId: validated.activeSessionId,
-            approvals: validated.approvals,
-            approvalRules: validated.approvalRules,
-            thread: validated.thread,
-            artifacts: validated.artifacts,
-            workingPlans: validated.workingPlans,
-            annotations: validated.annotations,
-          }),
-          message.updatedAt,
-        )
+      const rows = storageRows(validated)
+      database.exec("BEGIN IMMEDIATE")
+      try {
+        save.run(JSON.stringify(rows.workspace), message.updatedAt)
+        for (const state of rows.projects) {
+          saveProject.run(state.project.id, JSON.stringify(state), message.updatedAt)
+        }
+        database.exec("COMMIT")
+      } catch (error) {
+        database.exec("ROLLBACK")
+        throw error
       }
       if (process.platform !== "win32") {
         for (const path of [workerData.path, workerData.path + "-wal", workerData.path + "-shm"]) {
@@ -1092,6 +1169,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly emergencyStops: SqliteEmergencyStopIntents
   readonly recovery: WorkspaceStoreRecovery | undefined
   #database: DatabaseSync
+  readonly #restoreActiveProjects: boolean
   #writer: WorkspaceWriter | undefined
   #writerFactory: WorkspaceStoreOptions["writerFactory"]
   #writerClosed = false
@@ -1109,16 +1187,17 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
 
   constructor(path: string, initial: WorkspaceSnapshot, options: WorkspaceStoreOptions = {}) {
     this.path = path
+    this.#restoreActiveProjects = options.restoreActiveProjects !== false
     const manageDirectoryPermissions = options.manageDirectoryPermissions === true
     // The stored snapshot is read before the file is opened for writing, from
     // the file as it is or from a private copy when the write-ahead log holds
     // changes: opening the live files would checkpoint that log into the main
     // file and remove it. State this daemon must not open is refused here,
     // with nothing on disk changed (rulings Q257 to Q259).
-    const storedValue = storedSnapshotValue(path)
+    const storedValue = storedSnapshotValue(path, this.#restoreActiveProjects)
     const newerVersion = newerStoredProtocol(storedValue)
     if (newerVersion !== undefined) throw refuseNewerStoredState(path, newerVersion)
-    if (keepsSeveralProjects(storedValue)) throw refuseSeveralProjects(path, storedValue)
+    if (!this.#restoreActiveProjects && keepsSeveralProjects(storedValue)) throw refuseSeveralProjects(path, storedValue)
     if (path !== ":memory:") prepareStatePath(path, manageDirectoryPermissions)
     let recovery: WorkspaceStoreRecovery | undefined
     let salvagedWorkspace: ReturnType<typeof migrateStoredWorkspace> | undefined
@@ -1131,6 +1210,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       // An operational failure is reported to the caller rather than repaired,
       // so a locked or unreadable file is never renamed aside.
       if (!isCorruption(error)) throw error
+      if (keepsSeveralProjects(storedValue)) throw new UnreadableActiveProjectStateError()
       // State with several projects was refused above, before anything moved,
       // when the workspace row could be read.
       const quarantinedPath = quarantineDatabase(path)
@@ -1174,14 +1254,23 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         this.#databaseClosed = true
         throw refuseNewerStoredState(path, newer)
       }
-      if (stored && keepsSeveralProjects(stored.value)) {
+      if (!this.#restoreActiveProjects && stored && keepsSeveralProjects(stored.value)) {
         this.#database.close()
         this.#databaseClosed = true
         throw refuseSeveralProjects(path, stored.value)
       }
       try {
-        migratedExisting = migrateStoredWorkspace(stored ? stored.value : JSON.parse(existing.snapshot))
+        const value = stored ? stored.value : JSON.parse(existing.snapshot) as unknown
+        migratedExisting = migrateStoredWorkspace(
+          this.#restoreActiveProjects && keepsSeveralProjects(value) ? restoreActiveWorkspace(value, this.#database) : value,
+          { restoreActiveProjects: this.#restoreActiveProjects },
+        )
       } catch (error) {
+        if (error instanceof UnreadableActiveProjectStateError || (stored && keepsSeveralProjects(stored.value))) {
+          this.#database.close()
+          this.#databaseClosed = true
+          throw error
+        }
         recovery = {
           kind: "snapshot",
           quarantinedPath: quarantineSnapshot(path, existing.snapshot),
@@ -1247,8 +1336,11 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       .get() as StoredWorkspace | undefined
     if (!row) throw new Error("Workspace state is not initialized")
     const value: unknown = JSON.parse(row.snapshot)
-    if (keepsSeveralProjects(value)) throw refuseSeveralProjects(this.path, value)
-    const migrated = migrateStoredWorkspace(value)
+    if (!this.#restoreActiveProjects && keepsSeveralProjects(value)) throw refuseSeveralProjects(this.path, value)
+    const migrated = migrateStoredWorkspace(
+      this.#restoreActiveProjects && keepsSeveralProjects(value) ? restoreActiveWorkspace(value, this.#database) : value,
+      { restoreActiveProjects: this.#restoreActiveProjects },
+    )
     if (migrated.repaired) {
       try {
         this.save(migrated.snapshot)
@@ -1294,7 +1386,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     const origin = session?.transferredFrom
     if (
       validated.machine.id !== ownership.targetMachineId
-      || validated.project?.id !== ownership.targetProjectId
+      || !workspaceProjects(validated).some((project) => project.id === ownership.targetProjectId)
       || session?.projectId !== ownership.targetProjectId
       || session.workspacePath !== ownership.workspacePath
       || session.ownershipGeneration !== ownership.generation
@@ -1590,12 +1682,20 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
 
   #writeValidated(snapshot: WorkspaceSnapshot): void {
     const updatedAt = new Date().toISOString()
-    this.#writeValidatedRows(snapshot, updatedAt)
+    this.#database.exec("BEGIN IMMEDIATE")
+    try {
+      this.#writeValidatedRows(snapshot, updatedAt)
+      this.#database.exec("COMMIT")
+    } catch (error) {
+      rollBackIfOpen(this.#database)
+      throw error
+    }
     this.#restrictFilePermissions()
   }
 
   #writeValidatedRows(snapshot: WorkspaceSnapshot, updatedAt: string): void {
     this.#migratedAtOpen = undefined
+    const rows = workspaceStorageRows(snapshot)
     this.#database
       .prepare(`
         INSERT INTO workspace_state (id, snapshot, updated_at)
@@ -1604,9 +1704,8 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
           snapshot = excluded.snapshot,
           updated_at = excluded.updated_at
       `)
-      .run(JSON.stringify(snapshot), updatedAt)
-    const state = projectWorkspaceState(snapshot)
-    if (state) {
+      .run(JSON.stringify(rows.workspace), updatedAt)
+    for (const state of rows.projects) {
       this.#database
         .prepare(`
           INSERT INTO workspace_projects (project_id, state, updated_at)
@@ -1614,6 +1713,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
           ON CONFLICT(project_id) DO UPDATE SET
             state = excluded.state,
             updated_at = excluded.updated_at
+          WHERE workspace_projects.state <> excluded.state
         `)
         .run(state.project.id, JSON.stringify(state), updatedAt)
     }

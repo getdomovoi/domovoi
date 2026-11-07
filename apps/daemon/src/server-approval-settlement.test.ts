@@ -130,7 +130,7 @@ async function setup(
   // unused; it is closed here, or Windows refuses to delete its open file.
   if (options.live) store.close()
   const errorSink = vi.fn()
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0,
     store: options.live ? { load: () => snapshot, save: vi.fn(), close: vi.fn() } : store,
     agents: { "claude-code": agent },

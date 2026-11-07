@@ -308,7 +308,9 @@ describe("the project list's size", () => {
 })
 
 describe("project.list", () => {
-  it("keeps the project that was open listed with its sessions after another project opens", async () => {
+  // J31 S2: opening another project adds it to the active set. Both are live,
+  // and each is listed with only its own sessions, the focused one first.
+  it("lists two active projects, each with only its own sessions, after another project opens", async () => {
     const scratch = await scratchDirectory()
     const rootA = join(scratch, "acme-api")
     const rootB = join(scratch, "pdf-worker")
@@ -320,14 +322,14 @@ describe("project.list", () => {
 
     const opened = await openProject(rootB)
     expect(opened).not.toHaveProperty("error")
-    // What the owner saw: the snapshot now holds project B and none of A's
-    // sessions, because the daemon keeps one project active.
     const snapshot = (await rpc("workspace.get", {})).result as WorkspaceSnapshot
     expect(snapshot.project?.path).toBe(rootB)
-    expect(snapshot.sessions).toEqual([])
+    expect(snapshot.projects?.map((project) => project.path)).toEqual([rootA, rootB])
+    expect(snapshot.sessions.map((session) => session.id).sort()).toEqual(["session-acme-api-1", "session-acme-api-2"])
 
     const listed = await listProjects()
     expect(listed.projects.map((known) => known.project.path)).toEqual([rootB, rootA])
+    expect(listed.projects[0]!.sessions).toEqual([])
     const a = listed.projects[1]!
     expect(a.folder).toBe("present")
     // Newest first, and only what a row draws: no worktree path.
@@ -337,10 +339,31 @@ describe("project.list", () => {
     ])
     expect(JSON.stringify(listed)).not.toContain("/worktrees/")
 
-    // Opening A again brings its sessions back into the snapshot.
+    // Refocusing A puts it first again; nothing moves between projects.
     expect(await openProject(rootA)).not.toHaveProperty("error")
-    const back = (await rpc("workspace.get", {})).result as WorkspaceSnapshot
-    expect(back.sessions.map((session) => session.id).sort()).toEqual(["session-acme-api-1", "session-acme-api-2"])
+    const again = await listProjects()
+    expect(again.projects.map((known) => [known.project.path, known.sessions.length])).toEqual([[rootA, 2], [rootB, 0]])
+  })
+
+  // Several active projects in stored state now load (J31 S2): the list
+  // reads every one of them live.
+  it("lists every active project restored from stored state live, each with its own sessions", async () => {
+    const scratch = await scratchDirectory()
+    const roots = ["acme-api", "pdf-worker"].map((name) => join(scratch, name))
+    for (const root of roots) await mkdir(root)
+    const [a, b] = roots.map(projectAt) as [Project, Project]
+    const seed: WorkspaceSnapshot = {
+      ...createEmptyWorkspace(machine),
+      project: b,
+      projects: [a, b],
+      sessions: [sessionIn(a, 1), sessionIn(b, 1), sessionIn(b, 2, "2026-11-03T10:00:00.000Z")],
+    }
+    const { listProjects } = await openDaemon(join(scratch, "state.sqlite"), seed)
+    const listed = await listProjects()
+    expect(listed.projects.map((known) => [known.project.id, known.sessions.map((session) => session.id)])).toEqual([
+      [b.id, ["session-pdf-worker-2", "session-pdf-worker-1"]],
+      [a.id, ["session-acme-api-1"]],
+    ])
   })
 
   it("lists the open project first from the live snapshot, before it is saved", async () => {

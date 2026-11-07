@@ -56,7 +56,7 @@ async function startedDaemon(
     close: vi.fn(),
   } satisfies WorkspaceStore
   const audit = auditLog()
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0,
     store,
     agents,

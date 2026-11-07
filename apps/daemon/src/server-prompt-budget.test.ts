@@ -75,7 +75,7 @@ async function fixture(providerPromptBudgetCodeUnits: number) {
     close: async () => {},
   } satisfies AgentAdapter
 
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0,
     store,
     agents: { [session.runtime.provider]: agent },
@@ -134,7 +134,7 @@ describe("provider prompt budget option", () => {
   ])("rejects an invalid budget before loading workspace state: %s", (providerPromptBudgetCodeUnits) => {
     const loadStore = vi.spyOn(SqliteWorkspaceStore.prototype, "load")
     expect(() => {
-      const daemon = new DomovoiDaemon({ statePath: ":memory:", providerPromptBudgetCodeUnits })
+      const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, statePath: ":memory:", providerPromptBudgetCodeUnits })
       running.push(daemon)
     }).toThrow(RangeError)
     expect(loadStore).not.toHaveBeenCalled()

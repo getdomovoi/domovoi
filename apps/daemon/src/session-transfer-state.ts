@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 
 import {
   sessionTransferContractVersion,
+  workspaceProjects,
   sessionTransferStateSchema,
   workspaceSnapshotSchema,
   type SessionTransferContractRefusal,
@@ -141,7 +142,8 @@ export function importSessionTransferState(
   },
 ): WorkspaceSnapshot {
   const state = sessionTransferStateSchema.parse(transferred)
-  if (!snapshot.project || snapshot.project.id !== input.targetProjectId) {
+  const project = workspaceProjects(snapshot).find((entry) => entry.id === input.targetProjectId)
+  if (!project || project.unavailableReason) {
     throw new SessionTransferStateError("target-project-missing")
   }
   if (snapshot.sessions.some((session) => session.id === state.session.id)) {
@@ -193,7 +195,7 @@ export function importSessionTransferState(
   candidate.artifacts.push(...state.artifacts)
   if (state.workingPlan) candidate.workingPlans.push(state.workingPlan)
   candidate.annotations.push(...state.annotations)
-  candidate.activeSessionId = state.session.id
+  if (candidate.project?.id === input.targetProjectId) candidate.activeSessionId = state.session.id
 
   const parsed = workspaceSnapshotSchema.safeParse(candidate)
   if (!parsed.success) throw new SessionTransferStateError("session-state-invalid")

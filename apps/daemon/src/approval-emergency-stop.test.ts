@@ -110,7 +110,7 @@ describe("an approval allowed while an emergency stop runs", () => {
       save: vi.fn(),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     const socket = new WebSocket(`ws://127.0.0.1:${port}/rpc`, { handshakeTimeout: 5_000 })

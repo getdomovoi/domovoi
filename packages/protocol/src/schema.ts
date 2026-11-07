@@ -169,6 +169,9 @@ export const projectSchema = z.object({
   name: z.string().min(1),
   path: z.string().min(1),
   branch: z.string().min(1),
+  // An unavailable or unchecked folder does not evict its project (Q163/Q168).
+  // New turns require a successful folder check.
+  unavailableReason: z.enum(["folder-missing", "folder-check-failed"]).optional(),
 })
 
 export const sessionForkOriginSchema = z.object({
@@ -1041,8 +1044,8 @@ export const workspaceSnapshotObjectSchema = z.object({
   // before the list, whose only active project is `project`; read it through
   // workspaceProjects.
   projects: z.array(projectSchema).max(maximumProjectCap).optional(),
-  // How many projects the daemon keeps active at once. It refuses to open
-  // another past this.
+  // Admission cap, not an eviction limit. Restored projects can exceed a
+  // lowered cap; the daemon refuses additions until the count is below it.
   projectCap: z.number().int().min(1).max(maximumProjectCap).optional(),
   sessions: z.array(sessionSummarySchema),
   activeSessionId: z.string().min(1).nullable(),
@@ -1147,9 +1150,6 @@ export const workspaceSnapshotObjectSchema = z.object({
       })
     }
   })
-  if (snapshot.projectCap !== undefined && projects.length > snapshot.projectCap) {
-    context.addIssue({ code: "custom", message: "Active projects cannot exceed the project cap", path: ["projects"] })
-  }
 
   if (snapshot.project === null) {
     if (projects.length > 0) {
@@ -1427,6 +1427,7 @@ function sameProject(left: Project, right: Project): boolean {
     && left.name === right.name
     && left.path === right.path
     && left.branch === right.branch
+    && left.unavailableReason === right.unavailableReason
 }
 
 export type QueuedSessionSendState = z.infer<typeof queuedSessionSendStateSchema>

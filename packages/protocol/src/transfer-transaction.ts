@@ -85,6 +85,7 @@ const safeGenerationSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_
 export const sessionTransferTargetRefusalSchema = z.enum([
   "target-project-missing",
   "target-project-mismatch",
+  "target-project-ambiguous",
   "target-session-newer",
   "target-session-diverged",
   "target-lineage-check-unavailable",

@@ -1,5 +1,6 @@
 import {
   sessionTransferContractVersion,
+  workspaceProjects,
   sessionTransferStateSchema,
   transferCommitResultSchema,
   transferTargetPreflightParamsSchema,
@@ -96,7 +97,8 @@ export async function preflightSessionTransferTarget(
       existingGeneration: existing.ownershipGeneration ?? 0,
     })
   }
-  if (!snapshot.project) {
+  const projects = workspaceProjects(snapshot).filter((project) => !project.unavailableReason)
+  if (projects.length === 0) {
     return transferTargetPreflightResultSchema.parse({
       allowed: false,
       reason: "target-project-missing",
@@ -141,7 +143,13 @@ export async function preflightSessionTransferTarget(
       reason: "target-state-persistence-unavailable",
     })
   }
-  if (!await projectHasLineage(snapshot.project.path, params.lineageCommit)) {
+  const matching = []
+  for (const project of projects) {
+    if (await projectHasLineage(project.path, params.lineageCommit)) matching.push(project)
+  }
+  if (matching.length > 1) return transferTargetPreflightResultSchema.parse({ allowed: false, reason: "target-project-ambiguous" })
+  const project = matching[0]
+  if (!project) {
     return transferTargetPreflightResultSchema.parse({
       allowed: false,
       reason: "target-project-mismatch",
@@ -149,7 +157,7 @@ export async function preflightSessionTransferTarget(
   }
   return transferTargetPreflightResultSchema.parse({
     allowed: true,
-    targetProjectId: snapshot.project.id,
+    targetProjectId: project.id,
     lineageCommit: params.lineageCommit,
   })
 }
@@ -206,7 +214,8 @@ async function restoreRepository(
   transactions: FileTransferTransactions,
   workspace: TargetWorkspaceOperations,
 ): Promise<RestoredWorkspace> {
-  if (!snapshot.project) throw new Error("The target project is unavailable")
+  const project = workspaceProjects(snapshot).find((entry) => entry.id === manifest.project.targetProjectId)
+  if (!project || project.unavailableReason) throw new Error("The target project is unavailable")
   if (manifest.repository.method === "git-bundle") {
     if (!workspace.restoreSessionFromBundle) {
       throw new Error("This machine cannot restore a transferred Git bundle")
@@ -217,7 +226,7 @@ async function restoreRepository(
       manifest.repository.memberId,
     )
     return workspace.restoreSessionFromBundle(bundlePath, manifest.sessionId, {
-      repositoryPath: snapshot.project.path,
+      repositoryPath: project.path,
       checkpointCommits: sessionTransferCheckpointCommits(
         state,
         manifest.project.checkpointCommit,
@@ -228,7 +237,7 @@ async function restoreRepository(
     throw new Error("This machine cannot restore a transferred Git ref")
   }
   return workspace.restoreSessionFromRef(
-    snapshot.project.path,
+    project.path,
     manifest.repository.remote,
     manifest.sessionId,
     manifest.repository.commit,
@@ -331,22 +340,26 @@ export async function commitPreparedSessionTransfer(input: {
       result: refusal(input.transferId, "target-project-mismatch"),
     }
   }
-  if (!input.snapshot.project) {
+  const projects = workspaceProjects(input.snapshot)
+  const project = projects.find((entry) => entry.id === manifest.project.targetProjectId)
+  if (projects.length === 0 || project?.unavailableReason) {
     return {
       snapshot: input.snapshot,
       result: refusal(input.transferId, "target-project-missing"),
     }
   }
-  if (input.snapshot.project.id !== manifest.project.targetProjectId) {
+  if (!project) {
     return {
       snapshot: input.snapshot,
       result: refusal(input.transferId, "target-project-changed"),
     }
   }
-  if (!await input.projectHasLineage(
-    input.snapshot.project.path,
-    manifest.project.lineageCommit,
-  )) {
+  const matching = []
+  for (const active of projects) {
+    if (!active.unavailableReason && await input.projectHasLineage(active.path, manifest.project.lineageCommit)) matching.push(active)
+  }
+  if (matching.length > 1) return { snapshot: input.snapshot, result: refusal(input.transferId, "target-project-ambiguous") }
+  if (matching[0]?.id !== project.id) {
     return {
       snapshot: input.snapshot,
       result: refusal(input.transferId, "target-project-mismatch"),
@@ -424,7 +437,7 @@ export async function commitPreparedSessionTransfer(input: {
     const completedAt = input.now()
     const candidate = importSessionTransferState(input.snapshot, state, {
       sourceMachineId: manifest.sourceMachineId,
-      targetProjectId: input.snapshot.project.id,
+      targetProjectId: project.id,
       workspacePath: restored.path,
       transferId: manifest.transferId,
       manifestDigest: input.manifestDigest,

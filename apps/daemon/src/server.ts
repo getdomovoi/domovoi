@@ -64,7 +64,6 @@ import {
   protocolVersion,
   protocolVersionSchema,
   sessionTransferContractVersion,
-  projectSwitchConfirmationErrorCode,
   protocolVersionMismatchErrorCode,
   type ProtocolMismatch,
   rpcMethodAuthorizations,
@@ -83,7 +82,10 @@ import {
   type AuditOutcome,
   type ProviderModel,
   type Project,
-  type ProjectSwitchConfirmation,
+  type ProjectCapRefusal,
+  projectCapErrorCode,
+  maximumProjectCap,
+  workspaceProjects,
   type QueuedSessionSend,
   type RepositoryGitFilterRefusal,
   type RpcParams,
@@ -404,19 +406,18 @@ export const serviceHandoffStopRefusal = "An emergency stop is still running."
 // who may mint a desktop credential.
 export const repositoryTrustCredentialRefusal =
   "Repository trust requires the daemon credential or a paired desktop or web credential with full access"
-// Trust is granted and taken back for the open project only. The refusal names
+// Trust is granted and taken back for active projects. The refusal names
 // no path or value (ruling Q123).
-export const repositoryTrustProjectRefusal = "Repository trust applies only to the open project"
-// J31 S1: the daemon keeps one project open at a time. Opening another one
-// switches to it, so the cap it states is 1 until several projects can be
-// active (S2 raises it to the configured cap, 3 by default, ruling Q190 A).
-export const activeProjectCap = 1
-// A call that names a project other than the open one.
+export const repositoryTrustProjectRefusal = "Repository trust applies only to an active project"
+// The default admission limit. Restored projects remain active above a lowered cap.
+export const activeProjectCap = 3
+const projectFolderCheckTimeoutMs = 2_000
+// A call that names a project outside the active list.
 export const projectNotOpenRefusal =
   "That project is not open. Open it first, or leave projectId out to use the open project."
 // project.close is declared on the wire before it is built (J31 S3).
 export const projectCloseUnavailableRefusal =
-  "Closing a project is not available yet. Opening another project switches to it after you confirm the sessions it stops."
+  "Closing a project is not available yet. Opening another project keeps existing projects active."
 // Methods whose params may name a project with projectId.
 const projectScopedRpcMethods: ReadonlySet<RpcMethod> = new Set([
   "session.create",
@@ -1168,10 +1169,8 @@ export function withActiveTurnStarts(sessions: readonly SessionSummary[], loadTu
 }
 
 export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot, loadTurns?: ClientTurnLoader): WorkspaceSnapshot {
-  const projects = snapshot.project ? [snapshot.project] : []
-  // The store refuses state with several projects (ruling Q257), so nothing
-  // here belongs to a project the list leaves out. If something ever does,
-  // fail here, loudly, rather than send a snapshot the schema refuses.
+  const projects = workspaceProjects(snapshot)
+  // Refuse inconsistent membership before emitting state to a client.
   const listed = new Set(projects.map((project) => project.id))
   if (
     snapshot.sessions.some((session) => !listed.has(session.projectId))
@@ -1188,7 +1187,7 @@ export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot, loadTurn
     ...state,
     sessions: loadTurns ? withActiveTurnStarts(state.sessions, loadTurns) : state.sessions,
     projects,
-    projectCap: activeProjectCap,
+    projectCap: snapshot.projectCap ?? activeProjectCap,
     thread,
     ...(historyTruncated ? { historyTruncated: true } : {}),
     ...(turns.length > 0 ? { turns } : {}),
@@ -1601,6 +1600,8 @@ export const localMachineCapabilities = [
 ] as const satisfies readonly MachineCapability[]
 
 export type DaemonServerOptions = {
+  projectCap?: number
+  projectDirectoryExists?: (path: string) => Promise<boolean>
   updates?: DaemonUpdateOptions
   localOwner?: { secret: LocalOwnerSecret; identity: LocalOwnerIdentity }
   host?: string
@@ -1956,6 +1957,7 @@ export class DomovoiDaemon {
   #providerSecrets: Pick<ProviderSecretManager, "status">
   #usageLedger: DaemonUsageLedger
   #providerRefresh: Promise<void> | undefined
+  #projectDirectoryExists: ((path: string) => Promise<boolean>) | undefined
   #skillCatalog: SkillCatalog | undefined
   #skillReviews: SkillReviews | undefined
   #skillTrustPath: string
@@ -2086,6 +2088,9 @@ export class DomovoiDaemon {
   #ownershipChecks = new Set<string>()
 
   constructor(options: DaemonServerOptions = {}) {
+    if (options.projectCap !== undefined && (!Number.isInteger(options.projectCap) || options.projectCap < 1 || options.projectCap > maximumProjectCap)) {
+      throw new Error(`Project cap must be an integer from 1 to ${maximumProjectCap}`)
+    }
     // Audit reads are store work, not agent work. Keep a finite independent
     // budget, validated before any workspace state or providers are opened.
     this.#auditReadTimeoutMs = options.auditReadTimeoutMs ?? 30_000
@@ -2252,6 +2257,8 @@ export class DomovoiDaemon {
       )
     }
     this.#snapshot = this.#store.load()
+    this.#snapshot.projects = workspaceProjects(this.#snapshot)
+    this.#snapshot.projectCap = options.projectCap ?? activeProjectCap
     this.#loadQueuedSessionSends(true)
     if (options.machineIdentity && this.#snapshot.machine.id !== options.machineIdentity.id) {
       // Picking either identity would silently reassign the ownership of every
@@ -2301,6 +2308,7 @@ export class DomovoiDaemon {
       },
       turnedOffAgentProviders(),
     )
+    this.#projectDirectoryExists = options.projectDirectoryExists
     this.#workspaceService = options.workspaceService ?? new GitWorkspaceService(
       options.worktreeRoot ?? join(this.#profileDirectory, "worktrees"),
       { repositoryTrust: (anchor) => this.#repositoryFilterTrust(anchor) },
@@ -2528,15 +2536,15 @@ export class DomovoiDaemon {
   }
 
   // The project a path the workspace gates belongs to
-  // (repository-git-filter-gate.ts): the open project's root, or a session
+  // (repository-git-filter-gate.ts): any active project root, or a session
   // worktree, which belongs to its session's own project. The grant and the
   // count of revokes are read at every call, never kept from an earlier
   // answer (#662). Any other path belongs to no project here, and its
   // repository filters stay held back.
   #repositoryFilterTrust(anchor: string): RepositoryFilterTrustSource | undefined {
-    const open = this.#snapshot.project
-    const session = open?.path === anchor ? undefined : this.#snapshot.sessions.find((candidate) => candidate.workspacePath === anchor)
-    const project = open?.path === anchor ? open : session ? this.#projectForSession(session) : undefined
+    const rootProject = workspaceProjects(this.#snapshot).find((project) => project.path === anchor)
+    const session = rootProject ? undefined : this.#snapshot.sessions.find((candidate) => candidate.workspacePath === anchor)
+    const project = rootProject ?? (session ? this.#projectForSession(session) : undefined)
     if (!project) return undefined
     return {
       projectId: project.id,
@@ -3182,6 +3190,9 @@ export class DomovoiDaemon {
       this.#outgoingTransferTransactions.pruneExpired(),
     ])
     signal?.throwIfAborted()
+    const availabilityChanged = (await Promise.all(
+      workspaceProjects(this.#snapshot).map((project) => this.#refreshProjectAvailability(project)),
+    )).some(Boolean)
     await this.#recoverSessionArchives()
     signal?.throwIfAborted()
     // Every turn still pending ran into this daemon's previous stop; when it
@@ -3198,6 +3209,7 @@ export class DomovoiDaemon {
     // saves and broadcasts seal any that did not.
     this.#approvalsSettled = true
     await this.#recoverSessionCreations()
+    if (availabilityChanged) await this.#persistSnapshot()
     this.#syncArtifactWatchers()
 
     const listen = this.#tls
@@ -3783,6 +3795,10 @@ export class DomovoiDaemon {
       ? { ...authenticatedActor, connectionId }
       : authenticatedActor ?? { kind: "daemon", component: "rpc" }
     const sessionId = this.#auditSessionId(values)
+    const scoped = projectScopedRpcMethods.has(method) || method === "repository.trust" || method === "repository.revokeTrust"
+    const project = sessionId === undefined && scoped && (values.projectId === undefined || typeof values.projectId === "string")
+      ? this.#projectForCall(values.projectId === undefined ? {} : { projectId: values.projectId })
+      : undefined
     const target = ["artifactId", "approvalId", "ruleId", "terminalId", "checkpointId", "annotationId", "deviceId", "machineId"]
       .map((key) => values[key])
       .find((value): value is string => typeof value === "string")
@@ -3797,6 +3813,7 @@ export class DomovoiDaemon {
       outcome: method === "approval.resolve" && values.decision === "deny" ? "denied" : "succeeded",
       ...(sessionId ? { sessionId } : {}),
       ...this.#auditProject(sessionId),
+      ...(project ? { projectId: project.id } : {}),
       ...(target ? { target } : {}),
       ...(method === "skill.setEnabled"
         ? { detail: `enabled=${values.enabled === true} digest=${String(values.contentDigest ?? "")}` }
@@ -3902,42 +3919,78 @@ export class DomovoiDaemon {
     this.#approvalLedger.admit(this.#snapshot.approvals, approval)
   }
 
-  // The project a session belongs to, found by its id: the open project, else
-  // that project's saved row, read and never written. Every session in the
-  // live snapshot belongs to the open project today, so the saved row is read
-  // only for an id that is not the open one's. Undefined when neither has it,
-  // and each caller then acts as it does when no project is open.
   #projectById(projectId: string): Project | undefined {
-    const open = this.#snapshot.project
-    if (open?.id === projectId) return open
+    return workspaceProjects(this.#snapshot).find((project) => project.id === projectId)
+  }
+
+  // Omitted project ids keep the shared focus as the call's default.
+  #projectForCall(params: { projectId?: string }): Project | undefined {
+    return params.projectId === undefined ? this.#snapshot.project ?? undefined : this.#projectById(params.projectId)
+  }
+
+  // Returns whether the reported state changed. A check failure is distinct
+  // from a missing directory, and neither may stop startup (Q168).
+  async #refreshProjectAvailability(project: Project): Promise<boolean> {
+    let reason: Project["unavailableReason"]
     try {
-      return this.#store.loadProject?.(projectId, this.#snapshot.machine)?.project
+      const exists = await withTimeout(Promise.resolve().then(() => this.#projectDirectoryExists
+        ? this.#projectDirectoryExists(project.path)
+        : stat(project.path).then((info) => info.isDirectory())),
+      projectFolderCheckTimeoutMs, "Could not check the project folder")
+      if (!exists) reason = "folder-missing"
     } catch (error) {
-      this.#reportError("Domovoi could not read a saved project", error)
-      return undefined
+      const code = (error as NodeJS.ErrnoException | null)?.code
+      reason = code === "ENOENT" || code === "ENOTDIR" ? "folder-missing" : "folder-check-failed"
     }
+    const changed = project.unavailableReason !== reason
+    if (reason) project.unavailableReason = reason
+    else delete project.unavailableReason
+    // Only this bounded result changes state; late filesystem completions do not.
+    // Stored descriptors need not share object identity after validation.
+    this.#snapshot.projects = workspaceProjects(this.#snapshot).map((entry) => entry.id === project.id ? project : entry)
+    if (this.#snapshot.project?.id === project.id) this.#snapshot.project = project
+    return changed
+  }
+
+  async #requireSessionProject(session: WorkspaceSnapshot["sessions"][number]): Promise<void> {
+    const project = this.#projectForSession(session)
+    if (project && await this.#refreshProjectAvailability(project)) {
+      await this.#persistSnapshot()
+      this.#broadcastSnapshot()
+    }
+    if (project?.unavailableReason === "folder-check-failed") {
+      throw new PublicRpcError(invalidParams, "Could not check the project folder. Try again when the folder can be checked.")
+    }
+    if (!project || project.unavailableReason) {
+      throw new PublicRpcError(invalidParams, "The session's project folder is unavailable. Restore the folder before starting a turn.")
+    }
+  }
+
+  #focusProject(project: Project, sessionId?: string): void {
+    this.#snapshot.project = project
+    this.#snapshot.activeSessionId = sessionId
+      ?? this.#snapshot.sessions.find((session) => session.projectId === project.id && session.id === this.#snapshot.activeSessionId)?.id
+      ?? this.#snapshot.sessions.find((session) => session.projectId === project.id)?.id
+      ?? null
   }
 
   #projectForSession(session: Pick<WorkspaceSnapshot["sessions"][number], "projectId">): Project | undefined {
     return this.#projectById(session.projectId)
   }
 
-  // The project an audit record about a session names: the session's own. A
-  // record with no session, or for one no longer in the snapshot, names the
-  // open project, as it always has.
+  // Session events name their own project. Contextless events name none.
   #auditProject(sessionId: string | undefined): { projectId?: string } {
     const session = sessionId === undefined
       ? undefined
       : this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
-    const projectId = session?.projectId ?? this.#snapshot.project?.id
+    const projectId = session?.projectId
     return projectId === undefined ? {} : { projectId }
   }
 
-  // A session with no worktree of its own works in its project's checkout. An
-  // approval whose session has left the snapshot keeps the open project's.
+  // Contextless approvals have no working directory and stay sealed.
   #approvalWorkspace(approval: WorkspaceSnapshot["approvals"][number]): string | undefined {
     const session = this.#snapshot.sessions.find((candidate) => candidate.id === approval.sessionId)
-    if (!session) return this.#snapshot.project?.path
+    if (!session) return undefined
     return session.workspacePath ?? this.#projectForSession(session)?.path
   }
 
@@ -4395,7 +4448,7 @@ export class DomovoiDaemon {
     id: string | number | null,
     code: number,
     message: string,
-    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch | SkillInstallRefusal | SessionAttachmentRefusal
+    data?: ProjectCapRefusal | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch | SkillInstallRefusal | SessionAttachmentRefusal
       | RepositoryGitFilterRefusal | SessionReviewRefusal | ApprovalCheckpointRefusal,
   ): void {
     this.#send(socket, this.#errorFrame(id, { code, message, ...(data ? { data } : {}) }))
@@ -4581,12 +4634,10 @@ export class DomovoiDaemon {
     }
   }
 
-  // Queued sends are stored for every project. Only the open project's
-  // sessions hold them in memory and in the snapshot. A release interrupted
-  // by a restart is unconfirmed; one still running during a project switch
-  // belongs to the project being left and is not loaded.
+  // Opening a project merges its durable queue without replacing live releases.
+  // Only a daemon restart can turn an in-flight release into unconfirmed.
   #loadQueuedSessionSends(afterRestart: boolean): void {
-    this.#queuedSessionSends.clear()
+    if (afterRestart) this.#queuedSessionSends.clear()
     const unreadable = (row: UnreadableQueuedSessionSend) => this.#reportError(
       row.quarantined
         ? "Domovoi moved an unreadable queued message aside"
@@ -4596,6 +4647,7 @@ export class DomovoiDaemon {
         : `Queued message ${row.queueId} for ${row.sessionId} stays in queued_session_sends; the next load tries again. ${row.reason}`),
     )
     for (const loaded of this.#store.loadQueuedSessionSends?.(unreadable) ?? []) {
+      if (!afterRestart && this.#queuedSessionSends.has(loaded.sessionId)) continue
       if (!afterRestart && !this.#snapshot.sessions.some((session) => session.id === loaded.sessionId)) continue
       const queued = afterRestart && loaded.state === "releasing"
         ? { ...loaded, state: "unconfirmed" as const, reason: "Delivery was in progress when the daemon restarted." }
@@ -6773,11 +6825,10 @@ export class DomovoiDaemon {
       return
     }
 
-    // One project is open at a time (J31 S1). A call may name it; naming any
-    // other is refused rather than answered for the open one.
+    // Named projects must be active; historical saved rows are not routing targets.
     if (projectScopedRpcMethods.has(method)) {
       const named = (paramsResult.data as { projectId?: string }).projectId
-      if (named !== undefined && named !== this.#snapshot.project?.id) {
+      if (named !== undefined && !this.#projectById(named)) {
         this.#error(socket, request.id, invalidParams, projectNotOpenRefusal)
         return
       }
@@ -6803,8 +6854,8 @@ export class DomovoiDaemon {
         }
         const index = this.#snapshot.approvalRules.findIndex((rule) => rule.id === params.ruleId)
         const rule = this.#snapshot.approvalRules[index]
-        if (!rule || rule.projectId !== this.#snapshot.project?.id) {
-          this.#error(socket, request.id, invalidParams, "Approval rule does not exist in the open project")
+        if (!rule || !this.#projectById(rule.projectId)) {
+          this.#error(socket, request.id, invalidParams, "Approval rule does not belong to an active project")
           return
         }
         if (rule.status === "inactive" && rule.inactiveReason !== "revoked") {
@@ -7497,7 +7548,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "skill.list") {
-        const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
+        const catalog = this.#skillCatalogFor(this.#projectForCall(paramsResult.data as { projectId?: string })?.path)
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
@@ -7812,7 +7863,7 @@ export class DomovoiDaemon {
             const live = this.#snapshot
             if (
               live.machine.id !== candidate.machine.id
-              || live.project?.id !== candidate.project?.id
+              || !workspaceProjects(live).some((project) => project.id === ownership.targetProjectId && !project.unavailableReason)
             ) {
               throw new SessionTransferStateError("target-project-missing")
             }
@@ -7821,7 +7872,7 @@ export class DomovoiDaemon {
             }
             const imported = (latest: WorkspaceSnapshot, slice: WorkspaceSnapshot) => workspaceSnapshotSchema.parse({
               ...mergeSessionSnapshotSlice(latest, slice, manifest.sessionId),
-              activeSessionId: candidate.activeSessionId,
+              activeSessionId: latest.project?.id === ownership.targetProjectId ? manifest.sessionId : latest.activeSessionId,
             })
             const persisted = imported(live, candidate)
             try {
@@ -8395,7 +8446,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "skill.inventory") {
-        const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
+        const catalog = this.#skillCatalogFor(this.#projectForCall(paramsResult.data as { projectId?: string })?.path)
         const machine = this.#snapshot.machine
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
@@ -8416,7 +8467,7 @@ export class DomovoiDaemon {
 
       if (method === "tool.inventory") {
         const { id, name, platform, arch, version } = this.#snapshot.machine
-        const project = this.#snapshot.project
+        const project = this.#projectForCall(paramsResult.data as { projectId?: string })
         // readToolInventory checks the whole answer against the protocol, and
         // #sendResult checks it again; a reader failure or an unfit answer
         // reaches the catch below and the daemon's internal error.
@@ -8462,7 +8513,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Repository trust is unavailable")
           return
         }
-        const project = this.#snapshot.project
+        const project = this.#projectForCall(paramsResult.data as { projectId?: string })
         if (!project || project.id !== params.projectId) {
           this.#error(socket, request.id, invalidParams, repositoryTrustProjectRefusal)
           return
@@ -8556,7 +8607,7 @@ export class DomovoiDaemon {
 
       if (method === "skill.read") {
         const params = paramsResult.data as RpcParams<"skill.read">
-        const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
+        const catalog = this.#skillCatalogFor(this.#projectForCall(paramsResult.data as { projectId?: string })?.path)
         try {
           this.#sendResult(socket, method, {
             jsonrpc: "2.0",
@@ -8572,7 +8623,7 @@ export class DomovoiDaemon {
 
       if (method === "skill.reviewRevision") {
         const params = paramsResult.data as RpcParams<"skill.reviewRevision">
-        const projectId = this.#snapshot.project?.id
+        const projectId = this.#projectForCall(paramsResult.data as { projectId?: string })?.id
         const reviewed = this.#snapshot.skillEnablements.some((review) =>
           review.projectId === projectId
           && review.skillId === params.id
@@ -8596,7 +8647,7 @@ export class DomovoiDaemon {
 
       if (method === "skill.setEnabled") {
         const params = paramsResult.data as RpcParams<"skill.setEnabled">
-        const project = this.#snapshot.project
+        const project = this.#projectForCall(paramsResult.data as { projectId?: string })
         if (!project) {
           this.#error(socket, request.id, invalidParams, "Open a project before reviewing skills")
           return
@@ -8661,7 +8712,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Skill review requires an identified client")
           return
         }
-        const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
+        const catalog = this.#skillCatalogFor(this.#projectForCall(paramsResult.data as { projectId?: string })?.path)
         let document: SkillDocument
         try {
           document = await catalog.read(params.id)
@@ -8703,7 +8754,7 @@ export class DomovoiDaemon {
 
       if (method === "skill.installPreview") {
         const params = paramsResult.data as RpcParams<"skill.installPreview">
-        const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
+        const catalog = this.#skillCatalogFor(this.#projectForCall(paramsResult.data as { projectId?: string })?.path)
         if (!(catalog instanceof FileSkillCatalog)) {
           this.#error(socket, request.id, invalidParams, "Skill install is unavailable")
           return
@@ -8728,7 +8779,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Skill install requires an identified client")
           return
         }
-        const project = this.#snapshot.project
+        const project = this.#projectForCall(paramsResult.data as { projectId?: string })
         if (params.scope === "project" && !project) {
           this.#error(socket, request.id, invalidParams, "Open a project before installing a project skill")
           return
@@ -9243,6 +9294,10 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === approval.sessionId,
         )
+        if (!session || !this.#projectForSession(session)) {
+          this.#error(socket, request.id, invalidParams, "Approval has no active session project")
+          return
+        }
         if (sessionIsReadOnly(session)) {
           this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
@@ -9313,10 +9368,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, fileTargetOtherNamesMessage)
           return
         }
-        // A standing rule stays with the open project: the snapshot accepts
-        // only rules for that project, so routing it by the session's waits
-        // for the snapshot to hold several projects.
-        const project = this.#snapshot.project
+        const project = this.#projectForSession(session)
         if (params.decision === "always-project" && !project) {
           this.#error(socket, request.id, internalError, "Approval has no open project")
           return
@@ -10063,48 +10115,23 @@ export class DomovoiDaemon {
           throw new PublicRpcError(invalidParams, refusal)
         }
         const projectId = `project-${createHash("sha256").update(repository.root).digest("hex").slice(0, 12)}`
-        if (this.#snapshot.project?.path === repository.root) {
-          if (
-            this.#snapshot.project.name !== repository.name
-            || this.#snapshot.project.branch !== repository.branch
-          ) {
-            this.#snapshot.project = {
-              ...this.#snapshot.project,
-              name: repository.name,
-              branch: repository.branch,
-            }
-            changed = true
-          }
+        const active = workspaceProjects(this.#snapshot)
+        const existing = active.find((project) => project.id === projectId)
+        const project: Project = {
+          id: projectId, machineId: this.#snapshot.machine.id, name: repository.name,
+          path: repository.root, branch: repository.branch,
+        }
+        if (existing) {
+          this.#snapshot.projects = active.map((entry) => entry.id === projectId ? project : entry)
+          this.#focusProject(project)
         } else {
-          const sessions = this.#snapshot.sessions.map((session) => ({
-            id: session.id,
-            title: session.title,
-            state: session.state,
-            ...(session.workspacePath ? { workspacePath: session.workspacePath } : {}),
-          }))
-          const confirmation: ProjectSwitchConfirmation = {
-            kind: "project-switch-confirmation",
-            requestedPath: repository.root,
-            sessions,
-            sessionCount: sessions.length,
-            worktreeCount: sessions.filter((session) => session.workspacePath).length,
-          }
-          if (
-            sessions.length > 0
-            && JSON.stringify(params.confirmation) !== JSON.stringify(confirmation)
-          ) {
-            this.#error(
-              socket,
-              request.id,
-              projectSwitchConfirmationErrorCode,
-              "Confirm stopping this project's running work before switching",
-              confirmation,
-            )
+          const cap = this.#snapshot.projectCap ?? activeProjectCap
+          if (active.length >= cap) {
+            this.#error(socket, request.id, projectCapErrorCode, "The active project cap has been reached", {
+              kind: "project_cap", cap, activeProjectIds: active.map((entry) => entry.id),
+            })
             return
           }
-          // The saved row is read before anything stops, so a row this
-          // daemon must not open is refused with the open project still
-          // running as it was (ruling Q259).
           let restored: ReturnType<NonNullable<WorkspaceStore["loadProject"]>>
           try {
             restored = this.#store.loadProject?.(projectId, this.#snapshot.machine)
@@ -10112,67 +10139,36 @@ export class DomovoiDaemon {
             if (!(error instanceof SavedProjectStateError)) throw error
             throw new PublicRpcError(invalidParams, error.message)
           }
-          this.#closeAllTerminals()
-          for (const session of this.#snapshot.sessions) {
-            this.#flushCommandOutputStreams(session.id)
+          // Recover only the newly activated project's saved records. Existing
+          // turns, approvals, terminals, queues and provider threads stay live.
+          const loaded: WorkspaceSnapshot = {
+            ...createEmptyWorkspace(this.#snapshot.machine), ...restored, project,
           }
-          await this.#suspendProjectSessions()
-          this.#commandOutputRedactors.clear()
-          if (this.#snapshot.project) await this.#persistSnapshot()
-          this.#snapshot.project = {
-            id: projectId,
-            machineId: this.#snapshot.machine.id,
-            name: repository.name,
-            path: repository.root,
-            branch: repository.branch,
-          }
-          this.#snapshot.sessions = restored?.sessions ?? []
-          this.#snapshot.activeSessionId = restored?.activeSessionId ?? null
-          // Saved cards never enter the live list: they expire just below
-          // (ruled 2026-09-24, #604), before any client or save sees them.
-          this.#snapshot.approvals = []
-          this.#snapshot.approvalRules = restored?.approvalRules ?? []
-          this.#dropUndeliveredRules(this.#snapshot, "project-open")
-          this.#snapshot.thread = restored?.thread ?? []
-          this.#snapshot.artifacts = restored?.artifacts ?? []
-          this.#snapshot.workingPlans = restored?.workingPlans ?? []
-          this.#snapshot.annotations = restored?.annotations ?? []
-          // Only one daemon owns a profile (the profile lease), and closing a
-          // project asks its providers to stop their turns, so no turn saved
-          // with a closed project is still this daemon's to finish. Its saved
-          // cards expire, and every stored turn ends here as startup ends it,
-          // whatever the provider. Claude's stop can return before its query
-          // has exited (#646).
+          this.#dropUndeliveredRules(loaded, "project-open")
           const expiredAt = new Date().toISOString()
-          const expiredApprovals = this.#expireStoredApprovals(this.#snapshot, expiredAt, restored?.approvals ?? [])
-          const endedTurnSessionIds = new Set(this.#snapshot.sessions.flatMap((session) => (
-            session.activeTurnId
-              && session.state !== "archiving"
-              && session.state !== "archived"
-              ? [session.id]
-              : []
+          const expiredApprovals = this.#expireStoredApprovals(loaded, expiredAt, loaded.approvals)
+          const endedTurnSessionIds = new Set(loaded.sessions.flatMap((session) => (
+            session.activeTurnId && session.state !== "archiving" && session.state !== "archived" ? [session.id] : []
           )))
-          noteExpiredApprovals(
-            this.#snapshot,
-            expiredApprovals.filter((approval) => !endedTurnSessionIds.has(approval.sessionId)),
-            "This approval request expired when the project closed. Send a message to continue.",
-            expiredAt,
-          )
+          noteExpiredApprovals(loaded, expiredApprovals.filter((approval) => !endedTurnSessionIds.has(approval.sessionId)),
+            "This approval request expired when the project closed. Send a message to continue.", expiredAt)
           this.#auditExpiredApprovals(expiredApprovals, "project-open", projectId)
-          this.#snapshot.queuedSends = []
+          this.#auditEndedStoredTurns(endStoredTurns(loaded, endedTurnSessionIds, expiredApprovals, expiredAt), "project-open", projectId)
+          this.#snapshot.projects = [...active, project]
+          this.#snapshot.sessions.push(...loaded.sessions)
+          this.#snapshot.approvalRules.push(...loaded.approvalRules)
+          this.#snapshot.thread.push(...loaded.thread)
+          this.#snapshot.artifacts.push(...loaded.artifacts)
+          this.#snapshot.workingPlans.push(...loaded.workingPlans)
+          this.#snapshot.annotations.push(...loaded.annotations)
+          this.#focusProject(project, loaded.activeSessionId ?? undefined)
           this.#loadQueuedSessionSends(false)
           for (const sessionId of endedTurnSessionIds) {
             this.#holdQueuedSessionSend(sessionId, "Daemon restart interrupted the turn before the queued boundary.")
           }
-          this.#auditEndedStoredTurns(
-            endStoredTurns(this.#snapshot, endedTurnSessionIds, expiredApprovals, expiredAt),
-            "project-open",
-            projectId,
-          )
-          this.#activeAssistantItems.clear()
           await this.#recoverSessionCreations()
-          changed = true
         }
+        changed = true
       }
 
       if (method === "session.activate") {
@@ -10182,13 +10178,13 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        this.#snapshot.activeSessionId = session.id
+        this.#focusProject(this.#projectForSession(session)!, session.id)
         changed = true
       }
 
       if (method === "session.create") {
         const params = paramsResult.data as RpcParams<"session.create">
-        const project = this.#snapshot.project
+        const project = this.#projectForCall(paramsResult.data as { projectId?: string })
         if (!project) {
           this.#error(
             socket,
@@ -10290,7 +10286,7 @@ export class DomovoiDaemon {
           branch: workspace.branch,
         })
         this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, providerThreadId))
-        this.#snapshot.activeSessionId = sessionId
+        this.#focusProject(project, sessionId)
         this.#snapshot.thread.push({
           id: `checkpoint-${randomUUID()}`,
           sessionId,
@@ -10585,6 +10581,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session is not ready for agent turns")
           return
         }
+        await this.#requireSessionProject(session)
         if (params.delivery === "next-turn-replace") {
           const actor = this.#authenticatedActors.get(socket)
           const connectionId = this.#connectionIds.get(socket)
@@ -10944,7 +10941,7 @@ export class DomovoiDaemon {
           this.#planModeTurns.add(providerTurnIdentity(dispatchRuntime.provider, providerThreadId, turnId))
         }
         delete currentSession.providerFailure
-        this.#snapshot.activeSessionId = currentSession.id
+        if (this.#snapshot.project?.id === currentSession.projectId) this.#snapshot.activeSessionId = currentSession.id
         changed = true
         }
       }
@@ -11345,7 +11342,6 @@ export class DomovoiDaemon {
         actor: { kind: "provider", provider },
         action: "provider.disconnected",
         outcome: "failed",
-        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
       })
       await this.#handleProviderDisconnect(provider, event.reason)
       return
@@ -12859,17 +12855,13 @@ export class DomovoiDaemon {
     }
   }
 
-  // A recovered session joins the live snapshot, which holds only the open
-  // project's sessions, so only that project's creations are recovered here.
-  // Another project's wait until project.open loads it and calls this again.
-  // Each recovered record names its own repository path.
+  // Recover intents for every active project using each receipt's repository.
   async #recoverSessionCreations(): Promise<void> {
     const journal = this.#store.sessionCreations
-    const projectId = this.#snapshot.project?.id
-    if (!journal || !projectId) return
+    if (!journal) return
     const candidate = structuredClone(this.#snapshot)
     let changed = false
-    for (const intent of journal.pending(projectId)) {
+    for (const intent of workspaceProjects(this.#snapshot).flatMap((project) => journal.pending(project.id))) {
       if (candidate.sessions.some(({ id }) => id === intent.session.id)) continue
       try {
         process.kill(intent.ownerPid, 0)
@@ -12989,7 +12981,7 @@ export class DomovoiDaemon {
   #auditExpiredApprovals(
     approvals: WorkspaceSnapshot["approvals"],
     component: "startup-recovery" | "project-open",
-    projectId: string | undefined,
+    projectId?: string,
   ): void {
     for (const approval of approvals) {
       this.#appendAudit({
@@ -12997,7 +12989,7 @@ export class DomovoiDaemon {
         action: "approval.expired",
         outcome: "cancelled",
         sessionId: approval.sessionId,
-        ...(projectId ? { projectId } : {}),
+        ...(projectId ? { projectId } : this.#auditProject(approval.sessionId)),
         target: approval.id,
       })
     }
@@ -13063,14 +13055,14 @@ export class DomovoiDaemon {
     this.#store.save(candidate)
     this.#snapshot = candidate
     this.#activeAssistantItems.clear()
-    this.#auditEndedStoredTurns(recoveredTurns, "startup-recovery", candidate.project?.id)
-    this.#auditExpiredApprovals(expiredApprovals, "startup-recovery", candidate.project?.id)
+    this.#auditEndedStoredTurns(recoveredTurns, "startup-recovery")
+    this.#auditExpiredApprovals(expiredApprovals, "startup-recovery")
   }
 
   #auditEndedStoredTurns(
     turns: ReadonlyArray<{ sessionId: string; turnId: string }>,
     component: "startup-recovery" | "project-open",
-    projectId: string | undefined,
+    projectId?: string,
   ): void {
     for (const turn of turns) {
       this.#appendAudit({
@@ -13078,7 +13070,7 @@ export class DomovoiDaemon {
         action: "session.turn-interrupted",
         outcome: "cancelled",
         sessionId: turn.sessionId,
-        ...(projectId ? { projectId } : {}),
+        ...(projectId ? { projectId } : this.#auditProject(turn.sessionId)),
         target: turn.turnId,
       })
     }
@@ -14028,86 +14020,6 @@ export class DomovoiDaemon {
       this.#reportError(`Domovoi could not read the saved project ${projectId} for the project list`, new Error("The saved row is not one project's state"))
     }
     return knownProjectList(this.#snapshot, listing, this.#projectFolders)
-  }
-
-  async #suspendProjectSessions(): Promise<void> {
-    const suspendedAt = new Date().toISOString()
-    const interruptedSessionIds = new Set<string>()
-    for (const session of this.#snapshot.sessions) {
-      const threadId = session.providerThreadId
-      const turnId = session.activeTurnId
-      // A turned-off provider is never run, so it has no thread to stop.
-      const runsProvider = !this.#agents.isUnavailable(session.runtime.provider)
-      if (turnId) {
-        interruptedSessionIds.add(session.id)
-        if (threadId && runsProvider) {
-          try {
-            await withTimeout(
-              this.#agents.require(session.runtime.provider).interruptTurn(threadId, turnId),
-              this.#agentTimeoutMs,
-              "Project switch turn interrupt timed out",
-            )
-          } catch (error) {
-            this.#reportError("Domovoi could not interrupt a turn before switching projects", error)
-          }
-        }
-        delete session.activeTurnId
-        this.#holdQueuedSessionSend(session.id, "Switching projects interrupted the turn before the queued boundary.")
-        if (session.state !== "archiving" && session.state !== "archived") {
-          session.state = "idle"
-        }
-        session.updatedAt = suspendedAt
-        this.#snapshot.thread.push({
-          id: `system-${randomUUID()}`,
-          sessionId: session.id,
-          kind: "system",
-          body: "Switching projects interrupted the active turn.",
-          detail: "Pending approval requests were expired. The worktree, session history, checkpoints, and artifacts were preserved. Reopen this project and send another message to continue with a new provider turn.",
-          createdAt: suspendedAt,
-        })
-      }
-      if (!threadId || !runsProvider) continue
-      const stopStartedAt = this.#nextTrustEpoch()
-      try {
-        await withTimeout(
-          this.#agents.require(session.runtime.provider).stopThread(threadId),
-          this.#agentTimeoutMs,
-          "Project switch provider cleanup timed out",
-        )
-        this.#threadStopped(session.runtime.provider, threadId, stopStartedAt)
-      } catch (error) {
-        this.#reportError("Domovoi could not stop a provider thread before switching projects", error)
-        const threadKey = providerThreadKey(session.runtime.provider, threadId)
-        this.#failedEmergencyThreads.add(threadKey)
-        this.#emergencyBlockedThreads.add(threadKey)
-        // Quarantine clears the thread id, which is right when a provider is
-        // known to be gone. This one refused to stop, so it may still be
-        // writing to the worktree: the id stays recorded so the restart guard
-        // refuses to start a second agent in the same files, and the session
-        // says why rather than looking idle.
-        session.state = "failed"
-        session.updatedAt = suspendedAt
-        this.#removeApprovals(
-          (approval) => approval.sessionId === session.id,
-          suspendedAt,
-        )
-        this.#snapshot.thread.push({
-          id: `system-${randomUUID()}`,
-          sessionId: session.id,
-          kind: "system",
-          body: "The provider thread did not stop when this project was closed.",
-          detail: "It may still be running against this worktree, so Domovoi will not start another agent here. Restart Domovoi to clear it, or archive the session.",
-          createdAt: suspendedAt,
-        })
-        continue
-      }
-    }
-    if (interruptedSessionIds.size > 0) {
-      this.#removeApprovals(
-        (approval) => interruptedSessionIds.has(approval.sessionId),
-        suspendedAt,
-      )
-    }
   }
 }
 

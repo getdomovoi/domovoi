@@ -473,6 +473,12 @@ describe("session creation recovery boundaries", () => {
       initialClosed = true
       injectOwnerProbe("ESRCH")
       const store = new SqliteWorkspaceStore(join(fixture.root, "state.sqlite"), active.result!)
+      // Opening another project no longer deactivates this one. Seed the
+      // inactive membership explicitly while preserving its saved row/intent.
+      const inactive = store.load()
+      inactive.projects = [inactive.project!]
+      store.save(inactive)
+      expect(store.load().projects?.some((project) => project.id === dormantId)).not.toBe(true)
       restarted = await connectCreationFixture("create", { ...fixture, seed: active.result!, store })
       expect((await restarted.rpc("workspace.get", {})).result?.project).toEqual(active.result?.project)
       expect((await restarted.rpc("workspace.get", {})).result?.sessions).toEqual([])

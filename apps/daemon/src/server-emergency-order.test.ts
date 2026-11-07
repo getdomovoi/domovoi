@@ -72,7 +72,7 @@ describe("emergency stop", () => {
       onEvent: vi.fn(() => () => {}),
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     const owner = await connect(daemon, port, "desktop")
@@ -140,7 +140,7 @@ describe("emergency stop", () => {
       }),
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     const owner = await connect(daemon, port, "desktop")

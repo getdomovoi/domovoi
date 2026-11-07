@@ -80,7 +80,7 @@ function idleSession() {
 describe("failures a person can act on", () => {
   it("answers project.open on a folder that is not a repository with a public message", async () => {
     const errorSink = vi.fn()
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       statePath: ":memory:",
       workspaceService: workspaceService(async () => {
@@ -107,7 +107,7 @@ describe("failures a person can act on", () => {
   ] as const)("records a provider failure while %s and says what it was", async (_step, overrides, kind, message) => {
     const { snapshot, sessionId } = idleSession()
     const store = { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent(overrides) }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: agent(overrides) }, errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     const rpc = await connect(daemon, port)
@@ -125,7 +125,7 @@ describe("failures a person can act on", () => {
     ["an unknown HEAD", gitFailure({ code: 128, stderr: "fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree.\n" })],
     ["no repository", gitFailure({ code: 128, stderr: "fatal: not a git repository (or any of the parent directories): .git\n" })],
   ])("answers the public message for %s", async (_name, failure) => {
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0, statePath: ":memory:", workspaceService: workspaceService(async () => { throw failure }), errorSink: vi.fn(), agents: {},
     })
     daemons.push(daemon)
@@ -141,7 +141,7 @@ describe("failures a person can act on", () => {
     ["a dubious ownership refusal", gitFailure({ code: 128, stderr: "fatal: detected dubious ownership in repository at '/mnt/c/code/app'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /mnt/c/code/app\n" }),
       "Git refused this folder because a different user owns it. Add it to Git's safe.directory list, then open it again."],
   ])("names %s with its own fixed message", async (_name, failure, message) => {
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0, statePath: ":memory:", workspaceService: workspaceService(async () => { throw failure }), errorSink: vi.fn(), agents: {},
     })
     daemons.push(daemon)
@@ -152,7 +152,7 @@ describe("failures a person can act on", () => {
 
   it("keeps a permission error internal", async () => {
     const failure = gitFailure({ message: "EACCES: permission denied, scandir '/code/locked'", code: "EACCES" })
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0, statePath: ":memory:", workspaceService: workspaceService(async () => { throw failure }), errorSink: vi.fn(), agents: {},
     })
     daemons.push(daemon)
@@ -168,7 +168,7 @@ describe("failures a person can act on", () => {
       startTurn: vi.fn(async () => "turn-running"),
       steerTurn: vi.fn(async () => { throw new Error("429 rate limit exceeded") }),
     })
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex }, errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     const rpc = await connect(daemon, port)
@@ -191,7 +191,7 @@ describe("failures a person can act on", () => {
       return on.call(this, event, listener as Parameters<typeof on>[1])
     } as typeof on)
     const errorSink = vi.fn()
-    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", errorSink, agents: {} })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, statePath: ":memory:", errorSink, agents: {} })
     daemons.push(daemon)
     try {
       await daemon.start()

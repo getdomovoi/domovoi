@@ -106,7 +106,7 @@ async function fixture() {
   } satisfies WorkspaceService
   const agents = { "claude-code": agentFor(claude, "claude-thread"), codex: agentFor(codex, "codex-thread") }
   const errorSink = vi.fn()
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0, statePath: ":memory:", store: new SqliteWorkspaceStore(":memory:", snapshot), agents, workspaceService, repositoryTrust, errorSink,
   })
   daemons.push(daemon)
