@@ -295,9 +295,17 @@ function newSessionShortcut(
     : event.ctrlKey && !event.metaKey
 }
 
+// How a project switch the shell asked for ended (switchProject).
+type ProjectSwitchOutcome =
+  | { kind: "opened"; projectId: string | null }
+  | { kind: "cancelled" }
+  | { kind: "confirming" }
+
 // A request that starts a new session, kept so a refused one can be made again.
 type SessionStartAttempt =
-  | { kind: "create"; title: string; runtime: Runtime }
+  // projectId names the project the launcher meant, so a start that another
+  // client's project switch overtook is refused rather than run elsewhere.
+  | { kind: "create"; title: string; runtime: Runtime; projectId?: string }
   | { kind: "fork"; input: Omit<RpcParams<"session.fork">, "client"> }
 
 // Where a start was made: the generation of the shell's thread scope
@@ -736,7 +744,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [projectSwitchPending, setProjectSwitchPending] = useState(false)
   const [projectSwitchError, setProjectSwitchError] = useState("")
   // What waits on the confirmation dialog's answer, when something does.
-  const pendingSwitch = useRef<((outcome: "opened" | "cancelled") => void) | null>(null)
+  const pendingSwitch = useRef<((outcome: ProjectSwitchOutcome) => void) | null>(null)
   // Rulings Q158 A and Q159 A: the projects this machine knows, as
   // project.list read them, kept per machine. A project's sessions stay listed
   // while another one is open. The list is read again when the active set or
@@ -862,7 +870,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     try {
       if (attempt.kind === "create") {
         const stopsBefore = stopsSeen.current
-        const sessionId = await createSession(attempt.title, attempt.runtime)
+        const sessionId = await createSession(attempt.title, attempt.runtime, attempt.projectId)
         // Walk F14, ruling Q135: the design's launcher asks what the agent
         // should work on and starts the session on it, so the goal is also
         // the first message. It waits in the session's queue, which sends it
@@ -1309,18 +1317,20 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // daemon asks to confirm stopping the open project's work, the confirmation
   // dialog asks. A caller that goes on to do something in the new project
   // (start a session there, open one of its sessions) waits for the answer;
-  // "cancelled" means the person kept the current project.
-  const switchProject = async (path: string, waitForConfirmation: boolean): Promise<"opened" | "cancelled" | "confirming"> => {
+  // "cancelled" means the person kept the current project. An opened switch
+  // carries the id of the project the daemon opened, for the call that
+  // follows to name; null when that answer came on a connection this shell
+  // has since left, and then nothing follows.
+  const switchProject = async (path: string, waitForConfirmation: boolean): Promise<ProjectSwitchOutcome> => {
     try {
-      await openProject(path)
-      return "opened"
+      return { kind: "opened", projectId: await openProject(path) }
     } catch (cause) {
       if (!(cause instanceof ProjectSwitchConfirmationError)) throw cause
-      pendingSwitch.current?.("cancelled")
+      pendingSwitch.current?.({ kind: "cancelled" })
       pendingSwitch.current = null
       setProjectSwitchError("")
       setProjectSwitchConfirmation(cause.confirmation)
-      if (!waitForConfirmation) return "confirming"
+      if (!waitForConfirmation) return { kind: "confirming" }
       return new Promise((resolve) => { pendingSwitch.current = resolve })
     }
   }
@@ -1330,7 +1340,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const cancelProjectSwitch = () => {
     setProjectSwitchError("")
     setProjectSwitchConfirmation(null)
-    pendingSwitch.current?.("cancelled")
+    pendingSwitch.current?.({ kind: "cancelled" })
     pendingSwitch.current = null
   }
   const confirmProjectSwitch = async (path: string) => {
@@ -1338,9 +1348,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setProjectSwitchPending(true)
     setProjectSwitchError("")
     try {
-      await openProject(path, projectSwitchConfirmation)
+      const projectId = await openProject(path, projectSwitchConfirmation)
       setProjectSwitchConfirmation(null)
-      pendingSwitch.current?.("opened")
+      pendingSwitch.current?.({ kind: "opened", projectId })
       pendingSwitch.current = null
     } catch (cause) {
       if (cause instanceof ProjectSwitchConfirmationError) {
@@ -1383,12 +1393,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // switch the person did not confirm starts nothing and leaves the launcher
   // open.
   const startSessionIn = async (title: string, runtime: Runtime, projectPath: string): Promise<LauncherStartOutcome> => {
-    const attempt: SessionStartAttempt = { kind: "create", title, runtime }
-    if (projectPath === snapshot?.project?.path) {
-      await startSession(attempt)
+    const open = snapshot?.project
+    if (open && projectPath === open.path) {
+      await startSession({ kind: "create", title, runtime, projectId: open.id })
       return "started"
     }
-    if (await switchProject(projectPath, true) !== "opened") return "cancelled"
+    const switched = await switchProject(projectPath, true)
+    if (switched.kind !== "opened") return "cancelled"
+    // The answer came on a connection this shell has left: nothing it opened
+    // is on screen, so nothing starts.
+    if (switched.projectId === null) throw new Error("The connection to the daemon changed before the session could start. Try again.")
+    const attempt: SessionStartAttempt = { kind: "create", title, runtime, projectId: switched.projectId }
     await new Promise<void>((resolve, reject) => setAfterSwitch({ kind: "start", attempt, resolve, reject }))
     return "started"
   }
@@ -1398,7 +1413,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (watching) return
     setWorkspaceError("")
     void switchProject(project.path, true).then((outcome) => {
-      if (outcome === "opened") setAfterSwitch({ kind: "open", sessionId })
+      // Only in the project that was asked for, on this connection.
+      if (outcome.kind === "opened" && outcome.projectId === project.id) setAfterSwitch({ kind: "open", sessionId })
     }, (cause: unknown) => {
       setWorkspaceError(cause instanceof Error ? cause.message : "Domovoi could not open that project")
     })

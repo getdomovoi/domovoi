@@ -296,7 +296,10 @@ describe("starting a session in another project", () => {
       respond(socket, "project.open", snapshotB())
     })
     await settle()
-    expect(pendingRequest(socket, "session.create").params).toMatchObject({ title: "Render Cyrillic invoices" })
+    // The create names the project that was opened, so a switch another
+    // client makes in between is refused by the daemon rather than starting
+    // the session in the wrong repository.
+    expect(pendingRequest(socket, "session.create").params).toMatchObject({ title: "Render Cyrillic invoices", projectId: projectB.id })
   })
 
   it("starts nothing and keeps the launcher open when the switch is not confirmed", async () => {

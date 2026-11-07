@@ -427,19 +427,24 @@ export function useWorkspace(
     ? { sessionId: sessionRead.sessionId, count: sessionRead.count, recent: sessionRead.recent, retrying: sessionRead.retrying }
     : null
 
-  const openProject = useCallback(async (path: string, confirmation?: ProjectSwitchConfirmation) => {
+  // Gives the id of the project the daemon opened, so what runs next can name
+  // it; none for an answer on a connection this hook has since left.
+  const openProject = useCallback(async (path: string, confirmation?: ProjectSwitchConfirmation): Promise<string | null> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshotFrom(client, await client.openProject(path, confirmation))
+    const next = await client.openProject(path, confirmation)
+    updateSnapshotFrom(client, next)
+    return isCurrentConnection(clientRef.current, client) ? next.project?.id ?? null : null
   }, [updateSnapshotFrom])
 
   // Gives the new session's id: session.create makes the session it created
   // the active one in the snapshot it answers with. An answer on a connection
   // this hook has since left gives none, as its snapshot is not applied.
-  const createSession = useCallback(async (title: string, runtime: Runtime): Promise<string | null> => {
+  // projectId, when given, is the project the session must start in.
+  const createSession = useCallback(async (title: string, runtime: Runtime, projectId?: string): Promise<string | null> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    const next = await client.createSession(title, runtime)
+    const next = await client.createSession(title, runtime, projectId)
     updateSnapshotFrom(client, next)
     return isCurrentConnection(clientRef.current, client) ? next.activeSessionId : null
   }, [updateSnapshotFrom])

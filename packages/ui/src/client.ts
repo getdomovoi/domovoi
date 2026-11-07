@@ -658,8 +658,11 @@ export class DomovoiClient extends EventTarget {
     return this.request("project.list", {})
   }
 
-  createSession(title: string, runtime: Runtime): Promise<WorkspaceSnapshot> {
-    return this.request("session.create", { title, runtime, client: this.kind })
+  // projectId names the project the session must start in; the daemon refuses
+  // the call when that project is no longer open, rather than starting the
+  // session in whichever project is.
+  createSession(title: string, runtime: Runtime, projectId?: string): Promise<WorkspaceSnapshot> {
+    return this.request("session.create", { title, runtime, client: this.kind, ...(projectId ? { projectId } : {}) })
   }
 
   forkSession(
