@@ -79,7 +79,7 @@ describe("service configuration", () => {
   it("accepts legacy configuration without a cap and refuses invalid saved caps", () => {
     const legacy = { ...defaults } as Record<string, unknown>
     delete legacy.projectCap
-    expect(parseDaemonEnvironment(serviceEnvironment(parseServiceConfiguration(JSON.stringify(legacy))), "/home/test")).toMatchObject({ projectCap: 3 })
+    expect(parseDaemonEnvironment(serviceEnvironment(parseServiceConfiguration(JSON.stringify(legacy))), "/home/test")).not.toHaveProperty("projectCap")
     for (const projectCap of [0, 17, 1.5, "3"]) {
       expect(() => parseServiceConfiguration(JSON.stringify({ ...defaults, projectCap }))).toThrow(/Invalid service configuration/)
     }

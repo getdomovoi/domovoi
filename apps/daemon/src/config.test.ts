@@ -5,8 +5,8 @@ import { describe, expect, it } from "vitest"
 import { DaemonConfigurationError, defaultWebDirectory, parseDaemonEnvironment } from "./config.js"
 
 describe("parseDaemonEnvironment", () => {
-  it("defaults to three active projects and accepts bounded overrides", () => {
-    expect(parseDaemonEnvironment({}, "/home/tester")).toMatchObject({ projectCap: 3 })
+  it("leaves the runtime default implicit and accepts bounded overrides", () => {
+    expect(parseDaemonEnvironment({}, "/home/tester")).not.toHaveProperty("projectCap")
     for (const cap of [1, 2, 16]) {
       expect(parseDaemonEnvironment({ DOMOVOI_PROJECT_CAP: String(cap) }, "/home/tester")).toMatchObject({ projectCap: cap })
     }
@@ -79,7 +79,6 @@ describe("parseDaemonEnvironment", () => {
   it("returns bounded local defaults", () => {
     expect(parseDaemonEnvironment({}, "/home/tester")).toEqual({
       profileDirectory: join("/home/tester", ".domovoi"),
-      projectCap: 3,
       host: "127.0.0.1",
       port: 47831,
       credentialPath: join("/home/tester", ".domovoi", "daemon.token"),

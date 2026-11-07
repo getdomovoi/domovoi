@@ -5,7 +5,7 @@
 
 Skip unchanged project rows on save and preserve operational errors when restoring several active projects.
 
-Configure the active-project admission cap with DOMOVOI_PROJECT_CAP, including saved service settings. Default to three and accept values from one through sixteen.
+Configure the active-project admission cap with DOMOVOI_PROJECT_CAP, including saved service settings. Default to three and accept values from one through sixteen. Persist the cap only when explicitly set, so default service configurations remain readable by older daemons.
 
 Keep several projects active while shared focus moves between them. Opening or refocusing a project preserves other projects' turns, terminals, approvals and queued sends. Restore every active project at restart, retain projects above a lowered cap, and mark missing folders unavailable before admitting new turns.
 

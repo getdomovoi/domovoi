@@ -838,6 +838,16 @@ describe("runServiceCommand", () => {
     expect(launch).toContain(configuration![0])
   })
 
+  it.each([undefined, "3", "5"])("persists a project cap only when explicitly set: %s", async (cap) => {
+    const dependencies = command({ environment: cap === undefined ? {} : { DOMOVOI_PROJECT_CAP: cap } })
+    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(0)
+    const written = vi.mocked(dependencies.write).mock.calls.find(([path]) => path.endsWith("service.json"))
+    expect(written).toBeDefined()
+    const config = JSON.parse(written![1])
+    if (cap === undefined) expect(config).not.toHaveProperty("projectCap")
+    else expect(config).toHaveProperty("projectCap", Number(cap))
+  })
+
   it("rejects an environment-only bearer before writing or installing a service", async () => {
     const dependencies = command({
       ...windowsScript,

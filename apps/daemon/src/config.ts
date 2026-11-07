@@ -116,7 +116,7 @@ export function parseDaemonEnvironment(
     profileDirectory,
     host,
     port,
-    projectCap: parseProjectCap(environment.DOMOVOI_PROJECT_CAP),
+    ...(environment.DOMOVOI_PROJECT_CAP !== undefined ? { projectCap: parseProjectCap(environment.DOMOVOI_PROJECT_CAP) } : {}),
     ...(tls ? { tls } : {}),
     ...(tailnetListener ? { tailnetListener } : {}),
     ...(advertiseHost ? { advertiseHost } : {}),
@@ -134,8 +134,7 @@ export function parseDaemonEnvironment(
   }
 }
 
-function parseProjectCap(value: string | undefined): number {
-  if (value === undefined) return 3
+function parseProjectCap(value: string): number {
   if (!/^[1-9][0-9]*$/u.test(value) || Number(value) > maximumProjectCap) {
     throw new DaemonConfigurationError(`DOMOVOI_PROJECT_CAP must be an integer from 1 to ${maximumProjectCap}`)
   }
