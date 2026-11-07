@@ -74,6 +74,7 @@ function targetSnapshot(): WorkspaceSnapshot {
 }
 
 async function transferFixture(options: {
+  canonicalProjectId?: boolean
   sessionId?: string
   transferId?: string
   // Changes the portable state after it is prepared and before it is
@@ -99,6 +100,10 @@ async function transferFixture(options: {
   session.baseCommit = baseCommit
   session.ownershipGeneration = 1
   delete session.providerThreadId
+  if (options.canonicalProjectId) {
+    source.project!.id = `project-${createHash("sha256").update(source.project!.path).digest("hex").slice(0, 12)}`
+    session.projectId = source.project!.id
+  }
   source.sessions = [session]
   source.activeSessionId = session.id
   source.thread = source.thread.filter((item) => item.sessionId === session.id)
@@ -135,8 +140,8 @@ async function packagedTransfer(editState?: (state: SessionTransferState) => voi
   return (await transferFixture(editState ? { editState } : {})).packaged
 }
 
-async function stagedTransferFixture() {
-  const fixture = await transferFixture()
+async function stagedTransferFixture(options: Parameters<typeof transferFixture>[0] = {}) {
+  const fixture = await transferFixture(options)
   const staged = stageSourceSessionCheckpoint(
     freezeSourceSessionTransfer(
       fixture.source,
@@ -3325,6 +3330,61 @@ describe("project close ordered with transfers", () => {
     expect(workspaceSnapshotSchema.parse((await client("workspace.get", {})).result)).toMatchObject({ project: null, projects: [], sessions: [] })
     expect(store.load()).toMatchObject({ project: null, sessions: [] })
     expect(workspaceProjects(store.load())).toEqual([])
+    socket.close()
+  })
+
+  it.each([false, true])("resumes transfer reconciliation only when the closed project reopens (restart=%s)", async (restart) => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-close-reopen-"))
+    scratchDirectories.push(scratch)
+    const { staged } = await stagedTransferFixture({ canonicalProjectId: true })
+    const databasePath = join(scratch, "workspace.sqlite")
+    let store = new SqliteWorkspaceStore(databasePath, staged)
+    const connectToMachine = vi.fn(async () => { throw new MachinePairingRequiredError() })
+    const createDaemon = () => {
+      const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store,
+        authToken: testAuthToken("close-reopen-transfer"),
+        outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
+        connectToMachine, sessionTransferRetryMs: 10,
+        workspaceService: {
+          inspect: async () => ({ root: staged.project!.path, name: staged.project!.name, branch: "main", head: baseCommit }),
+          createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+          removeSessionWorkspace: async () => {}, checkpoint: async () => ({ commit: checkpointCommit, changedFiles: [] }),
+          restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        },
+        errorSink: () => {}, artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+      })
+      running.push(daemon)
+      return daemon
+    }
+    let daemon = createDaemon()
+    await daemon.start()
+    await waitForDaemon(() => expect(connectToMachine).toHaveBeenCalled())
+    let socket = await openClient(daemon)
+    let call = rpc(socket)
+    const closeParams = { projectId: staged.project!.id, client: "desktop" }
+    const confirmation = await call("project.close", closeParams)
+    expect(await call("project.close", { ...closeParams, confirmation: (confirmation.error as { data: unknown }).data })).toHaveProperty("result")
+    expect(store.loadProject(staged.project!.id)!.sessions[0]).toMatchObject({ state: "transferring" })
+    if (restart) {
+      socket.close()
+      await daemon.stop()
+      store = new SqliteWorkspaceStore(databasePath, staged)
+      daemon = createDaemon()
+      await daemon.start()
+      socket = await openClient(daemon)
+      call = rpc(socket)
+    }
+    const attemptsWhileClosed = connectToMachine.mock.calls.length
+    // Let the already armed retry fire; a closed project's saved sessions
+    // are deliberately absent from the live reconciliation scan.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(connectToMachine).toHaveBeenCalledTimes(attemptsWhileClosed)
+    expect(store.load()).toMatchObject({ project: null, sessions: [] })
+    expect(await call("project.open", { path: staged.project!.path, client: "desktop" })).toHaveProperty("result")
+    await waitForDaemon(() => expect(connectToMachine.mock.calls.length).toBeGreaterThan(attemptsWhileClosed))
+    await waitForDaemon(() => expect(store.load().sessions[0]).toMatchObject({
+      state: "transferring", transfer: { package: { reconciliation: { reason: "target-pairing-required", attemptCount: expect.any(Number) } } },
+    }))
     socket.close()
   })
 
