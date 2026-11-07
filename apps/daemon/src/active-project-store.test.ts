@@ -16,6 +16,43 @@ afterEach(() => removeScratchDirectories(directories))
 const restoreOptions = { restoreActiveProjects: true, manageDirectoryPermissions: false }
 const fields = ["sessions", "approvals", "approvalRules", "thread", "artifacts", "workingPlans", "annotations"] as const
 
+describe.each(["sync", "worker"] as const)("atomic project close (%s)", (mode) => {
+  it.each([false, true])("saves the closed row with the active removal, injected failure: %s", async (fail) => {
+    const path = await statePath()
+    const store = new SqliteWorkspaceStore(path, several(), restoreOptions)
+    try {
+      const before = rows(path)
+      const closed = projectCopy("a")
+      closed.approvals = []
+      for (const session of closed.sessions) {
+        delete session.activeTurnId
+        session.state = "idle"
+      }
+      const remaining = projectCopy("b")
+      remaining.projects = [remaining.project!]
+      if (fail) {
+        const database = new DatabaseSync(path)
+        database.exec(`CREATE TRIGGER reject_closed_project BEFORE INSERT ON workspace_projects
+          WHEN NEW.project_id = '${closed.project!.id}' BEGIN SELECT RAISE(ABORT, 'injected close failure'); END`)
+        database.close()
+      }
+      const save = () => mode === "sync"
+        ? store.saveProjectClose(remaining, closed)
+        : store.saveProjectCloseAsync(remaining, closed)
+      if (fail) {
+        await expect(Promise.resolve().then(save)).rejects.toThrow("injected close failure")
+        expect(rows(path)).toEqual(before)
+      } else {
+        await save()
+        expect(store.load().project?.id).toBe(remaining.project!.id)
+        expect(store.load().sessions.every((session) => session.projectId === remaining.project!.id)).toBe(true)
+        expect(store.loadProject(closed.project!.id)!.sessions).toEqual(closed.sessions)
+        expect(store.loadProject(closed.project!.id)!.approvalRules).toEqual(closed.approvalRules)
+      }
+    } finally { await store.close() }
+  })
+})
+
 function projectCopy(suffix: string): WorkspaceSnapshot {
   const original = structuredClone(demoWorkspace)
   const records = [original.project!, ...original.sessions, ...original.approvals, ...original.approvalRules,

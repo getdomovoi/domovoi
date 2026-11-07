@@ -36,7 +36,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
 })
 
-async function fixture() {
+async function fixture(closeBeforeReopen = false) {
   const scratch = await mkdtemp(join(tmpdir(), "domovoi-claude-stop-fence-"))
   // The first session's Claude process hangs; any later one exits when its
   // stdin ends. A model list's Claude, started with no directory, always does.
@@ -109,6 +109,15 @@ async function fixture() {
     if (!first.error) return first
     return rpc("project.open", { path, client: "desktop", confirmation: first.error.data })
   }
+  const closeProject = async () => {
+    const current = await rpc("workspace.get", {})
+    const projectId = (current.result?.project as { id: string }).id
+    const first = await rpc("project.close", { projectId, client: "desktop" })
+    expect(first.error?.code).toBe(-32022)
+    const closed = await rpc("project.close", { projectId, client: "desktop", confirmation: first.error?.data })
+    expect(closed.error).toBeUndefined()
+    expect(closed.result?.sessions).toEqual([expect.objectContaining({ outcome: "unconfirmed" })])
+  }
   // A Claude turn runs in project one; its interrupt fails and its process
   // will not exit, so emergency stop fences it before focus changes.
   const hangInProjectOne = async () => {
@@ -120,6 +129,7 @@ async function fixture() {
     expect(sessions()).toHaveLength(1)
     sessions()[0]!.interrupt.mockRejectedValue(new Error("Claude did not answer the interrupt"))
     await rpc("system.emergencyStop", { client: "desktop" })
+    if (closeBeforeReopen) await closeProject()
     expect((await openProject("/code/two")).error).toBeUndefined()
     const back = await openProject("/code/one")
     expect(back.error).toBeUndefined()
@@ -135,12 +145,12 @@ async function fixture() {
     sessions()[0]!.interrupt.mockRejectedValue(new Error("Claude did not answer the interrupt"))
     return sessionId
   }
-  return { rpc, sessions, children, checkpoint, hangInProjectOne, hangTurn }
+  return { rpc, sessions, children, checkpoint, hangInProjectOne, hangTurn, closeProject, openProject }
 }
 
-describe("a Claude process that will not stop", () => {
+describe.each([false, true])("a Claude process that will not stop, close before reopen: %s", (closeBeforeReopen) => {
   it("keeps its emergency-stop fence across refocus, with no second query", async () => {
-    const { rpc, sessions, children, hangInProjectOne } = await fixture()
+    const { rpc, sessions, children, hangInProjectOne } = await fixture(closeBeforeReopen)
 
     const { sessionId, back } = await hangInProjectOne()
 
@@ -159,7 +169,7 @@ describe("a Claude process that will not stop", () => {
   })
 
   it("keeps the fence through recovery while the process lives, and lifts it once it has exited", async () => {
-    const { rpc, children, hangInProjectOne } = await fixture()
+    const { rpc, children, hangInProjectOne } = await fixture(closeBeforeReopen)
     const { sessionId } = await hangInProjectOne()
 
     const refused = await rpc("session.setRuntime", { sessionId, client: "desktop", runtime })
@@ -176,7 +186,7 @@ describe("a Claude process that will not stop", () => {
   // Security review round 1 of #647, F1: recovery started its replacement
   // query, and took its checkpoint, before it tried to stop the failed one.
   it("starts no replacement query and takes no checkpoint while recovery cannot stop the failed process", async () => {
-    const { rpc, sessions, children, checkpoint, hangInProjectOne } = await fixture()
+    const { rpc, sessions, children, checkpoint, hangInProjectOne } = await fixture(closeBeforeReopen)
     const { sessionId } = await hangInProjectOne()
     const checkpointsBefore = checkpoint.mock.calls.length
 
@@ -196,12 +206,16 @@ describe("a Claude process that will not stop", () => {
   // F6: a second emergency stop left out the thread the first could not
   // stop, and reported no failure while its process still ran.
   it("reports the failed stop again on each emergency stop until the process exits, and keeps the fence", async () => {
-    const { rpc, sessions, children, hangTurn } = await fixture()
+    const { rpc, sessions, children, hangTurn, closeProject, openProject } = await fixture(closeBeforeReopen)
     const sessionId = await hangTurn()
     type Stop = { failures: Array<{ target: string; message: string }> }
 
     const first = (await rpc("system.emergencyStop", { client: "desktop" })).result as unknown as Stop
     expect(first.failures).toContainEqual(expect.objectContaining({ target: "turn" }))
+    if (closeBeforeReopen) {
+      await closeProject()
+      await openProject("/code/one")
+    }
 
     const second = (await rpc("system.emergencyStop", { client: "desktop" })).result as unknown as Stop
     expect(second.failures).toContainEqual({
