@@ -13840,7 +13840,7 @@ export class DomovoiDaemon {
         root,
         onChange: (change) => {
           if (this.#stopping || this.#stopped) return
-          void this.#enqueueMutation(() => this.#recordWorktreeArtifact(sessionId, root, change))
+          void this.#enqueueMutation(() => this.#recordWorktreeArtifact(sessionId, root, change, watcher))
         },
         onError: (error) => this.#reportError("Domovoi artifact watcher failed", error),
       })
@@ -13860,7 +13860,13 @@ export class DomovoiDaemon {
     sessionId: string,
     root: string,
     change: ArtifactFileChange,
+    watcher: ReturnType<SessionArtifactWatcherFactory>,
   ): Promise<void> {
+    // Queued callbacks from a stopped watcher must not attach to a reopened
+    // session with the same id and worktree. Recheck after filesystem awaits.
+    const current = () => !this.#stopping && !this.#stopped
+      && this.#artifactWatchers.get(sessionId)?.watcher === watcher
+    if (!current()) return
     const session = this.#snapshot.sessions.find((candidate) =>
       candidate.id === sessionId
       && candidate.workspacePath
@@ -13886,6 +13892,7 @@ export class DomovoiDaemon {
     } catch {
       return
     }
+    if (!current()) return
     const fileHash = createHash("sha256")
       .update(`${sessionId}:${lexicalPath}`)
       .digest("hex")

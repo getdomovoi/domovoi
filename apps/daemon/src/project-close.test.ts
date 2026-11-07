@@ -296,3 +296,17 @@ it("leaves a stopped project active when the atomic close write fails", async ()
   expect(snapshot.sessions[0]).not.toHaveProperty("activeTurnId")
   expect((await close(a.projectId)).error).toBeUndefined()
 })
+
+it("rejects callbacks from a stopped watcher after reopen while accepting the replacement", async () => {
+  const { rpc, open, close, watchers } = await fixture()
+  const a = await open("a")
+  const old = watchers[0]!
+  await writeFile(join(old.root, "plan.md"), "plan")
+  expect((await close(a.projectId)).error).toBeUndefined()
+  await open("a", false)
+  const change: ArtifactFileChange = { path: "plan.md", title: "stale plan", type: "plan", mimeType: "text/markdown", content: "stale" }
+  old.onChange(change)
+  expect((await rpc("workspace.get")).result!.artifacts).toEqual([])
+  watchers.at(-1)!.onChange({ ...change, title: "current plan", content: "current" })
+  await expect.poll(async () => (await rpc("workspace.get")).result!.artifacts.map((artifact) => artifact.title)).toEqual(["current plan"])
+})
