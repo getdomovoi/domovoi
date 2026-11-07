@@ -152,7 +152,7 @@ describe("whole-snapshot writes", () => {
     const { snapshot, streaming, source } = streamingWorkspace()
     const { store, disk, parkNextWrite, parkedWrite, release } = parkingStore(snapshot)
     const listeners = new Set<(event: AgentEvent) => void>()
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       agents: { codex: agentWith(listeners, ["fork-thread"]) },
@@ -198,7 +198,7 @@ describe("whole-snapshot writes", () => {
     delete failed.providerThreadId
     const { store, disk, parkNextWrite, parkedWrite, release } = parkingStore(snapshot)
     const listeners = new Set<(event: AgentEvent) => void>()
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       agents: { codex: agentWith(listeners, ["restarted-thread"]) },
@@ -236,7 +236,7 @@ describe("whole-snapshot writes", () => {
     const { store, disk, parkNextWrite, parkedWrite, release } = parkingStore(snapshot)
     const listeners = new Set<(event: AgentEvent) => void>()
     const agent = agentWith(listeners, ["restarted-thread"])
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       agents: { codex: agent },

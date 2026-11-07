@@ -77,7 +77,7 @@ async function start() {
     })),
   } satisfies WorkspaceService
   const store = new SqliteWorkspaceStore(":memory:", pendingApproval())
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0, store,
     agents: { codex: provider }, workspaceService, errorSink: vi.fn(),
   })

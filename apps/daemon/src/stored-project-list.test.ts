@@ -211,6 +211,7 @@ async function openDaemon(databasePath: string) {
     inspect: async (path: string) => ({ root: path, name: path.split("/").at(-1), branch: "main", head: "a".repeat(40) }),
   } as unknown as WorkspaceService
   const daemon = new DomovoiDaemon({
+    projectDirectoryExists: async () => true,
     port: 0,
     store: new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine)),
     workspaceService,

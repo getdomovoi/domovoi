@@ -224,7 +224,7 @@ async function preparedTargetTransfer(options: {
   scratchDirectories.push(scratch)
   const transactions = new FileTransferTransactions(join(scratch, "transactions"))
   const store = new SqliteWorkspaceStore(":memory:", targetSnapshot())
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0,
     store,
     authToken: testAuthToken("correct-horse-battery-staple"),
@@ -304,7 +304,7 @@ async function preparedTargetTransfer(options: {
 describe("transactional session transfer RPC", () => {
   it("requires a hello identity before an authenticated socket can call RPCs", async () => {
     const { source } = await transferFixture()
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", source),
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -340,7 +340,7 @@ describe("transactional session transfer RPC", () => {
     snapshot.machine.id = targetMachineId
     snapshot.project!.machineId = targetMachineId
     const store = new SqliteWorkspaceStore(":memory:", snapshot)
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -422,7 +422,7 @@ describe("transactional session transfer RPC", () => {
       close: () => {},
     }))
     const checkpoint = vi.fn(async () => ({ commit: checkpointCommit, changedFiles: [] }))
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -515,7 +515,7 @@ describe("transactional session transfer RPC", () => {
     const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
     const pruneIncoming = vi.spyOn(incoming, "pruneExpired")
     const pruneOutgoing = vi.spyOn(outgoing, "pruneExpired")
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", targetSnapshot()),
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -545,7 +545,7 @@ describe("transactional session transfer RPC", () => {
       headCommit: checkpointCommit,
       digest: `sha256:${"0".repeat(64)}`,
     }))
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -599,7 +599,7 @@ describe("transactional session transfer RPC", () => {
         ownershipGeneration: 2,
       }
     })
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -666,7 +666,7 @@ describe("transactional session transfer RPC", () => {
       if (method !== "transfer.status") throw new Error(`Unexpected ${method}`)
       return { state: "unknown", transferId: packaged.manifest.transferId }
     })
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -697,7 +697,7 @@ describe("transactional session transfer RPC", () => {
       state: "aborted",
       transferId: `transfer-${"0".repeat(32)}`,
     }))
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -739,7 +739,7 @@ describe("transactional session transfer RPC", () => {
           reason: "session-state-changed",
         }
       })
-      const daemon = new DomovoiDaemon({
+      const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
         port: 0,
         store,
         authToken: testAuthToken("correct-horse-battery-staple"),
@@ -788,7 +788,7 @@ describe("transactional session transfer RPC", () => {
       }
       throw new Error(`Unexpected ${method}`)
     })
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -831,7 +831,7 @@ describe("transactional session transfer RPC", () => {
       }
       throw new Error(`Unexpected ${method}`)
     })
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -864,7 +864,7 @@ describe("transactional session transfer RPC", () => {
       const released = new Promise<void>((resolve) => { release = resolve })
       parked.set(sessionId, { arrived, arrive, released, release })
     }
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -953,7 +953,7 @@ describe("transactional session transfer RPC", () => {
       }
       throw new Error(`Unexpected ${method}`)
     })
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -986,7 +986,7 @@ describe("transactional session transfer RPC", () => {
     const connectToMachine = vi.fn(async () => {
       throw new Error("target is unreachable")
     })
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -1058,7 +1058,7 @@ describe("transactional session transfer RPC", () => {
     const connectToMachine = vi.fn(async () => {
       throw new MachinePairingRequiredError()
     })
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -1100,7 +1100,7 @@ describe("transactional session transfer RPC", () => {
     scratchDirectories.push(scratch)
     const { staged } = await stagedTransferFixture()
     const store = new SqliteWorkspaceStore(":memory:", staged)
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -1132,7 +1132,7 @@ describe("transactional session transfer RPC", () => {
     const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
     await stageOutgoingSessionTransferPackage(outgoing, packaged)
     let calls = 0
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -1183,7 +1183,7 @@ describe("transactional session transfer RPC", () => {
     const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
     await stageOutgoingSessionTransferPackage(outgoing, packaged)
     let calls = 0
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -1283,7 +1283,7 @@ describe("transactional session transfer RPC", () => {
         ownershipGeneration: 2,
       }
     })
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -1342,7 +1342,7 @@ describe("transactional session transfer RPC", () => {
       if (method !== "transfer.status") throw new Error(`Unexpected ${method}`)
       return { state: "unknown", transferId: packaged.manifest.transferId }
     })
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -1387,7 +1387,7 @@ describe("transactional session transfer RPC", () => {
     )
     const store = new SqliteWorkspaceStore(databasePath, recovered)
     vi.spyOn(store, "saveAsync").mockRejectedValue(new Error("disk unavailable"))
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -1470,7 +1470,7 @@ describe("transactional session transfer RPC", () => {
       await save(snapshot)
     })
     let checkpointed = false
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -1585,7 +1585,7 @@ describe("transactional session transfer RPC", () => {
     const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
     await stageOutgoingSessionTransferPackage(outgoing, packaged)
     const store = new SqliteWorkspaceStore(":memory:", staged)
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -1654,7 +1654,7 @@ describe("transactional session transfer RPC", () => {
     }, Date.now())
     let checkpointed = false
     let statusCalls = 0
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -1923,7 +1923,7 @@ describe("transactional session transfer RPC", () => {
     scratchDirectories.push(scratch)
     const transactions = new FileTransferTransactions(join(scratch, "transactions"))
     const store = new SqliteWorkspaceStore(":memory:", snapshot)
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -2013,7 +2013,7 @@ describe("transactional session transfer RPC", () => {
       transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
     }, Date.now())
     const remoteCalls: Array<{ method: string, params: Record<string, unknown> }> = []
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -2135,7 +2135,7 @@ describe("transactional session transfer RPC", () => {
         }),
         close: () => {},
       }))
-      const daemon = new DomovoiDaemon({
+      const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
         port: 0,
         store,
         authToken: testAuthToken("correct-horse-battery-staple"),
@@ -2195,7 +2195,7 @@ describe("transactional session transfer RPC", () => {
       protocolVersion: source.protocolVersion,
       transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
     }, Date.now())
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -2262,7 +2262,7 @@ describe("transactional session transfer RPC", () => {
       onData: vi.fn(() => ({ dispose: vi.fn() })),
       onExit: vi.fn(() => ({ dispose: vi.fn() })),
     } satisfies TerminalProcess
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -2370,7 +2370,7 @@ describe("transactional session transfer RPC", () => {
       transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
     }, Date.now())
     let checkpointed = false
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -2467,7 +2467,7 @@ describe("transactional session transfer RPC", () => {
       protocolVersion,
       transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
     }, Date.now())
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -2595,7 +2595,7 @@ describe("transactional session transfer RPC", () => {
       commit: checkpointCommit,
       incremental: false,
     }))
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -2772,7 +2772,7 @@ describe("transactional session transfer RPC", () => {
       transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
     }, Date.now())
     let checkpointed = false
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -2961,7 +2961,7 @@ describe("transactional session transfer RPC", () => {
     })
     const checkpointed = new Set<string>()
     const targetTransactions = new FileTransferTransactions(join(scratch, "target"))
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -3101,7 +3101,7 @@ describe("session transfer of a turned-off provider's session", () => {
     const staged: { transferId?: string; manifestDigest?: string } = {}
     const errorSink = vi.fn()
     let checkpointed = false
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
@@ -3258,7 +3258,7 @@ describe("session transfer of a turned-off provider's session", () => {
       }
     })
     const errorSink = vi.fn()
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),

@@ -151,7 +151,7 @@ describe("approval decisions", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     raiseApprovals()
@@ -203,7 +203,7 @@ describe("approval decisions", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     raiseApprovals()
@@ -243,7 +243,7 @@ describe("approval decisions", () => {
       saveAsync: vi.fn(async () => {}),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     raiseApprovals()
@@ -282,7 +282,7 @@ describe("approval decisions", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     raiseApprovals()
@@ -331,7 +331,7 @@ describe("approval decisions", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     raiseApprovals()
@@ -388,7 +388,7 @@ describe("standing rule replacement links", () => {
       saveAsync: vi.fn(async () => {}),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     raiseApprovals()
@@ -427,7 +427,7 @@ describe("standing rule replacement links", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     raiseApprovals()

@@ -69,7 +69,7 @@ async function start(options: {
     checkpoint: vi.fn(),
     snapshot: vi.fn(options.checkpoint ?? (async () => ({ commit: checkpointCommit, changedFiles: ["db/schema.sql"] }))),
   } satisfies WorkspaceService
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0, store: new SqliteWorkspaceStore(":memory:", pendingApproval(options.worktree ?? true)),
     agents: { codex: provider }, workspaceService, errorSink: vi.fn(),
     ...(options.agentTimeoutMs === undefined ? {} : { agentTimeoutMs: options.agentTimeoutMs }),

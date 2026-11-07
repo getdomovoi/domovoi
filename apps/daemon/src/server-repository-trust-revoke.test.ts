@@ -157,7 +157,7 @@ async function fixture(options: { agentTimeoutMs?: number; reportsTrust?: boolea
   const agents = { "claude-code": agentFor(claude, reportsTrust), codex: agentFor(codex, reportsTrust) }
   const errorSink = vi.fn()
   const store = new SqliteWorkspaceStore(":memory:", snapshot)
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0,
     statePath: ":memory:",
     store,

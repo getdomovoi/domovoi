@@ -101,7 +101,7 @@ describe("provider disconnect", () => {
       }),
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     const { socket } = await client(daemon, port)
@@ -178,7 +178,7 @@ describe("provider disconnect", () => {
       inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(),
       archiveSessionWorkspace: vi.fn(async () => {}), checkpoint: vi.fn(), restore: vi.fn(),
     } satisfies WorkspaceService
-    const daemon = new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
       port: 0, store, agents: { codex: agent }, workspaceService, errorSink: vi.fn(),
     })
     daemons.push(daemon)
@@ -247,7 +247,7 @@ describe("provider disconnect", () => {
       }),
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     snapshot.approvals.push(approval)
@@ -317,7 +317,7 @@ describe("provider disconnect", () => {
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
     const emit = (event: AgentEvent) => { for (const listener of listeners) listener(event) }
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     const live = snapshot.sessions.find(({ id }) => id === session.id)!
@@ -428,7 +428,7 @@ describe("provider disconnect", () => {
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
     const emit = (event: AgentEvent) => { for (const listener of listeners) listener(event) }
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     for (const session of [first, second]) {
@@ -528,7 +528,7 @@ describe("provider disconnect", () => {
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
     const emit = (event: AgentEvent) => { for (const listener of listeners) listener(event) }
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true, port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     for (const session of [first, second]) {

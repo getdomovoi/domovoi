@@ -169,9 +169,9 @@ export const projectSchema = z.object({
   name: z.string().min(1),
   path: z.string().min(1),
   branch: z.string().min(1),
-  // A missing folder does not evict an active project or its sessions. The
-  // daemon refuses new turns until the folder is available again (Q163).
-  unavailableReason: z.literal("folder-missing").optional(),
+  // An unavailable or unchecked folder does not evict its project (Q163/Q168).
+  // New turns require a successful folder check.
+  unavailableReason: z.enum(["folder-missing", "folder-check-failed"]).optional(),
 })
 
 export const sessionForkOriginSchema = z.object({

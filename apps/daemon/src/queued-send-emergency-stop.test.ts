@@ -64,7 +64,7 @@ async function fixture() {
     restore: async () => ({ restoredCommit: "b".repeat(40), recoveryCommit: "c".repeat(40) }),
   } as unknown as WorkspaceService
   const errors: unknown[] = []
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0,
     store: new SqliteWorkspaceStore(join(scratch, "state.sqlite"), createEmptyWorkspace({
       id: `machine-${"9".repeat(32)}`, name: "queued-stop", platform: process.platform, arch: process.arch,

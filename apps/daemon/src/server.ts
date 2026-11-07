@@ -409,6 +409,7 @@ export const repositoryTrustCredentialRefusal =
 export const repositoryTrustProjectRefusal = "Repository trust applies only to an active project"
 // The default admission limit. Restored projects remain active above a lowered cap.
 export const activeProjectCap = 3
+const projectFolderCheckTimeoutMs = 2_000
 // A call that names a project outside the active list.
 export const projectNotOpenRefusal =
   "That project is not open. Open it first, or leave projectId out to use the open project."
@@ -3185,7 +3186,9 @@ export class DomovoiDaemon {
       this.#outgoingTransferTransactions.pruneExpired(),
     ])
     signal?.throwIfAborted()
-    for (const project of workspaceProjects(this.#snapshot)) await this.#refreshProjectAvailability(project)
+    const availabilityChanged = (await Promise.all(
+      workspaceProjects(this.#snapshot).map((project) => this.#refreshProjectAvailability(project)),
+    )).some(Boolean)
     await this.#recoverSessionArchives()
     signal?.throwIfAborted()
     // Every turn still pending ran into this daemon's previous stop; when it
@@ -3202,6 +3205,7 @@ export class DomovoiDaemon {
     // saves and broadcasts seal any that did not.
     this.#approvalsSettled = true
     await this.#recoverSessionCreations()
+    if (availabilityChanged) await this.#persistSnapshot()
     this.#syncArtifactWatchers()
 
     const listen = this.#tls
@@ -3920,31 +3924,40 @@ export class DomovoiDaemon {
     return params.projectId === undefined ? this.#snapshot.project ?? undefined : this.#projectById(params.projectId)
   }
 
+  // Returns whether the reported state changed. A check failure is distinct
+  // from a missing directory, and neither may stop startup (Q168).
   async #refreshProjectAvailability(project: Project): Promise<boolean> {
-    // A failed Git inspection alone is not evidence that the folder is gone.
-    // Confirm directory absence before disabling its sessions.
-    let missing = false
+    let reason: Project["unavailableReason"]
     try {
-      if (this.#projectDirectoryExists) missing = !await this.#projectDirectoryExists(project.path)
-      else await this.#withAbortTimeout(async (signal) => { await this.#workspaceService.inspect(project.path, signal) }, this.#agentTimeoutMs, "Repository inspection timed out")
-    } catch {
-      try { missing = !(await stat(project.path)).isDirectory() } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code
-        if (code !== "ENOENT" && code !== "ENOTDIR") throw error
-        missing = true
-      }
+      const exists = await withTimeout(Promise.resolve().then(() => this.#projectDirectoryExists
+        ? this.#projectDirectoryExists(project.path)
+        : stat(project.path).then((info) => info.isDirectory())),
+      projectFolderCheckTimeoutMs, "Could not check the project folder")
+      if (!exists) reason = "folder-missing"
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | null)?.code
+      reason = code === "ENOENT" || code === "ENOTDIR" ? "folder-missing" : "folder-check-failed"
     }
-    if (missing) project.unavailableReason = "folder-missing"
+    const changed = project.unavailableReason !== reason
+    if (reason) project.unavailableReason = reason
     else delete project.unavailableReason
+    // Only this bounded result changes state; late filesystem completions do not.
     // Stored descriptors need not share object identity after validation.
     this.#snapshot.projects = workspaceProjects(this.#snapshot).map((entry) => entry.id === project.id ? project : entry)
     if (this.#snapshot.project?.id === project.id) this.#snapshot.project = project
-    return !missing
+    return changed
   }
 
   async #requireSessionProject(session: WorkspaceSnapshot["sessions"][number]): Promise<void> {
     const project = this.#projectForSession(session)
-    if (!project || !await this.#refreshProjectAvailability(project)) {
+    if (project && await this.#refreshProjectAvailability(project)) {
+      await this.#persistSnapshot()
+      this.#broadcastSnapshot()
+    }
+    if (project?.unavailableReason === "folder-check-failed") {
+      throw new PublicRpcError(invalidParams, "Could not check the project folder. Try again when the folder can be checked.")
+    }
+    if (!project || project.unavailableReason) {
       throw new PublicRpcError(invalidParams, "The session's project folder is unavailable. Restore the folder before starting a turn.")
     }
   }

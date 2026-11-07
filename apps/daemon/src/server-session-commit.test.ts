@@ -91,7 +91,7 @@ async function fixture(options: {
   } satisfies WorkspaceService
   const claude = agent()
   const store = new SqliteWorkspaceStore(":memory:", snapshot)
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0, statePath: ":memory:", store, agents: { "claude-code": claude }, workspaceService, errorSink: vi.fn(),
     ...(options.agentTimeoutMs ? { agentTimeoutMs: options.agentTimeoutMs } : {}),
   })

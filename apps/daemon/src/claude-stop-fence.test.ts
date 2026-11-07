@@ -64,7 +64,7 @@ async function fixture() {
     checkpoint,
     restore: async () => ({ restoredCommit: "b".repeat(40), recoveryCommit: "c".repeat(40) }),
   } as unknown as WorkspaceService
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0,
     store: new SqliteWorkspaceStore(join(scratch, "state.sqlite"), createEmptyWorkspace({
       id: `machine-${"8".repeat(32)}`, name: "claude-stop-fence", platform: process.platform, arch: process.arch,

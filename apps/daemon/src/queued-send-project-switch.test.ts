@@ -20,7 +20,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
 })
 
-async function fixture(projectCap?: number, saved?: WorkspaceSnapshot, missingPaths: string[] = []) {
+async function fixture(projectCap?: number, saved?: WorkspaceSnapshot, missingPaths: string[] = [], check?: ((path: string) => Promise<boolean>) | null) {
   const scratch = await mkdtemp(join(tmpdir(), "domovoi-queued-switch-"))
   const listeners = new Set<(event: AgentEvent) => void>()
   let turn = 0
@@ -74,6 +74,7 @@ async function fixture(projectCap?: number, saved?: WorkspaceSnapshot, missingPa
     port: 0,
     ...(projectCap !== undefined ? { projectCap } : {}),
     store,
+    ...(check === null ? {} : { projectDirectoryExists: check ?? (async (path: string) => !missingPaths.includes(path)) }),
     agents: { codex: agent },
     workspaceService,
     terminalService: { spawn: () => terminal },
@@ -82,12 +83,17 @@ async function fixture(projectCap?: number, saved?: WorkspaceSnapshot, missingPa
     artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
     errorSink: (error: unknown) => { errors.push(error) },
   })
-  const address = await daemon.start()
-  const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
   cleanups.push(async () => {
-    socket.terminate()
     await daemon.stop()
     await rm(scratch, { recursive: true, force: true })
+  })
+  const address = await bounded(daemon.start())
+  const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+  cleanups.push(async () => { socket.terminate() })
+  const broadcasts: WorkspaceSnapshot[] = []
+  socket.on("message", (data) => {
+    const message = JSON.parse(String(data)) as { method?: string; params?: WorkspaceSnapshot }
+    if (message.method === "workspace.changed" && message.params) broadcasts.push(message.params)
   })
   await once(socket, "open")
   let id = 0
@@ -115,7 +121,7 @@ async function fixture(projectCap?: number, saved?: WorkspaceSnapshot, missingPa
   const openProject = async (path: string) => {
     return rpc("project.open", { path, client: "desktop" })
   }
-  return { rpc, completeTurn, openProject, errors, agent, store, workspaceService, terminal, emit: (event: AgentEvent) => { for (const listener of listeners) listener(event) } }
+  return { rpc, completeTurn, openProject, errors, agent, store, workspaceService, terminal, broadcasts, emit: (event: AgentEvent) => { for (const listener of listeners) listener(event) } }
 }
 
 const runtime = { provider: "codex", model: "gpt-5.6-sol", reasoning: "medium", permissionMode: "build", auto: false }
@@ -312,7 +318,7 @@ it("routes A's checkpoint, evidence and commit while B is focused", async () => 
 
 it("marks a removed project folder unavailable before admitting its next turn", async () => {
   const missing: string[] = []
-  const { rpc, openProject, agent } = await fixture(undefined, undefined, missing)
+  const { rpc, openProject, agent, store, broadcasts } = await fixture(undefined, undefined, missing)
   await openProject("/code/one")
   const created = await rpc("session.create", { title: "A", runtime, client: "desktop" })
   await openProject("/code/two")
@@ -320,8 +326,73 @@ it("marks a removed project folder unavailable before admitting its next turn", 
   expect((await rpc("session.send", { sessionId: created.result!.activeSessionId, prompt: "work", client: "desktop" })).error?.message).toMatch(/folder.*unavailable/)
   expect((await rpc("workspace.get", {})).result?.projects).toContainEqual(expect.objectContaining({ path: "/code/one", unavailableReason: "folder-missing" }))
   expect(agent.startThread).toHaveBeenCalledTimes(1)
+  expect(store.load().projects).toContainEqual(expect.objectContaining({ path: "/code/one", unavailableReason: "folder-missing" }))
+  expect(broadcasts.at(-1)?.projects).toContainEqual(expect.objectContaining({ path: "/code/one", unavailableReason: "folder-missing" }))
 })
 
 it.each([0, 17, 1.5, NaN])("refuses an invalid server cap before opening state: %s", (projectCap) => {
   expect(() => new DomovoiDaemon({ projectCap })).toThrow(/Project cap/)
+})
+
+async function bounded<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([promise, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("Folder check did not settle within three seconds")), 3_000)
+    })])
+  } finally { clearTimeout(timer) }
+}
+
+const failedFolderChecks = ["EACCES", "EPERM", "never"] as const
+function failedFolderCheck(mode: typeof failedFolderChecks[number]): Promise<boolean> {
+  if (mode === "never") return new Promise(() => {})
+  return Promise.reject(Object.assign(new Error("injected folder check refusal"), { code: mode }))
+}
+
+it.each(failedFolderChecks)("keeps unknown folder availability active at startup: %s", async (mode) => {
+  const original = await fixture()
+  await original.openProject("/code/one")
+  const created = await original.rpc("session.create", { title: "A", runtime, client: "desktop" })
+  await original.openProject("/code/two")
+  const saved = (await original.rpc("workspace.get", {})).result as unknown as WorkspaceSnapshot
+  const check = vi.fn((_path: string) => failedFolderCheck(mode))
+  const restarted = await fixture(undefined, saved, [], check)
+  const snapshot = (await restarted.rpc("workspace.get", {})).result as unknown as WorkspaceSnapshot
+  expect(snapshot.projects).toHaveLength(2)
+  expect(snapshot.projects!.every((project) => project.unavailableReason === "folder-check-failed")).toBe(true)
+  expect(restarted.store.load().projects).toEqual(snapshot.projects)
+  check.mockResolvedValue(true)
+  const sent = await restarted.rpc("session.send", { sessionId: created.result!.activeSessionId, prompt: "go", client: "desktop" })
+  expect(sent.error).toBeUndefined()
+  expect(restarted.store.load().projects!.find((project) => project.path === "/code/one")).not.toHaveProperty("unavailableReason")
+  expect(restarted.broadcasts.some((state) => state.projects?.some((project) => project.path === "/code/one" && !project.unavailableReason))).toBe(true)
+}, 10_000)
+
+it.each(failedFolderChecks)("refuses and publishes unknown folder availability on send: %s", async (mode) => {
+  const check = vi.fn(async (_path: string) => true)
+  const current = await fixture(undefined, undefined, [], check)
+  await current.openProject("/code/one")
+  const created = await current.rpc("session.create", { title: "A", runtime, client: "desktop" })
+  await current.openProject("/code/two")
+  const starts = vi.spyOn(current.agent, "startTurn")
+  check.mockImplementation(() => failedFolderCheck(mode))
+  const result = await bounded(current.rpc("session.send", { sessionId: created.result!.activeSessionId, prompt: "go", client: "desktop" }))
+  expect(result.error?.message).toMatch(/could not check the project folder/i)
+  expect(starts).not.toHaveBeenCalled()
+  expect(current.store.load().projects).toContainEqual(expect.objectContaining({ path: "/code/one", unavailableReason: "folder-check-failed" }))
+  expect(current.broadcasts.at(-1)?.projects).toContainEqual(expect.objectContaining({ path: "/code/one", unavailableReason: "folder-check-failed" }))
+  check.mockResolvedValue(true)
+  expect((await current.rpc("session.send", { sessionId: created.result!.activeSessionId, prompt: "retry", client: "desktop" })).error).toBeUndefined()
+  expect(starts).toHaveBeenCalledOnce()
+}, 10_000)
+
+it("checks folders without Git inspection on send with the production default", async () => {
+  const path = await mkdtemp(join(tmpdir(), "domovoi-folder-check-"))
+  cleanups.push(() => rm(path, { recursive: true, force: true }))
+  const current = await fixture(undefined, undefined, [], null)
+  await current.openProject(path)
+  const created = await current.rpc("session.create", { title: "A", runtime, client: "desktop" })
+  const inspect = vi.spyOn(current.workspaceService, "inspect")
+  expect((await current.rpc("session.send", { sessionId: created.result!.activeSessionId, prompt: "go", client: "desktop" })).error).toBeUndefined()
+  expect(inspect).not.toHaveBeenCalled()
 })

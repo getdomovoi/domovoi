@@ -212,7 +212,7 @@ async function start({ second = false, third, noticeWaitMs, manualOldStop = noti
   } satisfies WorkspaceService
   const usageLedger = new UsageLedger()
   const store = new SqliteWorkspaceStore(":memory:", openCodeSession(workspacePath, otherPath, thirdPath))
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0, store, auditLog, usageLedger,
     agents: { opencode: adapter }, workspaceService, errorSink: vi.fn(),
   })
