@@ -3184,17 +3184,25 @@ export class DomovoiDaemon {
     for (const session of sessions) {
       const unconfirmed = outcomes.get(session.id) === "unconfirmed"
       if (unconfirmed && !sessionIsReadOnly(session)) session.state = "failed"
-      this.#snapshot.thread.push({ id: `system-${randomUUID()}`, sessionId: session.id, kind: "system", createdAt: now,
-        body: unconfirmed ? "Project closed, but Domovoi could not confirm that the agent stopped." : "Project close stopped this session.",
-        detail: unconfirmed ? "The agent may still be running. This daemon will refuse another turn until recovery confirms its exit."
-          : "The worktree, session history and standing rules were kept.",
-      })
     }
     if (failures.length > 0) throw new AggregateError(failures, "Project close could not finish its bookkeeping")
     return [...outcomes].map(([sessionId, outcome]) => ({ sessionId, outcome }))
   }
 
-  async #commitProjectClose(projectId: string, stillConfirmed: () => boolean): Promise<boolean> {
+  #projectCloseNotices(sessions: RpcResult<"project.close">["sessions"], closed: boolean): WorkspaceSnapshot["thread"] {
+    const createdAt = new Date().toISOString()
+    return sessions.map(({ sessionId, outcome }) => ({
+      id: `system-${randomUUID()}`, sessionId, kind: "system", createdAt,
+      body: closed
+        ? outcome === "unconfirmed" ? "Project closed, but Domovoi could not confirm that the agent stopped." : "Project close stopped this session."
+        : outcome === "unconfirmed" ? "The project stays open, and Domovoi could not confirm that the agent stopped." : "The agent was stopped, and the project stays open.",
+      detail: outcome === "unconfirmed"
+        ? "The agent may still be running. This daemon will refuse another turn until recovery confirms its exit."
+        : "The worktree, session history and standing rules were kept.",
+    }))
+  }
+
+  async #commitProjectClose(projectId: string, sessions: RpcResult<"project.close">["sessions"], stillConfirmed: () => boolean): Promise<boolean> {
     return this.#serializeSnapshotPersistence(async () => {
       if (!stillConfirmed()) return false
       const partition = (snapshot: WorkspaceSnapshot, retain: boolean): WorkspaceSnapshot => {
@@ -3219,6 +3227,9 @@ export class DomovoiDaemon {
       }
       this.#flushPendingWorkspaceDeltas()
       const closed = partition(this.#snapshot, true)
+      // Keep success notices in the candidate saved row. They become visible
+      // only after the atomic close commits, never on the still-open project.
+      closed.thread.push(...this.#projectCloseNotices(sessions, true))
       const remaining = partition(this.#snapshot, false)
       try {
         if (this.#store.saveProjectCloseAsync) await this.#store.saveProjectCloseAsync(remaining, closed)
@@ -7089,16 +7100,24 @@ export class DomovoiDaemon {
           checkMembership()
           return !membershipChanged || confirm(true)
         }
-        let sessions: RpcResult<"project.close">["sessions"]
+        let sessions: RpcResult<"project.close">["sessions"] = []
         try {
           sessions = await this.#closeProjectSessions(params.projectId, checkMembership)
           if (!stillConfirmed()) return
           await this.#settleEmergencyStops()
           if (!stillConfirmed()) return
-          if (!await this.#commitProjectClose(params.projectId, stillConfirmed)) return
+          if (!await this.#commitProjectClose(params.projectId, sessions, stillConfirmed)) return
         } finally {
           this.#closingProjects.delete(params.projectId)
           this.#syncArtifactWatchers()
+          if (membershipChanged) {
+            // Renewal after claims authorizes a new close attempt, not an
+            // undo of the stops already attempted. Preserve their outcomes
+            // while making clear that the project is still open.
+            this.#snapshot.thread.push(...this.#projectCloseNotices(sessions, false))
+            await this.#persistSnapshot()
+            this.#broadcastSnapshot()
+          }
         }
         const result: RpcResult<"project.close"> = { snapshot: this.#clientSnapshot(),
           sessions: sessions.slice(0, maximumProjectCloseSessions),

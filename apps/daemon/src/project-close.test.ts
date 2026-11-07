@@ -304,6 +304,7 @@ it("leaves a stopped project active when the atomic close write fails", async ()
   expect((await close(a.projectId)).error).toBeDefined()
   const snapshot = workspaceSnapshotSchema.parse((await rpc("workspace.get")).result)
   expect(snapshot.project?.id).toBe(a.projectId)
+  expect(snapshot.thread).not.toContainEqual(expect.objectContaining({ body: expect.stringMatching(/^Project close(?:d| stopped)/) }))
   expect(snapshot.sessions[0]).not.toHaveProperty("activeTurnId")
   expect((await close(a.projectId)).error).toBeUndefined()
 })
@@ -455,14 +456,16 @@ it("preserves focus when closing an unfocused project immediately after reconstr
 })
 
 
-it.each(["added", "retargeted"] as const)("renews confirmation for an injected %s session after a close await", async (change) => {
+it.each(["added", "retargeted"].flatMap((change) => [false, true].map((unconfirmed) => ({ change, unconfirmed }))))("renews confirmation for an injected $change session after a close await (unconfirmed=$unconfirmed)", async ({ change, unconfirmed }) => {
   const initial = createEmptyWorkspace(demoWorkspace.machine)
   initial.project = demoWorkspace.project
   const session = { ...demoWorkspace.sessions[0]!, state: "idle" as const, runtime: { ...runtime, permissionMode: "build" as const }, workspacePath: "/synthetic/close" }
   delete session.activeTurnId
-  delete session.providerThreadId
+  session.providerThreadId = "membership-thread"
   initial.sessions = [session]
-  const { rpc, loaded, terminals, store } = await fixture({ initial })
+  const { rpc, loaded, terminals, store, stopThread } = await fixture({ initial })
+  expect((await rpc("session.send", { sessionId: session.id, prompt: "work", client: "desktop" })).error).toBeUndefined()
+  if (unconfirmed) stopThread.mockRejectedValue(new Error("still running"))
   const projectId = initial.project!.id
   await rpc("terminal.create", { terminalId: "paused-exit", sessionId: session.id, cols: 80, rows: 24, client: "desktop", clientId: "close-client" })
   const terminal = terminals[0]!
@@ -481,6 +484,15 @@ it.each(["added", "retargeted"] as const)("renews confirmation for an injected %
   expect((await closing).error).toMatchObject({ code: -32022 })
   expect((await rpc("workspace.get")).result!.project!.id).toBe(projectId)
   expect(store.load().project!.id).toBe(projectId)
+  const snapshot = (await rpc("workspace.get")).result!
+  const body = unconfirmed
+    ? "The project stays open, and Domovoi could not confirm that the agent stopped."
+    : "The agent was stopped, and the project stays open."
+  for (const recorded of [snapshot, store.load()]) {
+    expect(recorded.thread).toContainEqual(expect.objectContaining({ sessionId: session.id, kind: "system", body }))
+    expect(recorded.thread).not.toContainEqual(expect.objectContaining({ body: expect.stringMatching(/^Project close(?:d| stopped)/) }))
+  }
+  stopThread.mockResolvedValue()
 })
 
 
