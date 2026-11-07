@@ -9,6 +9,7 @@ import { Worker } from "node:worker_threads"
 import {
   dateTimeSchema,
   executionResolutionSchema,
+  knownProjectSchema,
   knownProjectSessionSchema,
   machineIdSchema,
   maximumKnownSessionTitleLength,
@@ -94,12 +95,16 @@ function savedProjectListing(
     Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || left.id.localeCompare(right.id)
   ))
   const omittedSessions = sessions.length - sessionLimit
-  return {
+  const saved: SavedProject = {
     project: project.data,
     savedAt: savedAt.data,
     sessions: sessions.slice(0, sessionLimit),
     ...(omittedSessions > 0 ? { omittedSessions } : {}),
   }
+  // The whole entry meets the protocol's own rules (a session listed twice,
+  // say), so one row can never make the list fail its schema.
+  if (new Set(sessions.map((session) => session.id)).size !== sessions.length) return undefined
+  return knownProjectSchema.safeParse({ ...saved, folder: "present" }).success ? saved : undefined
 }
 
 type StoredQueuedSessionSendRow = {

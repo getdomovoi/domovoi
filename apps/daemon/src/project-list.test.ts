@@ -294,6 +294,9 @@ describe("project.list", () => {
     // array: SQLite hands a string back unquoted.
     insertProjectRow(databasePath, "project-string", JSON.stringify({ project: "broken", sessions: [] }), "2026-11-06T00:00:00.000Z")
     insertProjectRow(databasePath, "project-string-sessions", JSON.stringify({ project: projectAt(join(scratch, "string-sessions")), sessions: "broken" }), "2026-11-06T00:00:00.000Z")
+    // Every session reads on its own, but one id is listed twice.
+    const twice = projectAt(join(scratch, "twice"))
+    insertProjectRow(databasePath, twice.id, projectRow(twice, [sessionIn(twice, 1), sessionIn(twice, 1)]), "2026-11-06T00:00:00.000Z")
     const { listProjects, errorSink } = await openDaemon(databasePath)
     expect((await listProjects()).projects.map((known) => known.project.id)).toEqual([kept.id])
     const reported = errorSink.mock.calls.map(([report]) => (report as { context: string }).context)
@@ -302,6 +305,7 @@ describe("project.list", () => {
       "Domovoi could not read the saved project project-mislabelled for the project list",
       "Domovoi could not read the saved project project-string for the project list",
       "Domovoi could not read the saved project project-string-sessions for the project list",
+      `Domovoi could not read the saved project ${twice.id} for the project list`,
     ]))
   })
 
