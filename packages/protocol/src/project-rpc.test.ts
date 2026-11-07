@@ -11,6 +11,8 @@ import {
   isRefusedWithoutPersistence,
   localOwnerRequiredErrorCode,
   machineCredentialMissingErrorCode,
+  maximumKnownProjects,
+  maximumKnownProjectSessions,
   maximumProjectCap,
   maximumProjectCloseSessions,
   phoneAndTabletRpcMethods,
@@ -114,6 +116,51 @@ describe("project.close", () => {
     // Ruling Q192 B: a phone opens a project, and never closes one.
     expect(phoneAndTabletRpcMethods.has("project.close")).toBe(false)
     expect(phoneAndTabletRpcMethods.has("project.open")).toBe(true)
+  })
+})
+
+describe("project.list", () => {
+  const project = { id: projectId, machineId: demoWorkspace.machine.id, name: "acme-api", path: "/Users/dev/acme-api", branch: "main" }
+  const session = { id: "session-billing", title: "Billing", state: "idle", updatedAt: "2026-11-06T10:00:00.000Z" }
+  const known = { project, savedAt: "2026-11-06T10:01:00.000Z", folder: "present", sessions: [session] }
+
+  it("lists each known project with its sessions and whether its folder is there", () => {
+    const result = rpcMethods["project.list"].result
+    expect(result.parse({ projects: [known] })).toEqual({ projects: [known] })
+    for (const folder of ["present", "missing", "unreadable"]) {
+      expect(result.safeParse({ projects: [{ ...known, folder }] }).success, folder).toBe(true)
+    }
+    expect(result.safeParse({ projects: [{ ...known, folder: "gone" }] }).success).toBe(false)
+    expect(result.safeParse({ projects: [{ ...known, extra: true }] }).success).toBe(false)
+    expect(result.safeParse({ projects: [{ ...known, sessions: [{ ...session, workspacePath: "/worktrees/billing" }] }] }).success, "a worktree path").toBe(false)
+    expect(result.safeParse({ projects: [{ ...known, sessions: [session, session] }] }).success, "a session twice").toBe(false)
+    expect(result.safeParse({ projects: [known, known] }).success, "a project twice").toBe(false)
+  })
+
+  it("is bounded, and says what it left out", () => {
+    const result = rpcMethods["project.list"].result
+    const sessions = Array.from({ length: maximumKnownProjectSessions + 1 }, (_, index) => ({ ...session, id: `session-${index}` }))
+    expect(result.safeParse({ projects: [{ ...known, sessions }] }).success).toBe(false)
+    expect(result.safeParse({ projects: [{ ...known, sessions: sessions.slice(1), omittedSessions: 4 }] }).success).toBe(true)
+    expect(result.safeParse({ projects: [{ ...known, omittedSessions: 0 }] }).success).toBe(false)
+    const projects = Array.from({ length: maximumKnownProjects + 1 }, (_, index) => ({
+      ...known,
+      project: { ...project, id: `project-${index}`, path: `/Users/dev/p${index}` },
+    }))
+    expect(result.safeParse({ projects }).success).toBe(false)
+    expect(result.safeParse({ projects: projects.slice(1), omittedProjects: 1 }).success).toBe(true)
+    expect(result.safeParse({ projects: [], omittedProjects: 0 }).success).toBe(false)
+  })
+
+  it("is a read anyone who watches may make, and not a phone's", () => {
+    const params = rpcMethods["project.list"].params
+    expect(params.parse({})).toEqual({})
+    expect(params.safeParse({ projectId }).success).toBe(false)
+    expect(rpcMethodAuthorizations["project.list"]).toBe("observe")
+    expect(rpcMethodMutations["project.list"]).toBe("read-only")
+    expect(isRefusedWithoutPersistence("project.list")).toBe(false)
+    // Rulings Q158 A and Q159 A: the phone draws no project list yet.
+    expect(phoneAndTabletRpcMethods.has("project.list")).toBe(false)
   })
 })
 
