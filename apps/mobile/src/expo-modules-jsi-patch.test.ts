@@ -5,10 +5,10 @@ import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 
 // expo-modules-jsi builds its xcframework at app build time and strips the C++-only
-// declarations from the public .swiftinterface with one sed program. Swift 6.4 prints
-// module selectors (`__ObjC::expo`, `Swift::Error`), which the published SDK 57 pattern
-// misses. patches/expo-modules-jsi@57.1.0.patch carries the expo-modules-jsi 58 program.
-// These cases run that program from the installed, patched script.
+// declarations from the public .swiftinterface with one sed program. Version 57.1.3
+// (Expo SDK 57.0.32) ships the upstream program matching both Swift 6.3 spellings and
+// Swift 6.4 module selectors (`__ObjC::expo`, `Swift::Error`). These cases run the
+// installed strip program to guard against regressions on future Expo upgrades.
 describe.skipIf(process.platform === "win32")("expo-modules-jsi interface strip", () => {
   const requireFromExpo = createRequire(require.resolve("expo/package.json", { paths: [join(__dirname, "..")] }))
   const corePackage = requireFromExpo.resolve("expo-modules-core/package.json")

@@ -67,10 +67,9 @@ overrides:
   # GHSA-mrhx-c7xc-m3w5, high: zod below 4.6.6 can exhaust memory while validating oversized
   # constrained collections. The catalog floor below covers the direct consumers; this forces
   # the copy eslint-plugin-react-hooks resolves. Scoped to 4.x so no 3.x consumer crosses a
-  # major. pnpm applies overrides to peers too, so
-  # dual-major peer ranges (`^3.25 || ^4`, as in the MCP SDK and zod-validation-error) become
-  # ^4.6.6; every consumer of those already resolves zod 4. Remove once the lockfile resolves
-  # 4.6.6 or later on its own.
+  # major. pnpm applies overrides to peers too, so dual-major peer ranges (`^3.25 || ^4`, as in
+  # the MCP SDK and zod-validation-error) become ^4.6.6; every consumer of those already
+  # resolves zod 4. Remove once the lockfile resolves 4.6.6 or later on its own.
   zod@4: ^4.6.6
   # GHSA-27r3-jxmh-p828, high: body-parser 2.x below 2.4.0 lets trailing bytes after a
   # compressed request body cause a denial of service. Reached through express 5 in the MCP
@@ -106,23 +105,3 @@ minimumReleaseAgeExclude:
   - expo-modules-core@57.0.16
   - expo-modules-jsi@57.0.8
   - expo@57.0.20
-
-auditConfig:
-  ignoreGhsas:
-    # GHSA-ch52-4w7c-c8xp, high: http-cache-semantics lets a large max-stale read
-    # zeroed shared-cache entries. Every release is affected (<= 4.2.0) and none is
-    # patched as of 2026-10-02; the advisory names no fixed version and npm has no
-    # 4.2.1, so an override has nothing to force. It reaches only apps/desktop, as
-    # a devDependency: electron-builder > @electron/get > got > cacheable-request,
-    # used while packaging. No shipped client or daemon depends on it. Ruling Q406
-    # A, 2026-10-02. Remove once a patched http-cache-semantics is published, and
-    # force it in overrides.
-    - GHSA-ch52-4w7c-c8xp
-    # GHSA-vfj7-8cjw-p6xm, high: braces recursion has no depth guard, so a deeply
-    # nested pattern exhausts the stack. Every release is affected (<= 3.0.3) and
-    # none is patched as of 2026-10-02; the advisory names no fixed version and npm
-    # has no 3.0.4, so an override has nothing to force. It reaches only Node build
-    # tooling through micromatch and chokidar: Metro, Expo CLI, Jest and Tailwind in
-    # apps/mobile, and the shadcn CLI in packages/ui. Ruling Q406 A, 2026-10-02.
-    # Remove once a patched braces is published, and force it in overrides.
-    - GHSA-vfj7-8cjw-p6xm

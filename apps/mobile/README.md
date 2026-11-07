@@ -52,8 +52,8 @@ why `expo` commands find them. Xcode's "Bundle React Native code and images" pha
 with plain `node`, so the plugin adds the same directory to `NODE_PATH` in `ios/.xcode.env`, which
 every Xcode script phase sources.
 
-Two more settings keep a local iOS build working when Xcode moves to a newer Swift compiler. Both
-were added for Xcode 27.1 (Swift 6.4), which broke Expo SDK 57 builds in two ways:
+Two fixes keep a local iOS build working when Xcode moves to a newer Swift compiler. Xcode 27.1
+(Swift 6.4) broke Expo SDK 57 builds in two ways:
 
 - Expo modules build from source. Expo's generated Podfile uses precompiled Expo modules unless
   `Podfile.properties.json` sets `EXPO_USE_PRECOMPILED_MODULES` to `false`, and
@@ -61,13 +61,13 @@ were added for Xcode 27.1 (Swift 6.4), which broke Expo SDK 57 builds in two way
   Swift binaries built by one compiler: SDK 57's `ExpoModulesCore` was built with Swift 6.3.1, and
   Swift 6.4 refuses it. From source, they compile with the installed Xcode. The first build takes
   longer.
-- `expo-modules-jsi` is patched (`patches/expo-modules-jsi@57.1.0.patch`, listed under
-  `patchedDependencies` in `pnpm-workspace.yaml`). Its build phase strips C++-only declarations
-  from the module interface it generates by matching `extension __ObjC.`, but Swift 6.4 writes
-  `extension __ObjC::expo...`. The block stays, and the build fails with
-  `cannot find type '__ObjC::expo'`. The patch carries the strip program from
-  `expo-modules-jsi` 58, which matches both spellings, so Xcode 26 (Swift 6.3) builds are
-  unchanged. Remove the patch with the move to Expo SDK 58.
+- `expo-modules-jsi` 57.1.3 (Expo SDK 57.0.32) ships the upstream strip program for C++-only
+  declarations in the generated module interface. The earlier program matched only
+  `extension __ObjC.`, so Swift 6.4's `extension __ObjC::expo...` stayed in the interface and
+  caused `cannot find type '__ObjC::expo'`. The upstream program matches both Swift 6.3 and
+  Swift 6.4 spellings, preserving Xcode 26 builds without a local patch.
+  `src/expo-modules-jsi-patch.test.ts` runs the installed strip program to guard against
+  regressions on future Expo upgrades.
 
 An `ios/` generated before these settings keeps the old Podfile properties and `.xcode.env`. After
 pulling them, run `pnpm install` and `npx expo prebuild --clean`. To check a Release build without a phone:
