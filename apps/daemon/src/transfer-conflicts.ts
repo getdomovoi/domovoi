@@ -7,6 +7,7 @@ import {
   sessionSourceRecoverySchema,
   sessionTransferContractVersionSchema,
   sessionTransferSessionSchema,
+  workspaceProjects,
   workspaceSnapshotSchema,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -166,18 +167,17 @@ export class SqliteTransferConflicts {
 
   restore(rawSnapshot: WorkspaceSnapshot): WorkspaceSnapshot {
     let snapshot = workspaceSnapshotSchema.parse(rawSnapshot)
-    const project = snapshot.project
-    if (!project) return snapshot
-    const rows = this.#database
-      .prepare(`
+    const read = this.#database.prepare(`
         SELECT proof FROM transfer_conflicts
         WHERE source_machine_id = ? AND source_project_id = ?
         ORDER BY transfer_id
       `)
-      .all(snapshot.machine.id, project.id) as StoredConflict[]
-    for (const row of rows) {
-      const proof = detectedTransferConflictSchema.parse(JSON.parse(row.proof))
-      snapshot = restoreDetectedConflict(snapshot, proof)
+    for (const project of workspaceProjects(snapshot)) {
+      const rows = read.all(snapshot.machine.id, project.id) as StoredConflict[]
+      for (const row of rows) {
+        const proof = detectedTransferConflictSchema.parse(JSON.parse(row.proof))
+        snapshot = restoreDetectedConflict(snapshot, proof)
+      }
     }
     return snapshot
   }
