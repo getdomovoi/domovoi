@@ -55,7 +55,7 @@ async function start(options: { snapshot?: WorkspaceSnapshot, ledger?: UsageLedg
     close: vi.fn(async () => {}),
   } satisfies AgentAdapter
   const store = new SqliteWorkspaceStore(":memory:", options.snapshot ?? workspace())
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0, store, agents: { codex: provider }, errorSink: options.errorSink ?? vi.fn(),
     usageLedger: options.ledger ?? new UsageLedger(":memory:"),
   })

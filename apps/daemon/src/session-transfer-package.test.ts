@@ -219,3 +219,15 @@ describe("session transfer package", () => {
     expect(packaged.members.some(({ member }) => member.kind === "repository-bundle")).toBe(false)
   })
 })
+
+it("packages A's authority coverage while B is focused", async () => {
+  const input = intentInput()
+  const expected = await prepareSessionTransferIntent(input)
+  const source = input.snapshot.project!
+  input.snapshot.project = { ...source, id: "project-b", path: "/code/b" }
+  input.snapshot.projects = [source, input.snapshot.project]
+  input.snapshot.activeSessionId = null
+  const unfocused = await prepareSessionTransferIntent(input)
+  expect(unfocused.preview).toEqual(expected.preview)
+  await expect(prepareSessionTransferIntent({ ...input, sourceProjectId: "project-b" })).rejects.toThrow()
+})

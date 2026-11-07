@@ -372,3 +372,10 @@ describe("transactional transfer rpc", () => {
     }).success).toBe(true)
   })
 })
+
+it("validates ambiguous active lineage as a target refusal", () => {
+  expect(transferTargetPreflightResultSchema.parse({ allowed: false, reason: "target-project-ambiguous" }))
+    .toEqual({ allowed: false, reason: "target-project-ambiguous" })
+  expect(transferCommitResultSchema.parse({ state: "refused", transferId, reason: "target-project-ambiguous" }))
+    .toMatchObject({ state: "refused", reason: "target-project-ambiguous" })
+})

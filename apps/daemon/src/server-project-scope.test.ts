@@ -40,12 +40,16 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
 
-async function fixture(open: boolean) {
+async function fixture(open: boolean, another = false) {
   const root = await mkdtemp(join(tmpdir(), "domovoi-project-scope-"))
   directories.push(root)
   const empty = createEmptyWorkspace(demoWorkspace.machine)
   const project = { id: projectId, machineId: demoWorkspace.machine.id, name: "acme", path: root, branch: "main" }
   const snapshot: WorkspaceSnapshot = open ? { ...empty, project } : empty
+  if (another) {
+    snapshot.projects = [project, { ...project, id: "project-b", name: "b" }]
+    snapshot.project = snapshot.projects[1]!
+  }
   const store = new SqliteWorkspaceStore(":memory:", snapshot)
   const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", store, errorSink: vi.fn() })
   daemons.push(daemon)
@@ -107,7 +111,7 @@ describe("the active project list", () => {
 
     const workspace = workspaceSnapshotSchema.parse((await call("workspace.get", {})).result)
     expect(workspace.projects).toEqual([project])
-    expect(workspace.projectCap).toBe(1)
+    expect(workspace.projectCap).toBe(3)
   })
 
   it("lists no project before one is opened", async () => {
@@ -117,7 +121,7 @@ describe("the active project list", () => {
     const workspace = workspaceSnapshotSchema.parse((await call("workspace.get", {})).result)
     expect(workspace.project).toBeNull()
     expect(workspace.projects).toEqual([])
-    expect(workspace.projectCap).toBe(1)
+    expect(workspace.projectCap).toBe(3)
   })
 
   // Every snapshot the daemon sends, results and workspace.changed alike, is
@@ -133,12 +137,11 @@ describe("the active project list", () => {
     expect(workspaceSnapshotForClient(createEmptyWorkspace(demoWorkspace.machine)).projects).toEqual([])
   })
 
-  // The open project is the one the daemon acts on, so the list it states is
-  // that project alone, whatever list a stored snapshot carried.
-  it("states the open project alone while one project is open at a time", () => {
+  // Shared focus selects a project without hiding any other active project.
+  it("states every active project while retaining shared focus", () => {
     const stored = structuredClone(demoWorkspace)
     stored.projects = [demoWorkspace.project!, { ...demoWorkspace.project!, id: "project-other", path: "/Users/dev/src/other" }]
-    expect(workspaceSnapshotForClient(stored).projects).toEqual([demoWorkspace.project])
+    expect(workspaceSnapshotForClient(stored).projects).toEqual(stored.projects)
   })
 })
 
@@ -187,4 +190,18 @@ describe("project.close", () => {
     expect(errorOf(reply)).toEqual({ code: invalidParams, message: projectCloseUnavailableRefusal })
     expect((await call("workspace.get", {})).result).toEqual(before)
   })
+})
+
+it("admits named non-focused active projects without admitting saved or unknown projects", async () => {
+  const { daemon } = await fixture(true, true)
+  const { call } = await connect(daemon)
+  for (const method of ["tool.inventory", "skill.list", "skill.inventory"]) {
+    const named = await call(method, { projectId })
+    expect(named).toHaveProperty("result")
+  }
+  for (const [method, params] of projectScoped) {
+    const named = await call(method, { ...params, projectId })
+    expect(errorOf(named)?.message).not.toBe(projectNotOpenRefusal)
+  }
+  expect((await call("workspace.get", {})).result).toMatchObject({ project: { id: "project-b" } })
 })

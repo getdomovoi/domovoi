@@ -29,7 +29,7 @@ type RpcReply = {
 
 const runtime = { provider: "claude-code", model: "sonnet", reasoning: "high", permissionMode: "build", auto: false }
 const fence = "Provider thread requires recovery after emergency stop"
-const notStopped = "The provider thread did not stop when this project was closed."
+const stopNotice = "Emergency stop requested by desktop."
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => {
@@ -110,7 +110,7 @@ async function fixture() {
     return rpc("project.open", { path, client: "desktop", confirmation: first.error.data })
   }
   // A Claude turn runs in project one; its interrupt fails and its process
-  // will not exit, so closing the project cannot stop it.
+  // will not exit, so emergency stop fences it before focus changes.
   const hangInProjectOne = async () => {
     await openProject("/code/one")
     const created = await rpc("session.create", { title: "One", runtime, client: "desktop" })
@@ -119,6 +119,7 @@ async function fixture() {
     expect(await rpc("session.send", { sessionId, prompt: "first", client: "desktop" })).not.toHaveProperty("error")
     expect(sessions()).toHaveLength(1)
     sessions()[0]!.interrupt.mockRejectedValue(new Error("Claude did not answer the interrupt"))
+    await rpc("system.emergencyStop", { client: "desktop" })
     expect((await openProject("/code/two")).error).toBeUndefined()
     const back = await openProject("/code/one")
     expect(back.error).toBeUndefined()
@@ -138,14 +139,14 @@ async function fixture() {
 }
 
 describe("a Claude process that will not stop", () => {
-  it("leaves its session failed and fenced across a project switch, with no second query", async () => {
+  it("keeps its emergency-stop fence across refocus, with no second query", async () => {
     const { rpc, sessions, children, hangInProjectOne } = await fixture()
 
     const { sessionId, back } = await hangInProjectOne()
 
     expect(back.result?.sessions?.find(({ id }) => id === sessionId)).toMatchObject({ state: "failed" })
     expect(back.result?.thread?.filter((item) => item.sessionId === sessionId).map(({ body }) => body))
-      .toContain(notStopped)
+      .toContain(stopNotice)
     // The keeper was asked to kill the whole process group.
     expect(children[0]!.child.pid).toBe(fakeClaudePid)
     expect(children[0]!.commands).toContainEqual({ kill: true })

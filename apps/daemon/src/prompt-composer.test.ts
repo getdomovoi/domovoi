@@ -562,3 +562,17 @@ describe("composeProviderPrompt drop order", () => {
     )
   })
 })
+
+it("uses the sending session's skill reviews under another project focus", async () => {
+  const snapshot = baseSnapshot()
+  const fixture = skillFixture({ content: "approved-only-for-A" })
+  const source = snapshot.project!
+  snapshot.project = { ...source, id: "project-b", path: "/code/b" }
+  snapshot.projects = [source, snapshot.project]
+  snapshot.skillEnablements = [fixture.review]
+  const result = await composeProviderPrompt({ ...input(snapshot, "work"), skillCatalog: fixture.catalog })
+  expect(result.prompt).toContain("approved-only-for-A")
+  snapshot.skillEnablements = [{ ...fixture.review, projectId: snapshot.project.id }]
+  const refused = await composeProviderPrompt({ ...input(snapshot, "work"), skillCatalog: fixture.catalog })
+  expect(refused.prompt).not.toContain("approved-only-for-A")
+})

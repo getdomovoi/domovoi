@@ -143,7 +143,7 @@ async function fixture() {
       .toMatchObject({ result: { outcome: "trusted" } })
   }
   const inventory = async () => (await filterBlock())?.entries.map(({ heldBack }) => heldBack)
-  return { rpc, markers, trustNow, inventory, filterBlock, repositoryPath }
+  return { rpc, markers, trustNow, inventory, filterBlock, repositoryPath, scratch }
 }
 
 describe("a trusted repository's git filters through the daemon", () => {
@@ -200,3 +200,23 @@ describe("a trusted repository's git filters through the daemon", () => {
     expect(await markers()).toEqual([])
   }, 30_000)
 })
+
+it("uses A's root grant under B focus and observes A's revocation", async () => {
+  const { rpc, markers, trustNow, scratch } = await fixture()
+  await trustNow()
+  const other = join(scratch, "other")
+  await execute("git", ["init", "--initial-branch=main", other])
+  await execute("git", ["-C", other, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial"])
+  expect(await rpc("project.open", { path: other, client: "desktop" })).toHaveProperty("result")
+  const created = await rpc("session.create", { projectId, client: "desktop", title: "A under B focus", runtime: claude })
+  expect(created).toHaveProperty("result")
+  const session = (created.result as WorkspaceSnapshot).sessions.at(-1)!
+  expect(session.projectId).toBe(projectId)
+  expect(await markers()).toContain("smudge")
+  expect(await rpc("project.open", { path: other, client: "desktop" })).toHaveProperty("result")
+  expect(await rpc("repository.revokeTrust", { projectId, client: "desktop" })).toHaveProperty("result")
+  const before = await markers()
+  const refused = await rpc("session.create", { projectId, client: "desktop", title: "revoked A", runtime: claude })
+  expect(refused).toMatchObject({ error: { code: repositoryGitFilterErrorCode } })
+  expect(await markers()).toEqual(before)
+}, 30_000)

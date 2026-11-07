@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { DomovoiDaemon, workspaceSnapshotForClient } from "./server.js"
 import {
   MultiProjectWorkspaceStateError,
+  UnreadableActiveProjectStateError,
   SavedProjectStateError,
   savedProjectStateRefusal,
   SqliteWorkspaceStore,
@@ -128,7 +129,7 @@ describe("stored state with several active projects", () => {
     const bytes = await readFile(databasePath)
     let refusal: unknown
     try {
-      new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine))
+      new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine), { restoreActiveProjects: false })
     } catch (error) {
       refusal = error
     }
@@ -136,7 +137,7 @@ describe("stored state with several active projects", () => {
     expect((refusal as Error).message).toBe(
       `Domovoi state at ${databasePath} was written by a newer Domovoi that keeps several projects open, and this daemon keeps one project open at a time. It was left as it is and this daemon did not start. Run the newer Domovoi again.`,
     )
-    expect(() => new DomovoiDaemon({ port: 0, statePath: databasePath })).toThrow(MultiProjectWorkspaceStateError)
+    expect(() => new DomovoiDaemon({ port: 0, statePath: databasePath })).toThrow(UnreadableActiveProjectStateError)
     expect(storedRow(databasePath)).toBe(written)
     expect((await readdir(scratch)).filter((name) => name.includes("corrupt"))).toEqual([])
     expect((await readFile(databasePath)).equals(bytes)).toBe(true)
@@ -153,7 +154,7 @@ describe("stored state with several active projects", () => {
     await damageAuditPage(databasePath)
     const entries = (await readdir(scratch)).sort()
     const bytes = await readFile(databasePath)
-    expect(() => new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine))).toThrow(MultiProjectWorkspaceStateError)
+    expect(() => new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine), { restoreActiveProjects: false })).toThrow(MultiProjectWorkspaceStateError)
     expect((await readdir(scratch)).sort()).toEqual(entries)
     expect((await readFile(databasePath)).equals(bytes)).toBe(true)
   })
@@ -176,7 +177,7 @@ describe("stored state with several active projects", () => {
     const before = await Promise.all(["", "-wal", "-shm"].map((suffix) => readFile(`${copyPath}${suffix}`)))
     expect(before[1]!.length).toBeGreaterThan(0)
 
-    expect(() => new SqliteWorkspaceStore(copyPath, createEmptyWorkspace(machine))).toThrow(MultiProjectWorkspaceStateError)
+    expect(() => new SqliteWorkspaceStore(copyPath, createEmptyWorkspace(machine), { restoreActiveProjects: false })).toThrow(MultiProjectWorkspaceStateError)
 
     expect((await readdir(copyDirectory)).sort()).toEqual(entries)
     const after = await Promise.all(["", "-wal", "-shm"].map((suffix) => readFile(`${copyPath}${suffix}`)))
@@ -197,7 +198,7 @@ describe("stored state with several active projects", () => {
 
   it("is refused when a store holding it is handed to the daemon", () => {
     const snapshot = { ...base(), projects: [projectA, projectB], projectCap: 3, sessions: [sessionIn(projectB.id)] }
-    const store = new SqliteWorkspaceStore(":memory:", snapshot)
+    const store = new SqliteWorkspaceStore(":memory:", snapshot, { restoreActiveProjects: false })
     expect(() => new DomovoiDaemon({ port: 0, statePath: ":memory:", store, errorSink: vi.fn() }))
       .toThrow(MultiProjectWorkspaceStateError)
   })
@@ -329,7 +330,7 @@ describe("a saved project row", () => {
 })
 
 describe("a stored list naming only the open project", () => {
-  it("is dropped at load, so opening another project saves no stale list", async () => {
+  it("normalizes a legacy single list and saves both projects after an open", async () => {
     const { databasePath } = await storedState({ ...base(), projects: [projectA], projectCap: 1, sessions: [sessionIn(projectA.id)] })
     const before = openDescriptors()
     const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine))
@@ -347,10 +348,10 @@ describe("a stored list naming only the open project", () => {
     expect(opened).not.toHaveProperty("error")
     const result = opened.result as WorkspaceSnapshot
     expect(result.project?.path).toBe("/code/c")
-    expect(result.projects).toEqual([result.project])
+    expect(result.projects).toEqual([projectA, result.project])
     await daemon.stop()
     daemons.splice(0)
-    expect(JSON.parse(storedRow(databasePath))).not.toHaveProperty("projects")
+    expect(JSON.parse(storedRow(databasePath))).toHaveProperty("projects", [projectA, result.project])
   })
 })
 
@@ -380,8 +381,8 @@ describe("the database file once the store is done with it", () => {
   it("is not held after a refusal at load", async () => {
     const { databasePath } = await storedState({ ...base(), projects: [projectA, projectB], projectCap: 3, sessions: [sessionIn(projectB.id)] })
     const before = openDescriptors()
-    expect(() => new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine))).toThrow(MultiProjectWorkspaceStateError)
-    expect(() => new DomovoiDaemon({ port: 0, statePath: databasePath })).toThrow(MultiProjectWorkspaceStateError)
+    expect(() => new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(machine), { restoreActiveProjects: false })).toThrow(MultiProjectWorkspaceStateError)
+    expect(() => new DomovoiDaemon({ port: 0, statePath: databasePath })).toThrow(UnreadableActiveProjectStateError)
     released(databasePath, before)
   })
 
@@ -396,7 +397,7 @@ describe("the database file once the store is done with it", () => {
     for (const suffix of ["", "-wal", "-shm"]) await copyFile(`${databasePath}${suffix}`, `${copyPath}${suffix}`)
     writer.close()
     const before = openDescriptors()
-    expect(() => new SqliteWorkspaceStore(copyPath, createEmptyWorkspace(machine))).toThrow(MultiProjectWorkspaceStateError)
+    expect(() => new SqliteWorkspaceStore(copyPath, createEmptyWorkspace(machine), { restoreActiveProjects: false })).toThrow(MultiProjectWorkspaceStateError)
     released(copyPath, before)
   })
 

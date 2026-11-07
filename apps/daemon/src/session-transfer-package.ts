@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 
 import {
   sessionTransferContractVersion,
+  workspaceProjects,
   sessionTransferManifestDomain,
   sessionTransferManifestSchema,
   sessionTransferPreviewSchema,
@@ -86,10 +87,11 @@ function coverageFor(
   cropCount: number,
   ignoredFileCount: number | undefined,
 ): SessionTransferCoverage {
+  const projectId = snapshot.sessions.find((session) => session.id === state.session.id)?.projectId
   const sourceAuthorityCount = snapshot.approvalRules.filter(
-    (rule) => rule.projectId === snapshot.project?.id && rule.status === "active",
+    (rule) => rule.projectId === projectId && rule.status === "active",
   ).length + snapshot.skillEnablements.filter(
-    (review) => review.projectId === snapshot.project?.id && review.enabled,
+    (review) => review.projectId === projectId && review.enabled,
   ).length
   return {
     included: [
@@ -199,7 +201,8 @@ export function finalizeSessionTransferIntent(input: {
 }): PreparedSessionTransferIntent {
   if (
     input.snapshot.machine.id !== input.sourceMachineId
-    || input.snapshot.project?.id !== input.sourceProjectId
+    || !workspaceProjects(input.snapshot).some((project) => project.id === input.sourceProjectId)
+    || input.snapshot.sessions.find((session) => session.id === input.collected.state.session.id)?.projectId !== input.sourceProjectId
     || input.sourceMachineId === input.targetMachineId
   ) {
     throw new SessionTransferStateError("session-state-invalid")

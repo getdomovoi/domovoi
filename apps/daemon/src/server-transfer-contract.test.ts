@@ -1892,15 +1892,9 @@ describe("transactional session transfer RPC", () => {
 
     const clientSocket = await openClient(daemon)
     const clientCall = rpc(clientSocket)
-    const confirmation = await clientCall("project.open", {
-      path: "/target/other",
-      client: "desktop",
-    })
     await expect(clientCall("project.open", {
-      path: "/target/other",
-      client: "desktop",
-      confirmation: (confirmation.error as { data: unknown }).data,
-    })).resolves.toMatchObject({ result: { project: { path: "/target/other" }, sessions: [] } })
+      path: "/target/other", client: "desktop",
+    })).resolves.toMatchObject({ result: { project: { path: "/target/other" }, sessions: expect.arrayContaining([expect.objectContaining({ id: packaged.manifest.sessionId })]) } })
     await expect(call("transfer.status", commitParams)).resolves.toMatchObject({
       result: {
         state: "committed",
@@ -1918,7 +1912,7 @@ describe("transactional session transfer RPC", () => {
     })
 
     const loaded = workspaceSnapshotSchema.parse(store.load())
-    expect(loaded.sessions).toHaveLength(0)
+    expect(loaded.sessions).toContainEqual(expect.objectContaining({ id: packaged.manifest.sessionId, projectId: "project-target" }))
     clientSocket.close()
     socket.close()
   })

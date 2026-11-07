@@ -372,26 +372,20 @@ describe("repository.revokeTrust stops the threads that opened under the grant",
     })
   })
 
-  // A workspace holds the open project's sessions only, and opening another
-  // project stops every thread; the grant of the project left behind, and the
-  // thread it opened, are not the new project's to take back.
+  // Revoking B leaves active project A and its running thread untouched.
   it("leaves another project's grant and threads alone", async () => {
-    const { agents, grants, ok, rpc, revoke } = await fixture()
+    const { agents, grants, ok, revoke } = await fixture()
     grants.set(projectId, grant(projectId))
     await ok("session.send", { sessionId: "session-a", prompt: "here" })
-    const asked = await rpc("project.open", { client: "desktop", path: "/code/other" })
-    const confirmation = (asked as { error: { data: unknown } }).error.data
-    await ok("project.open", { path: "/code/other", confirmation })
-    // Opening another project stopped acme's threads, thread-a among them.
-    const switched = agents["claude-code"].stopThread.mock.calls.length
-    expect(agents["claude-code"].stopThread).toHaveBeenCalledWith("thread-a")
+    await ok("project.open", { path: "/code/other" })
+    expect(agents["claude-code"].stopThread).not.toHaveBeenCalled()
 
     const other = `project-${createHash("sha256").update("/code/other").digest("hex").slice(0, 12)}`
     grants.set(other, grant(other))
     const created = workspaceSnapshotSchema.parse((await ok("session.create", { title: "other", runtime: claude })).result)
-    const otherSession = created.sessions[0]!.id
+    const otherSession = created.sessions.find((session) => session.projectId === other)!.id
     expect(await revoke(other)).toEqual([{ sessionId: otherSession, outcome: "restarted" }])
-    expect(agents["claude-code"].stopThread.mock.calls.slice(switched)).toEqual([["claude-code-started"]])
+    expect(agents["claude-code"].stopThread.mock.calls).toEqual([["claude-code-started"]])
     expect(grants.has(projectId)).toBe(true)
   })
 

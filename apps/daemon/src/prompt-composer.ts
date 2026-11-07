@@ -1,5 +1,6 @@
 import {
   maximumProviderPromptCodeUnits,
+  workspaceProjects,
   providerPromptDeliverySchema,
   type ProviderPromptAnnotationDelivery,
   type ProviderPromptDelivery,
@@ -224,9 +225,13 @@ export async function composeProviderPrompt(
     review,
     annotationVisuals.deliveries,
   )
+  const sessionProjectId = input.snapshot.sessions.find((session) => session.id === input.sessionId)?.projectId
   const skills = await prepareTurnSkillContext(
     input.skillCatalog,
-    input.snapshot,
+    {
+      project: workspaceProjects(input.snapshot).find((project) => project.id === sessionProjectId) ?? null,
+      skillEnablements: input.snapshot.skillEnablements,
+    },
     input.skillSelection,
     { requireTrusted: input.requireTrustedSkills },
   )

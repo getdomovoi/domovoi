@@ -129,7 +129,7 @@ describe.each(["sync", "worker"] as const)("active project persistence (%s)", (m
       expect(reopened.recovery).toBeUndefined()
     } finally { await reopened.close() }
     const before = bytes(path)
-    expect(() => new SqliteWorkspaceStore(path, historical)).toThrow(MultiProjectWorkspaceStateError)
+    expect(() => new SqliteWorkspaceStore(path, historical, { restoreActiveProjects: false })).toThrow(MultiProjectWorkspaceStateError)
     expect(bytes(path)).toEqual(before)
   })
 

@@ -49,7 +49,7 @@ async function fixture() {
     resolveApproval: vi.fn(), close: vi.fn(async () => {}),
     onEvent: (listener: (event: AgentEvent) => void) => { emit = listener; return () => {} },
   } satisfies AgentAdapter
-  const daemon = new DomovoiDaemon({
+  const daemon = new DomovoiDaemon({ projectDirectoryExists: async () => true,
     port: 0, profileDirectory: join(workspace, "profile"), agents: { codex: agent },
     store: { load: () => structuredClone(initial), save: (next: WorkspaceSnapshot) => { durable = structuredClone(next) }, close: () => {} },
     artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),

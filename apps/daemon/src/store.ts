@@ -17,6 +17,7 @@ import {
   resolvedExecutionSchema,
   sessionSendParamsSchema,
   workspaceSnapshotSchema,
+  workspaceProjects,
   type QueuedSessionSend,
   type SessionAttachment,
   type SessionSendReview,
@@ -191,8 +192,7 @@ export type WorkspaceWriter = {
 }
 
 export type WorkspaceStoreOptions = {
-  // S2a exposes storage support without enabling unsafe single-project RPC
-  // routing. S2b opts in when the daemon can keep every restored project live.
+  // Restoration is enabled by default. False exercises the downgrade guard.
   restoreActiveProjects?: boolean
   legacySnapshots?: WorkspaceSnapshot[]
   manageDirectoryPermissions?: boolean
@@ -503,11 +503,9 @@ export class NewerWorkspaceStateError extends Error {
   }
 }
 
-// A newer Domovoi keeps several projects active and lists them in `projects`.
-// This daemon keeps one open at a time (J31 S1), and would otherwise serve
-// another project's sessions as if they were open. That state is that
-// version's to open: it is left exactly as it is and this daemon does not
-// start (ruling Q257).
+// Retained for the explicit legacy-reader mode and its downgrade regression.
+// Readers that keep one project open must refuse multi-project state before
+// writing, rather than serve another project's records under their focus.
 export class MultiProjectWorkspaceStateError extends NewerWorkspaceStateError {
   constructor(path: string, storedProtocolVersion: string) {
     super(path, storedProtocolVersion, protocolVersion)
@@ -518,8 +516,8 @@ export class MultiProjectWorkspaceStateError extends NewerWorkspaceStateError {
 
 // Stored state lists a project other than the focused one, or holds a session
 // or approval rule of another project, with or without a list (ruling Q258).
-// Such state does not parse as this daemon's snapshot, and moving it aside as
-// corrupt would replace that project's work with the seed.
+// Legacy readers refuse it; current readers must restore every active row.
+// Moving it aside as corrupt would replace that project's work with the seed.
 function keepsSeveralProjects(value: unknown): boolean {
   if (!isRecord(value)) return false
   const focused = isRecord(value.project) ? value.project.id : undefined
@@ -1135,7 +1133,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
 
   constructor(path: string, initial: WorkspaceSnapshot, options: WorkspaceStoreOptions = {}) {
     this.path = path
-    this.#restoreActiveProjects = options.restoreActiveProjects === true
+    this.#restoreActiveProjects = options.restoreActiveProjects !== false
     const manageDirectoryPermissions = options.manageDirectoryPermissions === true
     // The stored snapshot is read before the file is opened for writing, from
     // the file as it is or from a private copy when the write-ahead log holds
@@ -1334,7 +1332,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     const origin = session?.transferredFrom
     if (
       validated.machine.id !== ownership.targetMachineId
-      || validated.project?.id !== ownership.targetProjectId
+      || !workspaceProjects(validated).some((project) => project.id === ownership.targetProjectId)
       || session?.projectId !== ownership.targetProjectId
       || session.workspacePath !== ownership.workspacePath
       || session.ownershipGeneration !== ownership.generation
