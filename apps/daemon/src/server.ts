@@ -8,10 +8,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import {
   approvalCheckpointErrorCode,
   buildVersion,
-  maximumKnownProjects,
   maximumKnownProjectSessions,
-  maximumKnownSessionTitleLength,
-  type KnownProject,
   maximumRpcMessageBytes,
   maximumMidTurnCheckpointTurnIdLength,
   maximumMidTurnCheckpointPaths,
@@ -151,6 +148,7 @@ import {
   type WorkspaceStore,
 } from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
+import { knownProjectList } from "./known-projects.js"
 import { fleetClientSnapshot } from "./fleet-client-snapshot.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { defaultFleetHeartbeatIntervalMs, defaultFleetOperationTimeoutMs, FleetEnrollmentService } from "./fleet-enrollment.js"
@@ -14018,41 +14016,15 @@ export class DomovoiDaemon {
     }
   }
 
-  // project.list: the saved projects newest first, with the focused project
-  // read from the live snapshot and listed first, cut to the protocol's
-  // bounds. A saved row that does not read is reported and left out; a
-  // project whose folder is gone is listed as missing.
+  // project.list: live projects from the live snapshot, saved rows for the
+  // rest (known-projects.ts). A saved row that does not read is reported and
+  // left out; a project whose folder is gone is listed as missing.
   async #knownProjects(): Promise<RpcResult<"project.list">> {
     const listing = this.#store.listProjects?.(maximumKnownProjectSessions) ?? { projects: [], unreadable: [] }
     for (const projectId of listing.unreadable) {
       this.#reportError(`Domovoi could not read the saved project ${projectId} for the project list`, new Error("The saved row is not one project's state"))
     }
-    const focused = this.#snapshot.project
-    const saved = listing.projects.filter((known) => known.project.id !== focused?.id)
-    if (focused) {
-      const sessions = this.#snapshot.sessions
-        .map((session) => ({
-          id: session.id,
-          title: session.title.slice(0, maximumKnownSessionTitleLength),
-          state: session.state,
-          updatedAt: session.updatedAt,
-        }))
-        .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || left.id.localeCompare(right.id))
-      const savedAt = listing.projects.find((known) => known.project.id === focused.id)?.savedAt ?? new Date().toISOString()
-      const omittedSessions = sessions.length - maximumKnownProjectSessions
-      saved.unshift({
-        project: focused,
-        savedAt,
-        sessions: sessions.slice(0, maximumKnownProjectSessions),
-        ...(omittedSessions > 0 ? { omittedSessions } : {}),
-      })
-    }
-    const listed = saved.slice(0, maximumKnownProjects)
-    const omittedProjects = saved.length - listed.length
-    return {
-      projects: await Promise.all(listed.map(async (known) => ({ ...known, folder: await projectFolderState(known.project.path) }))),
-      ...(omittedProjects > 0 ? { omittedProjects } : {}),
-    }
+    return knownProjectList(this.#snapshot, listing)
   }
 
   async #suspendProjectSessions(): Promise<void> {
@@ -14301,23 +14273,6 @@ function terminalExit(terminal: TerminalProcess): Promise<void> {
     disposable = terminal.onExit(finish)
     if (exited) disposable.dispose()
   })
-}
-
-// How long project.list waits on one project folder before it says the
-// folder could not be read. A path on an unreachable network mount can hang.
-const projectFolderCheckTimeoutMs = 2_000
-
-// Whether a saved project's folder is still there. Gone or replaced by a file
-// is missing; any other answer, a permission refusal or a stat that does not
-// return in time, is unreadable, because the daemon could not tell.
-async function projectFolderState(path: string): Promise<KnownProject["folder"]> {
-  try {
-    const entry = await withTimeout(stat(path), projectFolderCheckTimeoutMs, "Project folder check timed out")
-    return entry.isDirectory() ? "present" : "missing"
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    return code === "ENOENT" || code === "ENOTDIR" ? "missing" : "unreadable"
-  }
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

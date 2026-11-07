@@ -19,6 +19,7 @@ import {
 import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { knownProjectEntries } from "./known-projects.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -137,6 +138,35 @@ function insertProjectRow(databasePath: string, projectId: string, state: string
     .run(projectId, state, updatedAt)
   database.close()
 }
+
+// Several live projects (J31 S2) are not something this daemon can load yet
+// (ruling Q257), so the state is constructed: each live project lists only
+// the sessions whose projectId names it, the focused one first, and a saved
+// row never stands in for a live project.
+describe("the project list's live entries", () => {
+  it("gives each live project only its own sessions, and saved rows only the rest", () => {
+    const a = projectAt("/code/acme-api")
+    const b = projectAt("/code/pdf-worker")
+    const c = projectAt("/code/docs")
+    const snapshot: WorkspaceSnapshot = {
+      ...createEmptyWorkspace(machine),
+      project: b,
+      projects: [a, b],
+      sessions: [sessionIn(a, 1), sessionIn(b, 1), sessionIn(a, 2, "2026-11-03T10:00:00.000Z")],
+    }
+    const stale = { project: a, savedAt: "2026-10-01T00:00:00.000Z", sessions: [] }
+    const saved = { project: c, savedAt: "2026-10-02T00:00:00.000Z", sessions: [{ id: "session-docs-1", title: "Docs", state: "idle" as const, updatedAt: "2026-10-02T00:00:00.000Z" }] }
+    const { projects, omittedProjects } = knownProjectEntries(snapshot, { projects: [saved, stale], unreadable: [] }, "2026-11-06T00:00:00.000Z")
+    expect(projects.map((known) => [known.project.id, known.sessions.map((session) => session.id)])).toEqual([
+      [b.id, ["session-pdf-worker-1"]],
+      [a.id, ["session-acme-api-2", "session-acme-api-1"]],
+      [c.id, ["session-docs-1"]],
+    ])
+    expect(projects[1]!.savedAt).toBe("2026-10-01T00:00:00.000Z")
+    expect(projects[0]!.savedAt).toBe("2026-11-06T00:00:00.000Z")
+    expect(omittedProjects).toBe(0)
+  })
+})
 
 describe("project.list", () => {
   it("keeps the project that was open listed with its sessions after another project opens", async () => {
