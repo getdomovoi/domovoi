@@ -1329,11 +1329,12 @@ export const projectCloseResultSchema = z.object({
 })
 
 // project.list (rulings Q158 A and Q159 A): every project this daemon has
-// opened and saved, newest first, each with its sessions newest first, so a
-// client can keep listing a project's sessions after another project opens
-// and can offer a known project to start a session in. The daemon keeps one
-// project active, so every listed project but the focused one runs nothing
-// until it is opened again. A session carries only what a list row draws:
+// opened, so a client can list every project's sessions and offer a known
+// project to start a session in. The active projects (the snapshot's
+// projects) come first, the focused one leading, each read live with its own
+// sessions; then the saved projects that are not active, newest first, whose
+// sessions run nothing until the project is opened again. Sessions are
+// listed newest first. A session carries only what a list row draws:
 // no worktree path, runtime or thread. folder says whether the project's
 // directory was there when the daemon looked: missing when it is gone,
 // unreadable when the daemon could not tell. A listed path is one project.open
