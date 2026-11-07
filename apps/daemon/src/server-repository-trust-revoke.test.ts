@@ -281,6 +281,40 @@ describe("project close ordered with repository revoke", () => {
     expect(agents["claude-code"].startTurn).toHaveBeenCalledTimes(2)
   })
 
+  it.each(["throws", "missing"] as const)("retries held stops before a closed saved row %s, releasing only confirmed fences", async (failure) => {
+    const { agents, grants, rpc, ok, store, revoke } = await fixture()
+    grants.set(projectId, grant(projectId))
+    await ok("session.send", { sessionId: "session-a", prompt: "work" })
+    const stop = agents["claude-code"].stopThread
+    stop.mockRejectedValue(new Error("still running"))
+    const initial = await rpc("project.close", { projectId, client: "desktop" })
+    await ok("project.close", { projectId, confirmation: (initial.error as { data: unknown }).data })
+    const unreadable = vi.spyOn(store, "loadProject")
+    const failNextRead = () => unreadable.mockImplementationOnce(() => {
+      if (failure === "throws") throw new Error("unreadable saved row")
+      return undefined
+    })
+    stop.mockClear()
+    failNextRead()
+    expect(await rpc("repository.revokeTrust", { projectId, client: "desktop" })).toHaveProperty("error")
+    expect(grants.has(projectId)).toBe(false)
+    expect(stop.mock.calls).toEqual([["thread-a"]])
+    await ok("project.open", { path: "/code/acme" })
+    expect(await rpc("session.send", { sessionId: "session-a", prompt: "still fenced", client: "desktop" }))
+      .toMatchObject({ error: { message: expect.stringContaining("requires recovery") } })
+    expect(agents["claude-code"].startTurn).toHaveBeenCalledOnce()
+    const renewed = await rpc("project.close", { projectId, client: "desktop" })
+    await ok("project.close", { projectId, confirmation: (renewed.error as { data: unknown }).data })
+    stop.mockClear().mockResolvedValue()
+    failNextRead()
+    expect(await rpc("repository.revokeTrust", { projectId, client: "desktop" })).toHaveProperty("error")
+    expect(stop.mock.calls).toEqual([["thread-a"]])
+    expect(await revoke()).toEqual([])
+    await ok("project.open", { path: "/code/acme" })
+    await ok("session.send", { sessionId: "session-a", prompt: "resumed" })
+    expect(agents["claude-code"].startTurn).toHaveBeenCalledTimes(2)
+  })
+
   it("includes a detached residual Codex thread and keeps its session fenced", async () => {
     const { agents, grants, ok, rpc } = await fixture()
     grants.set(projectId, grant(projectId))

@@ -8798,13 +8798,27 @@ export class DomovoiDaemon {
           this.#repositoryTrustGenerations.set(params.projectId, this.#repositoryTrustGeneration(params.projectId) + 1)
         }
         const activeProject = this.#projectForCall(paramsResult.data as { projectId?: string })
-        // An authenticated revoke must not retain trust because the closed
-        // project's saved row is unreadable. The row is needed only to read
-        // the configuration digest for the response. For a never-saved id,
-        // deleting a nonexistent grant and advancing its invalidation epoch
-        // creates no project or grant; the lookup below still refuses it.
-        // Keeping deletion first also covers a saved row that cannot be read.
-        if (method === "repository.revokeTrust" && !activeProject) revokeGrant()
+        let threads: RepositoryTrustThreadRestart[] = []
+        if (method === "repository.revokeTrust") {
+          // Revoke and retry held threads before any saved-row or configuration
+          // read. An unreadable closed project affects only the response, not
+          // the grant deletion or another attempt to confirm its held stops.
+          // For a never-saved id, deletion and an epoch advance create no
+          // project or grant; the lookup below still refuses it.
+          revokeGrant()
+          // An emergency already running finishes first. A later one cancels
+          // this request's signal, which is deliberately not checked once the
+          // grant is gone: completing these stops is still required.
+          await this.#settleEmergencyStops()
+          threads = await this.#restartRepositoryTrustThreads(params.projectId)
+          if (threads.length > 0) {
+            try {
+              await this.#saveAgentState()
+            } catch (error) {
+              this.#reportError("Domovoi could not save the sessions whose repository trust was taken back", error)
+            }
+          }
+        }
         const project = activeProject ?? (method === "repository.revokeTrust"
           ? this.#store.loadProject?.(params.projectId, this.#snapshot.machine)?.project : undefined)
         if (!project || project.id !== params.projectId) {
@@ -8813,25 +8827,6 @@ export class DomovoiDaemon {
         }
         const read = this.#repositoryProviderConfig ?? readRepositoryProviderConfig
         if (method === "repository.revokeTrust") {
-          // Taken back before the configuration is read, so a reader failure
-          // still leaves the repository untrusted.
-          if (activeProject) revokeGrant()
-          // Then the threads that opened under the grant stop (rulings Q4,
-          // Q146 A), before the configuration is read, so a reader failure
-          // leaves none of them running. An emergency stop that is running
-          // finishes first, and this one stops what it left. One that begins
-          // meanwhile cancels this request's signal, which is not checked
-          // from here on: the grant is gone, and stopping the threads is what
-          // the emergency stop would do.
-          await this.#settleEmergencyStops()
-          const threads = await this.#restartRepositoryTrustThreads(project.id)
-          if (threads.length > 0) {
-            try {
-              await this.#saveAgentState()
-            } catch (error) {
-              this.#reportError("Domovoi could not save the sessions whose repository trust was taken back", error)
-            }
-          }
           const config = await read(project.path, projectRootRead)
           this.#sendResult(socket, method, {
             jsonrpc: "2.0",
