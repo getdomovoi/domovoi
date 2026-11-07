@@ -232,3 +232,37 @@ describe("needsYouLabel", () => {
     expect(needsYouLabel(2)).toBe("2 need you")
   })
 })
+
+
+describe("multiple active projects", () => {
+  it("puts gates and failures across projects first, then focused-first flat sections", () => {
+    const snapshot = workspace()
+    const a = snapshot.project!
+    const b = { ...a, id: "project-b", name: "Project B" }
+    snapshot.projects = [b, a]
+    const gate = snapshot.sessions.find((s) => s.id === snapshot.approvals[0]!.sessionId)!
+    gate.projectId = b.id
+    const failed = { ...gate, id: "session-failed", state: "failed" as const }
+    const quiet = { ...gate, id: "session-quiet-b", state: "idle" as const }
+    const running = { ...quiet, id: "session-running-b", state: "active" as const }
+    snapshot.sessions.push(failed, quiet, running)
+    const groups = sessionGroups(snapshot)
+    expect(groups.map((g) => g.label)).toEqual(["NEEDS YOU", a.name, b.name])
+    expect(groups[0]!.rows.map((r) => r.id)).toEqual([gate.id, failed.id])
+    expect(groups[0]!.rows.map((r) => r.project)).toEqual([b.name, b.name])
+    expect(groups[2]!.rows.map((r) => r.id)).toEqual([running.id, quiet.id])
+    expect(groups[2]!.rows.every((r) => r.project === undefined)).toBe(true)
+    expect(waitingCount(snapshot)).toBe(2)
+  })
+
+  it("keeps all-attention and empty project headers only in the multi-project layout", () => {
+    const snapshot = workspace()
+    const a = snapshot.project!
+    snapshot.projects = [a, { ...a, id: "project-empty", name: "Empty" }]
+    snapshot.sessions = snapshot.sessions.filter((s) => s.id === snapshot.approvals[0]!.sessionId)
+    const groups = sessionGroups(snapshot)
+    expect(groups.map((g) => g.label)).toEqual(["NEEDS YOU", a.name, "Empty"])
+    expect(groups[1]!.emptyReason).toBe("Its one session is in Needs you")
+    expect(groups[2]!.emptyReason).toBe("No sessions yet")
+  })
+})

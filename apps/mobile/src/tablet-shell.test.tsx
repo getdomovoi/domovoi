@@ -636,3 +636,21 @@ describe("TabletShell", () => {
   })
 })
 
+
+
+describe("tablet project sections", () => {
+  it("groups active projects with a non-focused gate first and its project named", async () => {
+    const { props } = await draw(undefined, "full", (snapshot) => {
+      const a = snapshot.project!
+      const b = { ...a, id: "project-b", name: "Project B" }
+      snapshot.projects = [b, a]
+      snapshot.sessions.find((s) => s.id === snapshot.approvals[0]!.sessionId)!.projectId = b.id
+    })
+    const pane = within(screen.getByTestId("tablet-sessions-pane"))
+    expect(pane.getAllByRole("header").map((node) => node.props.children)).toEqual(["NEEDS YOU", props.snapshot.project!.name, "Project B"])
+    expect(pane.getByText(`${props.snapshot.machine.name} · Project B · waiting on you`)).toBeOnTheScreen()
+    expect(pane.getByText("Its one session is in Needs you")).toBeOnTheScreen()
+    expect(pane.queryByText("RUNNING")).toBeNull()
+    expect(pane.queryByRole("button", { name: "Project B" })).toBeNull()
+  })
+})

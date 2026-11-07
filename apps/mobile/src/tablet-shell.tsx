@@ -61,9 +61,9 @@ function TabletSessionRow({ row, selected, access, lastRead, onPress }: {
       <View className="min-w-0 flex-1">
         <Text className="text-[13px] leading-[18px] text-strong" numberOfLines={2}>{row.title}</Text>
         <Text variant="machine" className="mt-1 text-faint">
-          {row.attention === "approval"
+          {[...(row.project ? [row.machine, row.project] : []), row.attention === "approval"
             ? access === "full" ? "waiting on you" : "waiting on a full-access device"
-            : row.dot === "active" ? lastRead ? `running ${lastReadWords(lastRead)}` : "running" : "quiet"}
+            : row.failed ? "failed" : row.dot === "active" ? lastRead ? `running ${lastReadWords(lastRead)}` : "running" : "quiet"].join(" · ")}
         </Text>
       </View>
     </Pressable>
@@ -104,9 +104,11 @@ export function TabletSessionsPane({ snapshot, selectedSessionId, access, lastRe
         {groups.map((group) => (
           <View key={group.id} className="gap-1.5">
             <View className="flex-row items-center px-2">
-              <Text variant="label" className="flex-1">{group.label}</Text>
+              <Text accessibilityRole="header" variant={group.project ? "machine" : "label"} className={group.project ? "shrink text-[12px] text-strong" : "flex-1"}>{group.label}</Text>
+              {group.project ? <Text variant="machine" className="ml-2 flex-1 text-faint">{snapshot.machine.name}</Text> : null}
               <Text variant="machine" className="text-faint">{group.rows.length}</Text>
             </View>
+            {group.emptyReason ? <Text variant="note" className="px-2">{group.emptyReason}</Text> : null}
             {group.rows.map((row) => (
               <TabletSessionRow
                 key={row.id}
