@@ -228,7 +228,7 @@
       ],
       "presence": [
         "title: \"Open a project\"",
-        "Open a local Git repository before starting an agent session."
+        "Open a local Git repository, or start a session and choose its project there."
       ],
       "evidence": [
         "title: \"Open a project\"",
@@ -236,7 +236,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "after first run the empty thread says No project is open and Open a local Git repository before starting an agent session., with Open project opening the desktop folder dialog titled Open a project; that is the design's Choose a folder only. The repository screen, its two true lines (the worktree line and the dirty-checkout note: worktrees come off the head commit) and Browse another machine (blocked in remote-browser-v2.json) are not drawn; FOUND ON THIS MACHINE needs a repository listing RPC, and Clone from a URL has no RPC (and a cloned repository meets the trust gate)"
+        "reason": "after first run the empty thread says No project is open and Open a local Git repository, or start a session and choose its project there., with Open project opening the desktop folder dialog titled Open a project, and Start a session takes a project from its Project field (Choose a folder, ruling Q158 A); that is the design's Choose a folder only. The repository screen, its two true lines (the worktree line and the dirty-checkout note: worktrees come off the head commit) and Browse another machine (blocked in remote-browser-v2.json) are not drawn; FOUND ON THIS MACHINE needs a repository listing RPC, and Clone from a URL has no RPC (and a cloned repository meets the trust gate)"
       }
     }
   ],

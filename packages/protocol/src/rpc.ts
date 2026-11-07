@@ -62,6 +62,7 @@ import {
   maximumWorkingPlanSteps,
   maximumWorkingPlanTextLength,
   pendingWorkingPlanEditSchema,
+  projectSchema,
   providerModelsSchema,
   runtimeSchema,
   sessionStateSchema,
@@ -1329,6 +1330,64 @@ export const projectCloseResultSchema = z.object({
   }
 })
 
+// project.list (rulings Q158 A and Q159 A): every project this daemon has
+// opened, so a client can list every project's sessions and offer a known
+// project to start a session in. The active projects (the snapshot's
+// projects) come first, the focused one leading, each read live with its own
+// sessions; then the saved projects that are not active, newest first, whose
+// sessions run nothing until the project is opened again. Sessions are
+// listed newest first. A session carries only what a list row draws:
+// no worktree path, runtime or thread. folder says whether the project's
+// directory was there when the daemon looked: missing when it is gone,
+// unreadable when the daemon could not tell. A listed path is one project.open
+// already showed a client when that project was open.
+export const maximumKnownProjects = 32
+export const maximumKnownProjectSessions = 200
+export const maximumKnownSessionTitleLength = 4_096
+
+export const knownProjectSessionSchema = z.object({
+  id: z.string().min(1).check(utf16MaxLength(512)),
+  title: z.string().min(1).check(utf16MaxLength(maximumKnownSessionTitleLength)),
+  state: sessionStateSchema,
+  updatedAt: dateTimeSchema,
+}).strict()
+
+export type KnownProjectSession = z.infer<typeof knownProjectSessionSchema>
+
+export const knownProjectSchema = z.object({
+  project: projectSchema,
+  // When the daemon last saved the project's state.
+  savedAt: dateTimeSchema,
+  folder: z.enum(["present", "missing", "unreadable"]),
+  sessions: z.array(knownProjectSessionSchema).max(maximumKnownProjectSessions),
+  // Present only when sessions were left out: how many.
+  omittedSessions: z.number().int().min(1).max(1_000_000).optional(),
+}).strict().superRefine((known, context) => {
+  const seen = new Set<string>()
+  for (const [index, session] of known.sessions.entries()) {
+    if (seen.has(session.id)) context.addIssue({ code: "custom", path: ["sessions", index, "id"], message: "A session is listed once" })
+    seen.add(session.id)
+  }
+})
+
+export type KnownProject = z.infer<typeof knownProjectSchema>
+
+export const projectListParamsSchema = z.object({}).strict()
+
+export const projectListResultSchema = z.object({
+  projects: z.array(knownProjectSchema).max(maximumKnownProjects),
+  // Present only when projects were left out: how many.
+  omittedProjects: z.number().int().min(1).max(1_000_000).optional(),
+}).strict().superRefine((result, context) => {
+  const seen = new Set<string>()
+  for (const [index, known] of result.projects.entries()) {
+    if (seen.has(known.project.id)) context.addIssue({ code: "custom", path: ["projects", index, "project", "id"], message: "A project is listed once" })
+    seen.add(known.project.id)
+  }
+})
+
+export type ProjectListResult = z.infer<typeof projectListResultSchema>
+
 // projectId names an active project to create the session in; left out, the
 // daemon uses the focused project.
 export const sessionCreateParamsSchema = z.object({
@@ -1852,6 +1911,7 @@ export const rpcMethods = {
   },
   "project.open": { params: projectOpenParamsSchema, result: workspaceSnapshotSchema },
   "project.close": { params: projectCloseParamsSchema, result: projectCloseResultSchema },
+  "project.list": { params: projectListParamsSchema, result: projectListResultSchema },
   "session.activate": { params: sessionActivateParamsSchema, result: workspaceSnapshotSchema },
   "session.pause": { params: sessionPauseParamsSchema, result: workspaceSnapshotSchema },
   "session.archive": { params: sessionArchiveParamsSchema, result: workspaceSnapshotSchema },
@@ -1979,6 +2039,7 @@ export const rpcMethodAuthorizations = {
   "session.restartProviderThread": "control",
   "project.open": "control",
   "project.close": "control",
+  "project.list": "observe",
   "session.activate": "control",
   "session.pause": "control",
   "session.archive": "control",
@@ -2081,6 +2142,7 @@ export const rpcMethodMutations = {
   "session.restartProviderThread": "mutating",
   "project.open": "mutating",
   "project.close": "mutating",
+  "project.list": "read-only",
   "session.activate": "mutating",
   "session.pause": "mutating",
   "session.archive": "mutating",

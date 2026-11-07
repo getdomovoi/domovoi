@@ -6,11 +6,11 @@
 // It is never evidence: every parameter is parsed with the protocol's own
 // schema, every result is parsed before it is sent, and a method with no
 // handler is refused out loud rather than answered with a plausible shape.
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 
 import { WebSocketServer } from "ws"
 
-import { demoWorkspace, rpcMethods } from "@getdomovoi/protocol"
+import { demoWorkspace, projectSwitchConfirmationErrorCode, rpcMethods } from "@getdomovoi/protocol"
 
 const methodNotFound = -32601
 const invalidParams = -32602
@@ -25,7 +25,11 @@ function withProjects(snapshot) {
 
 export function createFixtureState(seed = demoWorkspace) {
   let snapshot = structuredClone(seed)
+  // The projects this fixture has switched away from, kept as the daemon keeps
+  // them: each one's own sessions and records, restored when it opens again.
+  const saved = new Map()
   return {
+    saved,
     snapshot: () => snapshot,
     replace(next) {
       snapshot = next
@@ -67,7 +71,59 @@ export function createFixtureHandlers(state, connectionId = randomUUID()) {
       console.log(`[fixture] accepted session.send for ${params.sessionId}. No agent runs here, so no reply streams back.`)
       return snapshot()
     },
-    "project.open": () => snapshot(),
+    // project.open switches the way the daemon does: it asks to confirm when
+    // the open project has sessions, keeps the project it leaves, and brings
+    // back a project it kept. Any path opens as a repository here; the fixture
+    // reads no disk.
+    "project.open": (params) => {
+      const current = state.snapshot()
+      if (current.project?.path === params.path) return snapshot()
+      const sessions = current.sessions.map(({ id, title, state: sessionState, workspacePath }) => ({
+        id, title, state: sessionState, ...(workspacePath ? { workspacePath } : {}),
+      }))
+      const confirmation = {
+        kind: "project-switch-confirmation",
+        requestedPath: params.path,
+        sessions,
+        sessionCount: sessions.length,
+        worktreeCount: sessions.filter((session) => session.workspacePath).length,
+      }
+      if (sessions.length > 0 && JSON.stringify(params.confirmation) !== JSON.stringify(confirmation)) {
+        throw new FixtureRefusal(projectSwitchConfirmationErrorCode, "Confirm stopping this project's running work before switching", confirmation)
+      }
+      if (current.project) state.saved.set(current.project.id, { ...projectRecords(current), savedAt: new Date().toISOString() })
+      // A kept project is found by its path: the demo project's id is not the
+      // hash the daemon derives from a root.
+      const restored = [...state.saved.values()].find((records) => records.project.path === params.path)
+      const id = `project-${createHash("sha256").update(params.path).digest("hex").slice(0, 12)}`
+      const name = params.path.split(/[\\/]/u).filter(Boolean).at(-1) ?? params.path
+      state.replace({
+        ...current,
+        ...projectRecords(restored ?? {
+          project: { id, machineId: current.machine.id, name, path: params.path, branch: "main" },
+          sessions: [], activeSessionId: null, approvals: [], approvalRules: [], thread: [], artifacts: [], workingPlans: [], annotations: [],
+        }),
+      })
+      return snapshot()
+    },
+    // The open project first, from the live state, then the ones it kept.
+    "project.list": () => {
+      const current = state.snapshot()
+      const listed = (records, savedAt) => ({
+        project: records.project,
+        savedAt,
+        folder: "present",
+        sessions: records.sessions.map(({ id, title, state: sessionState, updatedAt }) => ({ id, title, state: sessionState, updatedAt })),
+      })
+      return {
+        projects: [
+          ...(current.project ? [listed(current, new Date().toISOString())] : []),
+          ...[...state.saved.values()]
+            .filter((records) => records.project.id !== current.project?.id)
+            .map((records) => listed(records, records.savedAt)),
+        ],
+      }
+    },
     // Usage is drawn in the chrome, so the fixture has to answer it. The
     // numbers are the fixture's own and are not a measurement of anything.
     "usage.window": () => ({
@@ -108,10 +164,17 @@ export function createFixtureHandlers(state, connectionId = randomUUID()) {
   }
 }
 
+// One project's own records, as the daemon saves them when it switches away.
+function projectRecords(source) {
+  const { project, sessions, activeSessionId, approvals, approvalRules, thread, artifacts, workingPlans, annotations } = source
+  return { project, sessions, activeSessionId, approvals, approvalRules, thread, artifacts, workingPlans, annotations }
+}
+
 export class FixtureRefusal extends Error {
-  constructor(code, message) {
+  constructor(code, message, data) {
     super(message)
     this.code = code
+    this.data = data
   }
 }
 
@@ -154,8 +217,9 @@ export function start({ port = 0, host = "127.0.0.1", log = console.log } = {}) 
         socket.send(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: answer(handlers, request) }))
       } catch (cause) {
         const code = cause instanceof FixtureRefusal ? cause.code : internalError
+        const data = cause instanceof FixtureRefusal && cause.data !== undefined ? { data: cause.data } : {}
         log(`[fixture] refused ${request.method}: ${cause.message}`)
-        socket.send(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code, message: cause.message } }))
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code, message: cause.message, ...data } }))
       }
     })
   })
