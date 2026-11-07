@@ -2342,7 +2342,10 @@ export class DomovoiDaemon {
         const threadId = threadIdForAgentEvent(event)
         if (threadId) {
           const key = providerThreadKey(provider, threadId)
-          if (this.#closedThreads.has(key)) return
+          // Closing blocks execution events, but an interrupted dispatch may
+          // report its final usage while the close is stopping its thread.
+          if (this.#closedThreads.has(key) && (event.type !== "usage"
+            || !this.#usageRecord(provider, threadId, event.turnId)?.accounting)) return
           this.#eventCloseGenerations.set(event, this.#threadCloseGenerations.get(key) ?? 0)
         }
         if (event.type === "approval-requested") {
@@ -11634,8 +11637,6 @@ export class DomovoiDaemon {
     const threadId = threadIdForAgentEvent(event)
     if (!threadId) return
     const closeKey = providerThreadKey(provider, threadId)
-    if (this.#closedThreads.has(closeKey)
-      || (this.#eventCloseGenerations.get(event) ?? 0) !== (this.#threadCloseGenerations.get(closeKey) ?? 0)) return
     if (event.type === "usage") {
       // Stops block execution/content events; already-incurred usage still belongs to its known dispatch.
       this.#updateUsageAccounting(() => {
@@ -11643,7 +11644,9 @@ export class DomovoiDaemon {
         if (this.#usageLedger.lookup && this.#usageLedger.observe) {
           const record = this.#usageRecord(provider, event.threadId, event.turnId)
           const owner = record && this.#snapshot.sessions.find((candidate) => candidate.id === record.sessionId)
-          if (owner && record.accounting && !sessionIsReadOnly(owner)) {
+          // Close removes the owner from the live snapshot before this queued
+          // event runs. Its recorded dispatch still owns already-incurred usage.
+          if (record?.accounting && (owner ? !sessionIsReadOnly(owner) : this.#closedThreads.has(closeKey))) {
             this.#usageLedger.observe({ ...identity, turnId: record.accounting.providerTurnId }, event)
           }
           return
@@ -11657,6 +11660,8 @@ export class DomovoiDaemon {
       })
       return
     }
+    if (this.#closedThreads.has(closeKey)
+      || (this.#eventCloseGenerations.get(event) ?? 0) !== (this.#threadCloseGenerations.get(closeKey) ?? 0)) return
     // A security incident, recorded for the session the report named when it
     // arrived whatever has happened to that session since. Handled before the
     // emergency, lifecycle and turn checks: the turn it names has already ended.

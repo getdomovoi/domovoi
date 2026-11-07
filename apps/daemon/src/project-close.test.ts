@@ -11,7 +11,7 @@ import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import type { WorkspaceService } from "./workspace.js"
 import type { ArtifactFileChange } from "./artifact-watcher.js"
-import { UsageLedger } from "./usage.js"
+import { normalizeUsage, UsageLedger } from "./usage.js"
 import { resolveExecution } from "./execution-resolution.js"
 import type { TerminalProcess } from "./terminal.js"
 
@@ -60,9 +60,10 @@ async function fixture(options: { root?: string; initial?: WorkspaceSnapshot } =
   const store = new SqliteWorkspaceStore(join(root, "state.sqlite"), options.initial ?? createEmptyWorkspace(demoWorkspace.machine))
   const loaded = store.load()
   vi.spyOn(store, "load").mockReturnValueOnce(loaded)
+  const usageLedger = new UsageLedger(join(root, "usage.sqlite"))
   const daemon = new DomovoiDaemon({ port: 0, store, profileDirectory: root, projectDirectoryExists,
     agents: { "claude-code": agent }, workspaceService, agentTimeoutMs: 500,
-    usageLedger: new UsageLedger(join(root, "usage.sqlite")),
+    usageLedger,
     terminalService: { spawn: () => {
       const exits = new Set<(event: { exitCode: number; signal?: number }) => void>()
       const outputs = new Set<(text: string) => void>()
@@ -124,7 +125,7 @@ async function fixture(options: { root?: string; initial?: WorkspaceSnapshot } =
     expect(first.error.code).toBe(-32022)
     return rpc<RpcResult<"project.close">>("project.close", { projectId, client: "desktop", confirmation: first.error.data })
   }
-  return { rpc, open, close, store, loaded, root, daemon, socket, notifications, workspaceService, stopThread, startTurn, startThread, agent, inspect, projectDirectoryExists, watchers, terminals,
+  return { rpc, open, close, store, loaded, root, daemon, usageLedger, socket, notifications, workspaceService, stopThread, startTurn, startThread, agent, inspect, projectDirectoryExists, watchers, terminals,
     emit: (event: AgentEvent) => { for (const listener of listeners) listener(event) } }
 }
 
@@ -222,6 +223,36 @@ it.each(["folder-missing", "folder-check-failed"] as const)("closes a %s project
   expect((await close(a.projectId)).error).toBeUndefined()
   expect(inspect).not.toHaveBeenCalled()
   expect(projectDirectoryExists).not.toHaveBeenCalled()
+})
+
+it("records interrupted turn usage while close still fences execution events", async () => {
+  const { rpc, open, close, agent, emit, usageLedger, store } = await fixture()
+  const a = await open("a")
+  expect((await rpc("session.send", { sessionId: a.sessionId, prompt: "work", client: "desktop" })).error).toBeUndefined()
+  const identity = { provider: "claude-code", threadId: a.threadId, turnId: "turn-1" }
+  const usage = normalizeUsage({ inputTokens: 120, outputTokens: 30, cost: { amount: 0.012, currency: "USD" } })
+  vi.mocked(agent.interruptTurn).mockImplementationOnce(async (threadId, turnId) => {
+    emit({ type: "usage", threadId, turnId, usage, source: { kind: "turn", id: turnId, tokens: "reported", final: true } })
+    emit({ type: "text-delta", threadId, turnId, delta: "forbidden close content" })
+    emit({ type: "command-output", threadId, turnId, delta: "forbidden close output" })
+    emit({ type: "approval-requested", threadId, turnId, requestId: 123, command: "echo forbidden-close-approval" })
+    emit({ type: "item", phase: "completed", params: { threadId, turnId, item: { id: "forbidden-close-tool", type: "commandExecution", command: "echo forbidden-close-tool" } } })
+  })
+  expect((await close(a.projectId)).error).toBeUndefined()
+  await rpc("workspace.get")
+  expect(usageLedger.lookup(identity)).toMatchObject({ sessionId: a.sessionId, usage, accounting: { status: "interrupted" } })
+  emit({ type: "usage", ...identity, turnId: "unknown-turn", usage: normalizeUsage({ inputTokens: 9999 }) })
+  await rpc("workspace.get")
+  expect(usageLedger.lookup({ ...identity, turnId: "unknown-turn" })).toBeUndefined()
+  expect(usageLedger.session(a.sessionId).totalTokens).toBe(150)
+  expect(usageLedger.session(a.sessionId).costMicros).toBe(12000)
+  await open("a", false)
+  for (const snapshot of [(await rpc("workspace.get")).result!, store.loadProject(a.projectId)!]) {
+    expect(snapshot.approvals).toEqual([])
+    expect(JSON.stringify(snapshot.thread)).not.toContain("forbidden close")
+    expect(JSON.stringify(snapshot.thread)).not.toContain("forbidden-close")
+  }
+  expect(agent.resolveApproval).not.toHaveBeenCalled()
 })
 
 it("drops content, approval and tool events from a closed thread, including after reopen", async () => {
