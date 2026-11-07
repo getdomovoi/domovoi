@@ -64,13 +64,40 @@ overrides:
   # to 8.3.2 carry the same advisory; the catalog floor below covers those. Remove once the
   # lockfile resolves 2.14.2 or later on its own.
   launch-editor@2: ^2.14.2
+  # GHSA-mrhx-c7xc-m3w5, high: zod below 4.6.6 can exhaust memory while validating oversized
+  # constrained collections. The catalog floor below covers the direct consumers; this forces
+  # the copy eslint-plugin-react-hooks resolves. Scoped to 4.x so no 3.x consumer crosses a
+  # major; auditConfig below explains the one 3.x copy. Remove once the lockfile resolves 4.6.6
+  # or later on its own.
+  zod@4: ^4.6.6
+  # GHSA-27r3-jxmh-p828, high: body-parser 2.x below 2.4.0 lets trailing bytes after a
+  # compressed request body cause a denial of service. Reached through express 5 in the MCP
+  # TypeScript SDK, which apps/daemon uses directly and through @anthropic-ai/claude-agent-sdk.
+  # express 5.3.0 and MCP SDK 1.32.2 still declare ranges that admit 2.3.0, so no direct update
+  # raises it. Remove once the lockfile resolves 2.4.0 or later on its own.
+  body-parser@2: ^2.4.0
+  # GHSA-xjj6-f33q-929c, GHSA-4w7w-5xrc-9h26, GHSA-2m5v-pch6-74hx and GHSA-qrxm-fqhp-jwvm,
+  # high: undici below 6.29.1 and 7.30.1 has denial of service, cache poisoning and TLS
+  # certificate validation flaws. Reached through @electron/get and node-gyp in the desktop
+  # build tooling and the shadcn CLI in packages/ui. Scoped per major so no consumer crosses a
+  # major. Remove once the lockfile resolves the patched versions on its own.
+  undici@6: ^6.29.1
+  undici@7: ^7.30.1
+  # GHSA-3f7j-7jwc-fxfj, high: systeminformation below 5.33.16 allows Windows command injection
+  # in services(). Reached only through the shadcn CLI in packages/ui. Remove once the lockfile
+  # resolves 5.33.16 or later on its own.
+  systeminformation@5: ^5.33.16
+  # GHSA-7wch-p9px-956x, GHSA-jc66-7q78-782g, GHSA-8hrf-8g6f-7xwp, GHSA-hqq3-7jhf-c5jx and
+  # GHSA-5x38-2vff-x55p, high: node-forge 1.4.0 and earlier. Reached only through Expo CLI in
+  # apps/mobile. Remove once the lockfile resolves 1.4.1 or later on its own.
+  node-forge@1: ^1.4.1
 
 catalog:
   "@vitest/coverage-v8": ^5.0.0
   typescript: ^5.9.2
   vite: ^8.3.3
   vitest: ^5.0.0
-  zod: ^4.6.5
+  zod: ^4.6.6
 
 minimumReleaseAgeExclude:
   - '@expo/cli@57.0.22'
@@ -104,6 +131,15 @@ auditConfig:
     # apps/mobile, and the shadcn CLI in packages/ui. Ruling Q406 A, 2026-10-02.
     # Remove once a patched braces is published, and force it in overrides.
     - GHSA-vfj7-8cjw-p6xm
+    # GHSA-mrhx-c7xc-m3w5, high: zod can exhaust memory while validating oversized
+    # constrained collections. The advisory covers every 3.x release and names only
+    # 4.6.6 as patched. The zod@4 override and the catalog floor keep every 4.x copy
+    # patched, so this ignore covers only zod 3.25.76, which reaches apps/mobile
+    # through @expo/cli 57.0.26. The dev server uses it to validate dev tools plugin
+    # manifests and their output; no shipped client or daemon depends on it.
+    # @expo/cli 57.0.33 drops zod, but reaching it needs the Expo SDK patch bump to
+    # expo ~57.0.32. Ruling Q167 A, 2026-11-06. Remove with that bump.
+    - GHSA-mrhx-c7xc-m3w5
 
 # Swift 6.4 (Xcode 27.1) spells C++ types `__ObjC::expo...`, which the published SDK 57 strip
 # program misses; the patch backports the expo-modules-jsi 58 program. Remove it with the move to
