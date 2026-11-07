@@ -1,4 +1,5 @@
 import { once } from "node:events"
+import { createHash } from "node:crypto"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -168,6 +169,19 @@ it("closing A leaves B's turn and watcher running and restores A without running
   const reopened = (await rpc("workspace.get")).result!
   expect(reopened.sessions.find((session) => session.id === a.sessionId)).toMatchObject({ state: "idle" })
   expect(reopened.sessions.find((session) => session.id === a.sessionId)).not.toHaveProperty("activeTurnId")
+})
+
+it("preserves done sessions when their project closes and reopens", async () => {
+  const initial = createEmptyWorkspace(demoWorkspace.machine)
+  initial.project = { ...demoWorkspace.project!, id: `project-${createHash("sha256").update(demoWorkspace.project!.path).digest("hex").slice(0, 12)}` }
+  initial.sessions = [{ ...demoWorkspace.sessions[0]!, projectId: initial.project.id, state: "done" }]
+  delete initial.sessions[0]!.activeTurnId
+  const { rpc, close, store } = await fixture({ initial })
+  const project = initial.project!
+  expect((await close(project.id)).error).toBeUndefined()
+  expect(store.loadProject(project.id)!.sessions[0]).toMatchObject({ state: "done" })
+  expect((await rpc("project.open", { path: project.path, client: "desktop" })).error).toBeUndefined()
+  expect((await rpc("workspace.get")).result!.sessions[0]).toMatchObject({ state: "done" })
 })
 
 it("keeps an unconfirmed stop fenced across close and reopen", async () => {

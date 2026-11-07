@@ -3126,7 +3126,7 @@ export class DomovoiDaemon {
     for (const session of sessions) {
       record(() => this.#flushCommandOutputStreams(session.id))
       delete session.activeTurnId
-      if (!sessionIsReadOnly(session) && session.state !== "failed") session.state = "idle"
+      if (!sessionIsReadOnly(session) && (session.state === "active" || session.state === "waiting")) session.state = "idle"
       session.updatedAt = now
       record(() => this.#holdQueuedSessionSend(session.id, "Project close held the queued send."))
       record(() => { exits.push(...this.#closeSessionTerminals(session.id)) })
