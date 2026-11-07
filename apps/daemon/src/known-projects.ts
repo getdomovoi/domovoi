@@ -108,11 +108,11 @@ type FolderStat = (path: string) => Promise<{ isDirectory(): boolean }>
 // Whether a known project's folder is still there. Gone, or replaced by a
 // file, is missing; any other answer, a permission refusal or a check that
 // does not return in time, is unreadable, because the daemon could not tell.
-async function projectFolderState(path: string, check: FolderStat): Promise<KnownProject["folder"]> {
+async function projectFolderState(underlying: ReturnType<FolderStat>): Promise<KnownProject["folder"]> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     const entry = await Promise.race([
-      check(path),
+      underlying,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => reject(new Error("Project folder check timed out")), projectFolderCheckTimeoutMs)
       }),
@@ -127,26 +127,36 @@ async function projectFolderState(path: string, check: FolderStat): Promise<Know
 }
 
 // One check per folder at a time (security review on #907): a request that
-// arrives while a folder is being checked, or within a few seconds of an
-// answer, gets that answer. A check that hangs on a dead mount is therefore
-// started once, not once per request.
+// arrives while a folder's check still runs, or within a few seconds of its
+// answer, gets that answer. The answer gives up after two seconds, but the
+// check itself may hang on a dead mount for as long as the mount does; no
+// second check of that folder starts until it settles, so a hung mount costs
+// one pending check, not one per request.
 export function createProjectFolderProbe(options: { stat?: FolderStat; now?: () => number } = {}): (path: string) => Promise<KnownProject["folder"]> {
   const check = options.stat ?? stat
   const now = options.now ?? Date.now
   const answers = new Map<string, { at: number; answer: Promise<KnownProject["folder"]> }>()
+  // The underlying check per folder, until it settles.
+  const running = new Map<string, Promise<unknown>>()
   return (path) => {
     const held = answers.get(path)
-    if (held && now() - held.at <= projectFolderCheckReuseMs) return held.answer
-    const answer = projectFolderState(path, check)
-    const entry = { at: now(), answer }
+    if (held && (running.has(path) || now() - held.at <= projectFolderCheckReuseMs)) return held.answer
+    const underlying = check(path)
+    running.set(path, underlying)
+    const entry = { at: now(), answer: projectFolderState(underlying) }
     answers.set(path, entry)
-    // The reuse window starts when the answer arrives, so a slow check is
+    // The reuse window starts when the check settles, so a slow check is
     // never followed at once by another.
-    void answer.then(() => { if (answers.get(path) === entry) entry.at = now() })
+    void underlying.then(() => {}, () => {}).then(() => {
+      if (running.get(path) === underlying) running.delete(path)
+      if (answers.get(path) === entry) entry.at = now()
+    })
     if (answers.size > 256) {
-      for (const [key, value] of answers) if (now() - value.at > projectFolderCheckReuseMs) answers.delete(key)
+      for (const [key, value] of answers) {
+        if (!running.has(key) && now() - value.at > projectFolderCheckReuseMs) answers.delete(key)
+      }
     }
-    return answer
+    return entry.answer
   }
 }
 

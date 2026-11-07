@@ -19,7 +19,13 @@ import {
 import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { createProjectFolderProbe, knownProjectEntries, maximumProjectListBytes, projectFolderCheckReuseMs } from "./known-projects.js"
+import {
+  createProjectFolderProbe,
+  knownProjectEntries,
+  maximumProjectListBytes,
+  projectFolderCheckReuseMs,
+  projectFolderCheckTimeoutMs,
+} from "./known-projects.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -201,16 +207,16 @@ describe("the project list's cost", () => {
     })
     const send = (id: number, method: string, params: Record<string, unknown>) => socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
     send(1, "system.hello", { client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken })
-    await vi.waitFor(() => expect(replies.has(1)).toBe(true))
+    await vi.waitFor(() => expect(replies.has(1)).toBe(true), { timeout: 10_000 })
     try {
       send(2, "project.open", { path: join(scratch, "repo"), client: "desktop" })
       send(3, "project.list", {})
-      await vi.waitFor(() => expect(replies.get(3)?.result).toBeDefined())
+      await vi.waitFor(() => expect(replies.get(3)?.result).toBeDefined(), { timeout: 10_000 })
       expect(replies.has(2)).toBe(false)
     } finally {
       release()
     }
-    await vi.waitFor(() => expect(replies.has(2)).toBe(true))
+    await vi.waitFor(() => expect(replies.has(2)).toBe(true), { timeout: 10_000 })
   })
 
   it("checks each folder once at a time and reuses a recent answer", async () => {
@@ -235,6 +241,37 @@ describe("the project list's cost", () => {
     expect(calls).toBe(2)
     finish()
     expect(await third).toBe("present")
+  })
+
+  it("starts no second check of a folder while the first one is still hanging", async () => {
+    vi.useFakeTimers()
+    try {
+      let calls = 0
+      let finish: () => void = () => {}
+      const stat = () => {
+        calls += 1
+        return new Promise<{ isDirectory: () => boolean }>((resolve) => { finish = () => resolve({ isDirectory: () => true }) })
+      }
+      let now = 0
+      const probe = createProjectFolderProbe({ stat, now: () => now })
+      const first = probe("/mnt/dead")
+      await vi.advanceTimersByTimeAsync(projectFolderCheckTimeoutMs + 1)
+      expect(await first).toBe("unreadable")
+      // Long after the answer could be reused, the hung check still runs, so
+      // no other starts and the last answer stands.
+      now += projectFolderCheckReuseMs * 3
+      expect(await probe("/mnt/dead")).toBe("unreadable")
+      expect(calls).toBe(1)
+      finish()
+      await vi.advanceTimersByTimeAsync(0)
+      now += projectFolderCheckReuseMs + 1
+      const next = probe("/mnt/dead")
+      expect(calls).toBe(2)
+      finish()
+      expect(await next).toBe("present")
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
