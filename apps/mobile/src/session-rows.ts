@@ -117,8 +117,8 @@ export type SessionGroup = {
 // leads across all of them and each project then has flat running-first rows.
 export function sessionGroups(snapshot: WorkspaceSnapshot): SessionGroup[] {
   const rows = sessionRows(snapshot)
-  const needsYou = (row: SessionRow) => row.attention === "approval" || row.failed
   const projects = workspaceProjects(snapshot)
+  const needsYou = (row: SessionRow) => row.attention === "approval" || (projects.length > 1 && row.failed)
   if (projects.length <= 1) {
     return [
       { id: "needs-you" as const, label: "NEEDS YOU", rows: rows.filter(needsYou) },
@@ -150,7 +150,9 @@ export function sessionGroups(snapshot: WorkspaceSnapshot): SessionGroup[] {
 export function waitingCount(snapshot: WorkspaceSnapshot): number {
   return new Set([
     ...snapshot.approvals.map((approval) => approval.sessionId),
-    ...snapshot.sessions.filter((session) => session.state === "failed").map((session) => session.id),
+    ...(workspaceProjects(snapshot).length > 1
+      ? snapshot.sessions.filter((session) => session.state === "failed").map((session) => session.id)
+      : []),
   ]).size
 }
 

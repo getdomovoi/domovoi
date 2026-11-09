@@ -103,6 +103,25 @@ describe("elapsedLabel", () => {
 })
 
 describe("sessionGroups", () => {
+  it.each([1, 2])("includes failures in attention only with multiple projects (%i active)", (count) => {
+    const snapshot = workspace()
+    const project = snapshot.project!
+    snapshot.projects = count === 1 ? [project] : [project, { ...project, id: "project-b", name: "Project B" }]
+    const failed = { ...snapshot.sessions[0]!, id: "session-failed", state: "failed" as const }
+    snapshot.sessions.push(failed)
+
+    const groups = sessionGroups(snapshot)
+    const attentionIds = groups.find((group) => group.id === "needs-you")!.rows.map((row) => row.id)
+    if (count === 1) {
+      expect(attentionIds).not.toContain(failed.id)
+      expect(groups.find((group) => group.id === "quiet")!.rows.map((row) => row.id)).toContain(failed.id)
+    } else {
+      expect(attentionIds).toContain(failed.id)
+      expect(groups.find((group) => group.id === `project:${project.id}`)!.rows.map((row) => row.id)).not.toContain(failed.id)
+    }
+    expect(waitingCount(snapshot)).toBe(count)
+  })
+
   it("puts needs-you first, then running, then quiet, each with its count", () => {
     const snapshot = workspace()
 
