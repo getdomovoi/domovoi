@@ -14,6 +14,25 @@ const props = {
 }
 
 describe("fresh session project picker", () => {
+  it("can choose the remaining project if the selection closes while the sheet is open", async () => {
+    const onChooseProject = jest.fn<(id: string) => void>()
+    const onStart = jest.fn<(prompt: string) => void>()
+    const callbacks = { onChooseProject, onStart }
+    const { rerender } = await render(<FreshSessionSheet {...props} {...callbacks} />)
+    await fireEvent.changeText(screen.getByLabelText("What to do"), "Keep my prompt")
+    await rerender(<FreshSessionSheet {...props} {...callbacks} projects={[a]} disabledReason="This project is no longer active. Choose an active project." />)
+    expect(screen.getByRole("button", { name: "Start" })).toBeDisabled()
+
+    await fireEvent.press(screen.getByRole("button", { name: "Choose a project" }))
+    await fireEvent.press(screen.getByRole("radio", { name: a.name }))
+    expect(onChooseProject).toHaveBeenCalledWith(a.id)
+    await rerender(<FreshSessionSheet {...props} {...callbacks} projects={[a]} projectId={a.id} />)
+    expect(screen.getByRole("button", { name: "Start" })).toBeEnabled()
+    expect(screen.queryByRole("button", { name: `Project ${a.name}` })).toBeNull()
+    await fireEvent.press(screen.getByRole("button", { name: "Start" }))
+    expect(onStart).toHaveBeenCalledWith("Keep my prompt")
+  })
+
   it("opens active projects with machine sub-lines and no project close action", async () => {
     await render(<FreshSessionSheet {...props} />)
     await fireEvent.press(screen.getByRole("button", { name: "Project Project B" }))

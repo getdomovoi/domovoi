@@ -64,7 +64,7 @@ export function FreshSessionSheet({ open, projects, projectId, machine, disabled
           </PageScroller>
         ) : (
           <>
-          {projects.length > 1 ? (
+          {projects.length > 1 || !project ? (
             <Button title={project ? `Project ${project.name}` : "Choose a project"} variant="ghost" shape="block" disabled={starting} onPress={() => setPicking(true)} />
           ) : null}
           {project ? <Text variant="note">Starts in “{project.name}” using the machine provider's default runtime.</Text> : null}
