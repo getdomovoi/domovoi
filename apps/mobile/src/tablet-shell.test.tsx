@@ -657,6 +657,16 @@ describe("tablet project sections", () => {
 
 
 describe("tablet session project facts", () => {
+  it("omits the approval Project fact with one active project", async () => {
+    const { props } = await draw("normal", "full", (snapshot) => {
+      snapshot.projects = [snapshot.project!]
+    })
+    const thread = within(screen.getByTestId("tablet-thread"))
+    expect(thread.queryByText("Project")).toBeNull()
+    expect(thread.queryByText(props.snapshot.project!.name)).toBeNull()
+    expect(thread.getByText("Directory")).toBeOnTheScreen()
+  })
+
   it("names B in the thread and Always here gate while A is focused", async () => {
     const { props, approval } = await draw("normal", "full", (snapshot) => {
       const b = { ...snapshot.project!, id: "project-b", name: "Project B", branch: "branch-b" }

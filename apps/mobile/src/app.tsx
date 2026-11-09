@@ -1047,7 +1047,7 @@ export function App() {
           ) : (
             <ApprovalScreen
               approval={openApproval}
-              project={sessionProject?.name}
+              project={projects.length > 1 ? sessionProject?.name : undefined}
               sessionTitle={snapshot?.sessions.find((session) => session.id === openApproval.sessionId)?.title}
               plans={snapshot?.workingPlans}
               viewer={{ client, deviceId }}

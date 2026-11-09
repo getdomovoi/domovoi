@@ -315,6 +315,8 @@ export function TabletThread({ snapshot, detail, approval, access, deciding, dec
 }) {
   const tools = snapshot.thread.filter((item) => item.sessionId === detail.id && item.kind === "tool").length
   const files = snapshot.sessions.find((session) => session.id === detail.id)?.changedFiles ?? 0
+  const projects = workspaceProjects(snapshot)
+  const approvalProjectId = snapshot.sessions.find((session) => session.id === approval?.sessionId)?.projectId
   return (
     // The thread reads newest last and the gate sits at its end, so it opens
     // at the latest turn and follows what lands while the person is there.
@@ -339,7 +341,7 @@ export function TabletThread({ snapshot, detail, approval, access, deciding, dec
         ? (
           <TabletGateCard
             approval={approval}
-            project={workspaceProjects(snapshot).find((project) => project.id === snapshot.sessions.find((session) => session.id === approval.sessionId)?.projectId)?.name}
+            project={projects.length > 1 ? projects.find((project) => project.id === approvalProjectId)?.name : undefined}
             onResolve={onResolve}
             onDenyExplain={onDenyExplain}
             watching={access !== "full"}

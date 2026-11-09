@@ -1706,6 +1706,16 @@ function enableProjectSkill(snapshot: WorkspaceSnapshot, projectId: string) {
 }
 
 describe("session project facts", () => {
+  it("omits the approval Project fact with one active project", async () => {
+    const snapshot = workspace()
+    snapshot.projects = [snapshot.project!]
+    await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    expect(screen.queryByText("Project")).toBeNull()
+    expect(screen.queryByText(snapshot.project!.name)).toBeNull()
+    expect(screen.getByText("Directory")).toBeOnTheScreen()
+  })
+
   it("requests and offers the session project's skills while another project is focused", async () => {
     const snapshot = twoProjects()
     enableProjectSkill(snapshot, "project-b")
