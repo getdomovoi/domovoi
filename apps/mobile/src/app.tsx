@@ -494,7 +494,8 @@ export function App() {
 
   const loadFleet = useCallback(() => fleetLoads.load(call), [call, fleetLoads])
 
-  // Ruling Q211: the Tools screen reads what the chosen repository holds back. It is asked for when the screen opens, again when
+  // Ruling Q211: the Tools screen reads what the chosen repository holds
+  // back. It is asked for when the screen opens, again when
   // the connection comes back, and on request, because a trust granted on
   // desktop or web is not pushed to the phone. Each read retires the one
   // before it, so a late answer cannot replace a newer one or reach a screen
