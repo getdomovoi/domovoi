@@ -296,7 +296,7 @@
         "key: \"Plan\"",
         "key: \"Outside project\"",
         "approvalPlanStep(plans ?? [], approval)",
-        "phoneApprovalFacts(approval, { plans, viewer })"
+        "phoneApprovalFacts(approval, { plans, viewer, project })"
       ]
     },
     {
