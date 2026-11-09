@@ -31,19 +31,28 @@ const countTone: Record<GroupTone, { box: string, label: string }> = {
   muted: { box: "bg-muted", label: "text-muted-foreground" },
 }
 
-const groupTone: Record<string, GroupTone> = {
+type GroupHeadingId = SessionGroupId | "unreachable"
+type GroupToneKey = Exclude<GroupHeadingId, `project:${string}`> | "project"
+
+const groupTone: Record<GroupToneKey, GroupTone> = {
   "needs-you": "warning",
   running: "success",
   quiet: "muted",
   unreachable: "muted",
+  project: "muted",
+}
+
+function isProjectGroup(id: GroupHeadingId): id is `project:${string}` {
+  return id.startsWith("project:")
 }
 
 // A heading is a label and a count, the way the design draws it. The count is
 // the group's own size, so a heading never says more than the cards under it.
 // Green says the sessions under it run now, so while the phone is not live a
 // green count goes muted, as the card lights do.
-function GroupHeading({ id, label, count, machine, live = true }: { machine?: string | undefined, id: SessionGroupId | "unreachable", label: string, count: number, live?: boolean }) {
-  const tone = countTone[!live && groupTone[id] === "success" ? "muted" : (groupTone[id] ?? "muted")]
+function GroupHeading({ id, label, count, machine, live = true }: { machine?: string | undefined, id: GroupHeadingId, label: string, count: number, live?: boolean }) {
+  const key = isProjectGroup(id) ? "project" : id
+  const tone = countTone[!live && groupTone[key] === "success" ? "muted" : groupTone[key]]
   return (
     <View className="mt-1 flex-row items-center px-1">
       <Text accessibilityRole="header" className={machine ? "shrink font-mono text-[12px] text-strong" : "flex-1 font-sans-medium text-label uppercase tracking-[0.08em] text-faint"}>
