@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals"
-import { demoWorkspace, maximumReviewAnnotations, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, maximumReviewAnnotations, workspaceSnapshotSchema, type SkillSummary, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { act, fireEvent, render, screen } from "@testing-library/react-native"
 import { AppState, type AppStateStatus } from "react-native"
 
@@ -878,7 +878,7 @@ describe("App", () => {
 
     await fireEvent.press(screen.getByRole("button", { name: `Tools on ${self.name}` }))
     await settle()
-    expect(socket.requests("tool.inventory").map((frame) => frame.params)).toEqual([{}])
+    expect(socket.requests("tool.inventory").map((frame) => frame.params)).toEqual([{ projectId: demoWorkspace.project!.id }])
     expect(screen.getByText(`Reading the agents' files on ${self.name}.`)).toBeOnTheScreen()
 
     await act(async () => {
@@ -1036,7 +1036,7 @@ describe("App", () => {
 
     await fireEvent.press(screen.getByRole("button", { name: "See what is held back" }))
     await settle()
-    expect(socket.requests("tool.inventory").map((frame) => frame.params)).toEqual([{}])
+    expect(socket.requests("tool.inventory").map((frame) => frame.params)).toEqual([{ projectId: demoWorkspace.project!.id }])
     expect(screen.getByText(`Reading the agents' files on ${snapshot.machine.name}.`)).toBeOnTheScreen()
     expect(socket.sent.filter((frame) => frame.method.startsWith("repository."))).toEqual([])
   })
@@ -1646,5 +1646,214 @@ describe("App", () => {
       expect(screen.queryByRole("button", { name: "Back to the thread" })).toBeNull()
       expect(screen.getByRole("button", { name: "Back to sessions" })).toBeOnTheScreen()
     })
+  })
+})
+
+
+describe("fresh sessions across projects", () => {
+  it("starts in the tablet's selected session project while another project is focused", async () => {
+    const native = jest.requireActual<typeof import("react-native")>("react-native")
+    const dimensions = jest.spyOn(native, "useWindowDimensions").mockReturnValue({ width: 1024, height: 768, scale: 2, fontScale: 1 })
+    try {
+      const snapshot = workspace()
+      const b = { ...snapshot.project!, id: "project-b", name: "Project B" }
+      snapshot.projects = [snapshot.project!, b]
+      snapshot.sessions.find((s) => s.id === audit.id)!.projectId = b.id
+      snapshot.machine.providers = [{ id: audit.runtime.provider, command: "codex", status: "ready", sessionCapable: true }]
+      const { socket } = await openApp(snapshot)
+      await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+      await fireEvent.press(screen.getByRole("button", { name: "New session" }))
+      expect(screen.getByRole("button", { name: "Project Project B" })).toBeOnTheScreen()
+      await fireEvent.changeText(screen.getByLabelText("What to do"), "Work in B")
+      await fireEvent.press(screen.getByRole("button", { name: "Start" }))
+      await act(async () => { socket.answer("runtime.discover", {
+        machineId: snapshot.machine.id, provider: audit.runtime.provider, status: "ready",
+        models: [{ provider: audit.runtime.provider, id: audit.runtime.model, displayName: audit.runtime.model, description: "", supportedReasoningEfforts: [audit.runtime.reasoning], defaultReasoningEffort: audit.runtime.reasoning, isDefault: true }], defaultRuntime: audit.runtime, permissionModes: [audit.runtime.permissionMode], supportsAuto: audit.runtime.permissionMode === "build",
+      }) })
+      await settle()
+      expect(socket.requests("session.create")[0]?.params).toMatchObject({ projectId: b.id })
+      expect(socket.requests("project.open")).toHaveLength(0)
+      expect(socket.requests("project.close")).toHaveLength(0)
+      expect(socket.requests("project.list")).toHaveLength(0)
+    } finally { dimensions.mockRestore() }
+  })
+})
+
+
+function twoProjects(): WorkspaceSnapshot {
+  const snapshot = workspace()
+  const b = { ...snapshot.project!, id: "project-b", name: "Project B", branch: "branch-b" }
+  snapshot.projects = [snapshot.project!, b]
+  snapshot.sessions.find((s) => s.id === audit.id)!.projectId = b.id
+  for (const session of snapshot.sessions) {
+    session.workspacePath = `/worktrees/${session.id}`
+    session.providerThreadId = `thread-${session.id}`
+  }
+  return snapshot
+}
+
+const projectSkill: SkillSummary = {
+  id: "skill-aaaaaaaaaaaa", name: "b-skill", description: "Project instructions", path: "/repo-b/SKILL.md",
+  scope: "project", source: "agents", manifest: { version: 1, capabilities: ["filesystem.read"] },
+  contentDigest: `sha256:${"a".repeat(64)}`, signature: { state: "unsigned" }, trust: { state: "untrusted", reason: "unsigned" },
+}
+
+function enableProjectSkill(snapshot: WorkspaceSnapshot, projectId: string) {
+  snapshot.skillEnablements = [{
+    projectId, skillId: projectSkill.id, enabled: true, contentDigest: projectSkill.contentDigest,
+    manifest: projectSkill.manifest, reviewedAt: "2026-09-03T10:00:00.000Z", reviewedBy: { client: "phone" },
+  }]
+}
+
+describe.each([false, true])("tablet fallback project context (removed selection: %s)", (removed) => {
+  beforeEach(() => {
+    const native = jest.requireActual<typeof import("react-native")>("react-native")
+    jest.spyOn(native, "useWindowDimensions").mockReturnValue({ width: 1024, height: 768, scale: 2, fontScale: 1 })
+  })
+  afterEach(() => { jest.restoreAllMocks() })
+
+  async function openFallback() {
+    const snapshot = twoProjects()
+    snapshot.approvals = []
+    snapshot.activeSessionId = null
+    snapshot.machine.providers = [{ id: audit.runtime.provider, command: "codex", status: "ready", sessionCapable: true }]
+    const fallback = structuredClone(snapshot)
+    fallback.sessions = fallback.sessions.filter((session) => session.id === audit.id)
+    fallback.thread = fallback.thread.filter((entry) => entry.sessionId === audit.id)
+    fallback.artifacts = fallback.artifacts.filter((artifact) => artifact.sessionId === audit.id)
+    fallback.annotations = fallback.annotations.filter((annotation) => annotation.sessionId === audit.id)
+    fallback.workingPlans = fallback.workingPlans.filter((plan) => plan.sessionId === audit.id)
+    // Exercise both the first-session fallback and the active-session fallback.
+    if (removed) fallback.activeSessionId = audit.id
+    workspaceSnapshotSchema.parse(fallback)
+    const { socket } = await openApp(removed ? snapshot : fallback)
+    if (removed) {
+      await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+      await act(async () => { socket.push("workspace.changed", fallback) })
+      await settle()
+    }
+    expect(screen.getByText("Project B · branch-b · session-audit")).toBeOnTheScreen()
+    return { socket, snapshot: fallback }
+  }
+
+  it("defaults New session to the project of the displayed thread", async () => {
+    await openFallback()
+    await fireEvent.press(screen.getByRole("button", { name: "New session" }))
+    expect(screen.getByRole("button", { name: "Project Project B" })).toBeOnTheScreen()
+  })
+
+  it("requests the displayed thread's project skill catalog", async () => {
+    const { socket } = await openFallback()
+    expect(socket.requests("skill.list").at(-1)?.params).toEqual({ projectId: "project-b" })
+  })
+
+  it("keeps the displayed thread's project when opening Tools", async () => {
+    const { socket, snapshot } = await openFallback()
+    await fireEvent.press(screen.getByRole("button", { name: "Machines" }))
+    const self = snapshot.machine
+    await act(async () => {
+      socket.answer("fleet.list", { entries: [{
+        kind: "machine",
+        machine: {
+          id: self.id, label: self.name, platform: "darwin", arch: "arm64", version: "0.0.1",
+          connection: "local", capabilities: ["sessions"], protocolVersion: "0.2.0", transports: [],
+          heartbeat: { state: "online", lastSeenAt: new Date().toISOString() }, health: "healthy", self: true,
+        },
+      }] })
+    })
+    await settle()
+    await fireEvent.press(screen.getByRole("button", { name: `Tools on ${self.name}` }))
+    expect(socket.requests("tool.inventory").at(-1)?.params).toEqual({ projectId: "project-b" })
+  })
+})
+
+describe("session project facts", () => {
+  it("omits the approval Project fact with one active project", async () => {
+    const snapshot = workspace()
+    snapshot.projects = [snapshot.project!]
+    await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    expect(screen.queryByText("Project")).toBeNull()
+    expect(screen.queryByText(snapshot.project!.name)).toBeNull()
+    expect(screen.getByText("Directory")).toBeOnTheScreen()
+  })
+
+  it("requests and offers the session project's skills while another project is focused", async () => {
+    const snapshot = twoProjects()
+    enableProjectSkill(snapshot, "project-b")
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    await fireEvent(screen.getByLabelText("Reply to this session"), "focus")
+    await fireEvent.press(screen.getByRole("button", { name: /Skills for this turn/ }))
+    expect(socket.requests("skill.list")[0]?.params).toEqual({ projectId: "project-b" })
+    await act(async () => { socket.answer("skill.list", [projectSkill]) })
+    expect(screen.getByRole("checkbox", { name: projectSkill.name })).toBeOnTheScreen()
+  })
+
+  it("reloads missing enabled skills for the session project", async () => {
+    const snapshot = twoProjects()
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    await fireEvent(screen.getByLabelText("Reply to this session"), "focus")
+    await fireEvent.press(screen.getByRole("button", { name: /Skills for this turn/ }))
+    await act(async () => { socket.answer("skill.list", []) })
+    enableProjectSkill(snapshot, "project-b")
+    await act(async () => { socket.push("workspace.changed", snapshot) })
+    await settle()
+    expect(socket.requests("skill.list")).toHaveLength(2)
+    expect(socket.requests("skill.list")[1]?.params).toEqual({ projectId: "project-b" })
+  })
+
+  it("retires a previous project's pending catalog after switching sessions", async () => {
+    const snapshot = twoProjects()
+    snapshot.approvals = []
+    enableProjectSkill(snapshot, snapshot.project!.id)
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    await fireEvent(screen.getByLabelText("Reply to this session"), "focus")
+    await fireEvent.press(screen.getByRole("button", { name: /Skills for this turn/ }))
+    await fireEvent.press(screen.getByRole("button", { name: "Done" }))
+    await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    await fireEvent(screen.getByLabelText("Reply to this session"), "focus")
+    await fireEvent.press(screen.getByRole("button", { name: /Skills for this turn/ }))
+    expect(socket.requests("skill.list")).toHaveLength(2)
+    expect(socket.requests("skill.list")[1]?.params).toEqual({ projectId: snapshot.project!.id })
+    await act(async () => { socket.answer("skill.list", [{ ...projectSkill, name: "a-skill" }], 1) })
+    await act(async () => { socket.answer("skill.list", [projectSkill], 0) })
+    expect(screen.getByRole("checkbox", { name: "a-skill" })).toBeOnTheScreen()
+    expect(screen.queryByRole("checkbox", { name: "b-skill" })).toBeNull()
+  })
+
+  it("names the approval's session project even when the focused project differs", async () => {
+    const snapshot = twoProjects()
+    snapshot.sessions.find((s) => s.id === billing.id)!.projectId = "project-b"
+    await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    expect(screen.getByText("Project")).toBeOnTheScreen()
+    expect(screen.getByText("Project B")).toBeOnTheScreen()
+    expect(screen.queryByText(snapshot.project!.name)).toBeNull()
+  })
+
+  it("creates like the session in B and reads B's tools after its refusal", async () => {
+    const snapshot = twoProjects()
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    await fireEvent.press(screen.getByRole("button", { name: "Start another like this one" }))
+    await fireEvent.changeText(screen.getByLabelText("What to do"), "Stay in B")
+    await fireEvent.press(screen.getByRole("button", { name: "Start" }))
+    const create = socket.requests("session.create")[0]!
+    expect(create.params).toMatchObject({ projectId: "project-b" })
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: create.id, error: {
+        code: -32020, message: "Filter blocked", data: {
+          kind: "repository-git-filter", projectId: "project-b", configDigest: `sha256:${"a".repeat(64)}`,
+          trust: { state: "untrusted", reason: "not-trusted" }, drivers: [{ name: "sops", scope: "local" }], omittedDrivers: 0,
+        },
+      } }) })
+    })
+    expect(screen.getByText(`Checking out Project B would run the sops filter driver, which is not trusted on ${snapshot.machine.name}.`)).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("button", { name: "See what is held back" }))
+    expect(socket.requests("tool.inventory")[0]?.params).toEqual({ projectId: "project-b" })
   })
 })

@@ -18,9 +18,10 @@ import { cn } from "../lib/cn"
 
 // The facts the handoff puts on this screen, in its order. A decision made
 // without them is a decision made blind, so none of them are behind a tap.
-export function approvalFacts(approval: ApprovalRequest): Array<{ key: string, value: string, tone?: string }> {
+export function approvalFacts(approval: ApprovalRequest, project?: string): Array<{ key: string, value: string, tone?: string }> {
   return [
     { key: "Machine", value: approval.machine },
+    ...(project ? [{ key: "Project", value: project }] : []),
     { key: "Agent", value: approval.agent },
     { key: "Mode", value: approval.mode },
     { key: "Directory", value: approval.directory },
@@ -38,10 +39,10 @@ export function approvalFacts(approval: ApprovalRequest): Array<{ key: string, v
 // not drawn, because absent means it could not decide.
 export function phoneApprovalFacts(
   approval: ApprovalRequest,
-  context: { plans?: readonly WorkingPlan[] | undefined, viewer?: ApprovalViewer | undefined },
+  context: { plans?: readonly WorkingPlan[] | undefined, viewer?: ApprovalViewer | undefined, project?: string | undefined },
 ): Array<{ key: string, value: string, tone?: string }> {
   const { origin, step, outsideProject } = approvalContextFacts(approval, context)
-  return approvalFacts(approval).flatMap((fact) => {
+  return approvalFacts(approval, context.project).flatMap((fact) => {
     if (fact.key === "Mode") return [fact, ...(origin ? [origin] : []), ...(step ? [step] : [])]
     if (fact.key === "Directory") return [fact, ...(outsideProject ? [outsideProject] : [])]
     return [fact]
@@ -51,6 +52,7 @@ export function phoneApprovalFacts(
 export function ApprovalScreen({
   approval,
   sessionTitle,
+  project,
   plans,
   viewer,
   pending,
@@ -66,6 +68,7 @@ export function ApprovalScreen({
   // which piece of work is asking. The machine stands in when the phone has
   // no session by that id.
   sessionTitle?: string | undefined
+  project?: string | undefined
   // The session plans the phone holds, read for the step this gate blocks.
   plans?: readonly WorkingPlan[] | undefined
   // This phone, compared with the client that started the turn.
@@ -136,7 +139,7 @@ export function ApprovalScreen({
           </View>
 
           <Card flush>
-            {phoneApprovalFacts(approval, { plans, viewer }).map((fact, index) => (
+            {phoneApprovalFacts(approval, { plans, viewer, project }).map((fact, index) => (
               <View
                 key={fact.key}
                 className={cn(

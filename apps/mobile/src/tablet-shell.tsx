@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react"
 import { Modal, Pressable, TextInput, View } from "react-native"
-import type {
-  ApprovalDecision,
-  ApprovalRequest,
-  ClientAccess,
-  WorkspaceSnapshot,
+import {
+  workspaceProjects,
+  type ApprovalDecision,
+  type ApprovalRequest,
+  type ClientAccess,
+  type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
 import { artifactBody, artifactRows, diffLines } from "./artifact-rows"
@@ -14,6 +15,7 @@ import { Mark } from "./components/mark"
 import { cn } from "./lib/cn"
 import { planForSession, planSummary } from "./plan-rows"
 import { sessionDetail, type SessionDetail, type ThreadEntry } from "./session-detail"
+import { tabletSessionId } from "./tablet-session"
 import { lastReadWords, sessionGroups, type LastRead, type SessionRow } from "./session-rows"
 import { useTheme } from "./theme/theme-provider"
 import { Button } from "./components/ui/button"
@@ -61,9 +63,9 @@ function TabletSessionRow({ row, selected, access, lastRead, onPress }: {
       <View className="min-w-0 flex-1">
         <Text className="text-[13px] leading-[18px] text-strong" numberOfLines={2}>{row.title}</Text>
         <Text variant="machine" className="mt-1 text-faint">
-          {row.attention === "approval"
+          {[...(row.project ? [row.machine, row.project] : []), row.attention === "approval"
             ? access === "full" ? "waiting on you" : "waiting on a full-access device"
-            : row.dot === "active" ? lastRead ? `running ${lastReadWords(lastRead)}` : "running" : "quiet"}
+            : row.failed ? "failed" : row.dot === "active" ? lastRead ? `running ${lastReadWords(lastRead)}` : "running" : "quiet"].join(" · ")}
         </Text>
       </View>
     </Pressable>
@@ -104,9 +106,11 @@ export function TabletSessionsPane({ snapshot, selectedSessionId, access, lastRe
         {groups.map((group) => (
           <View key={group.id} className="gap-1.5">
             <View className="flex-row items-center px-2">
-              <Text variant="label" className="flex-1">{group.label}</Text>
+              <Text accessibilityRole="header" variant={group.project ? "machine" : "label"} className={group.project ? "shrink text-[12px] text-strong" : "flex-1"}>{group.label}</Text>
+              {group.project ? <Text variant="machine" className="ml-2 flex-1 text-faint">{snapshot.machine.name}</Text> : null}
               <Text variant="machine" className="text-faint">{group.rows.length}</Text>
             </View>
+            {group.emptyReason ? <Text variant="note" className="px-2">{group.emptyReason}</Text> : null}
             {group.rows.map((row) => (
               <TabletSessionRow
                 key={row.id}
@@ -140,7 +144,7 @@ export function TabletThreadHeader({ snapshot, detail, onOpenReview }: {
   const { resolved, setPreference } = useTheme()
   const session = snapshot.sessions.find((candidate) => candidate.id === detail.id)
   const worktree = session?.workspacePath?.split(/[\\/]/u).at(-1)
-  const project = snapshot.project
+  const project = workspaceProjects(snapshot).find((candidate) => candidate.id === session?.projectId)
   const files = changedFilesLabel(snapshot, detail.id)
   return (
     <View className="min-h-[60px] flex-row items-center gap-3 border-b border-border px-5 py-3">
@@ -163,8 +167,9 @@ export function TabletThreadHeader({ snapshot, detail, onOpenReview }: {
   )
 }
 
-export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = false, pending = false, problem = "" }: {
+export function TabletGateCard({ approval, project, onResolve, onDenyExplain, watching = false, pending = false, problem = "" }: {
   approval: ApprovalRequest
+  project?: string | undefined
   // The revision is the one this card shows, so the daemon can refuse an
   // Allow given to a card it has since rewritten.
   onResolve: (approvalId: string, decision: TabletDecision, revision: number) => void
@@ -194,7 +199,7 @@ export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = 
         </View>
       </View>
       <View className="flex-row flex-wrap border-t border-warn-border">
-        {approvalFacts(approval).map((fact) => (
+        {approvalFacts(approval, project).map((fact) => (
           <View key={fact.key} className="w-1/2 border-b border-warn-border px-4 py-3">
             <Text variant="label" className="text-warn-dim">{fact.key}</Text>
             <Text variant="machine" className="mt-1 text-warn-fg">{fact.value}</Text>
@@ -311,6 +316,8 @@ export function TabletThread({ snapshot, detail, approval, access, deciding, dec
 }) {
   const tools = snapshot.thread.filter((item) => item.sessionId === detail.id && item.kind === "tool").length
   const files = snapshot.sessions.find((session) => session.id === detail.id)?.changedFiles ?? 0
+  const projects = workspaceProjects(snapshot)
+  const approvalProjectId = snapshot.sessions.find((session) => session.id === approval?.sessionId)?.projectId
   return (
     // The thread reads newest last and the gate sits at its end, so it opens
     // at the latest turn and follows what lands while the person is there.
@@ -335,6 +342,7 @@ export function TabletThread({ snapshot, detail, approval, access, deciding, dec
         ? (
           <TabletGateCard
             approval={approval}
+            project={projects.length > 1 ? projects.find((project) => project.id === approvalProjectId)?.name : undefined}
             onResolve={onResolve}
             onDenyExplain={onDenyExplain}
             watching={access !== "full"}
@@ -537,10 +545,7 @@ export function TabletShell({
   onPostReview: (artifactId: string, body: string) => Promise<void>
 }) {
   const [reviewOpen, setReviewOpen] = useState(false)
-  const fallbackSessionId = snapshot.activeSessionId ?? snapshot.sessions[0]?.id
-  const sessionId = selectedSessionId && snapshot.sessions.some((session) => session.id === selectedSessionId)
-    ? selectedSessionId
-    : fallbackSessionId
+  const sessionId = tabletSessionId(snapshot, selectedSessionId)
   const detail = useMemo(
     () => sessionId ? sessionDetail(snapshot, sessionId, access) : undefined,
     [access, sessionId, snapshot],

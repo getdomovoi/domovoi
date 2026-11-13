@@ -31,24 +31,34 @@ const countTone: Record<GroupTone, { box: string, label: string }> = {
   muted: { box: "bg-muted", label: "text-muted-foreground" },
 }
 
-const groupTone: Record<SessionGroupId | "unreachable", GroupTone> = {
+type GroupHeadingId = SessionGroupId | "unreachable"
+type GroupToneKey = Exclude<GroupHeadingId, `project:${string}`> | "project"
+
+const groupTone: Record<GroupToneKey, GroupTone> = {
   "needs-you": "warning",
   running: "success",
   quiet: "muted",
   unreachable: "muted",
+  project: "muted",
+}
+
+function isProjectGroup(id: GroupHeadingId): id is `project:${string}` {
+  return id.startsWith("project:")
 }
 
 // A heading is a label and a count, the way the design draws it. The count is
 // the group's own size, so a heading never says more than the cards under it.
 // Green says the sessions under it run now, so while the phone is not live a
 // green count goes muted, as the card lights do.
-function GroupHeading({ id, label, count, live = true }: { id: SessionGroupId | "unreachable", label: string, count: number, live?: boolean }) {
-  const tone = countTone[!live && groupTone[id] === "success" ? "muted" : groupTone[id]]
+function GroupHeading({ id, label, count, machine, live = true }: { machine?: string | undefined, id: GroupHeadingId, label: string, count: number, live?: boolean }) {
+  const key = isProjectGroup(id) ? "project" : id
+  const tone = countTone[!live && groupTone[key] === "success" ? "muted" : groupTone[key]]
   return (
     <View className="mt-1 flex-row items-center px-1">
-      <Text className="flex-1 font-sans-medium text-label uppercase tracking-[0.08em] text-faint">
+      <Text accessibilityRole="header" className={machine ? "shrink font-mono text-[12px] text-strong" : "flex-1 font-sans-medium text-label uppercase tracking-[0.08em] text-faint"}>
         {label}
       </Text>
+      {machine ? <Text variant="machine" className="ml-2 flex-1 text-faint">{machine}</Text> : null}
       <View testID={`group-count-${id}`} className={cn("min-w-[20px] items-center rounded-full px-2 py-0.5", tone.box)}>
         <Text variant="machine" className={tone.label}>{count}</Text>
       </View>
@@ -209,7 +219,7 @@ function SessionCard({ row, approvalId, now, live, onOpen, onOpenApproval }: {
         <Badge label={row.mode} tone="outline" />
       </View>
       <Text variant="machine" className="mt-[5px] pl-[17px] text-faint">
-        {[row.machine, row.waitingSince ? elapsedLabel(row.waitingSince, now) : undefined]
+        {[row.machine, row.project, row.failed ? "failed" : row.waitingSince ? elapsedLabel(row.waitingSince, now) : undefined]
           .filter((part) => part !== undefined)
           .join(" · ")}
       </Text>
@@ -270,7 +280,7 @@ export function SessionsScreen({
   // is up on a live connection: a frame the app could not read may have been
   // the change that ended the idle.
   const idleStale = !live || notice !== undefined
-  const empty = groups.length === 0
+  const empty = snapshot.sessions.length === 0
 
   return (
     <View className="flex-1 bg-background">
@@ -321,7 +331,8 @@ export function SessionsScreen({
 
         {groups.map((group) => (
           <View key={group.id} className="gap-[9px]">
-            <GroupHeading id={group.id} label={group.label} count={group.rows.length} live={live} />
+            <GroupHeading id={group.id} label={group.label} count={group.rows.length} machine={group.project ? snapshot.machine.name : undefined} live={live} />
+            {group.emptyReason ? <Text variant="note" className="px-1">{group.emptyReason}</Text> : null}
             {group.rows.map((row) => (
               <SessionCard
                 key={row.id}

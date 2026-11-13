@@ -1,4 +1,4 @@
-import type { FleetEntry, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { workspaceProjects, type Project, type FleetEntry, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { fleetSummary } from "./machine-rows"
 
@@ -6,6 +6,10 @@ export type SessionRow = {
   id: string
   title: string
   machine: string
+  projectId: string
+  // Named only in cross-project attention rows.
+  project?: string
+  failed: boolean
   runtime: string
   mode: string
   // What the session wants from the person, if anything. The phone is for
@@ -68,6 +72,8 @@ export function sessionRows(snapshot: WorkspaceSnapshot): SessionRow[] {
           id: session.id,
           title: session.title,
           machine: snapshot.machine.name,
+          projectId: session.projectId,
+          failed: session.state === "failed",
           runtime: `${session.runtime.provider}/${session.runtime.model}`,
           // Auto is part of the mode a person is deciding about, not a detail.
           mode: session.runtime.auto
@@ -97,34 +103,57 @@ export function sessionRows(snapshot: WorkspaceSnapshot): SessionRow[] {
     .map((entry) => entry.row)
 }
 
-export type SessionGroupId = "needs-you" | "running" | "quiet"
+export type SessionGroupId = "needs-you" | "running" | "quiet" | `project:${string}`
 
 export type SessionGroup = {
   id: SessionGroupId
   label: string
   rows: SessionRow[]
+  project?: Project
+  emptyReason?: string
 }
 
-// The design draws the list as three groups, needs-you first and never
-// collapsed. A session holding an approval is needs-you even while its turn
-// runs: on a phone the person is the reason to open the app, so what wants
-// them outranks what the machine is doing. Order inside a group is the row
-// order, so the longest-waiting approval still leads its group.
+// Q175 preserves the one-project layout. With several projects, attention
+// leads across all of them and each project then has flat running-first rows.
 export function sessionGroups(snapshot: WorkspaceSnapshot): SessionGroup[] {
-  const groups: SessionGroup[] = [
-    { id: "needs-you", label: "NEEDS YOU", rows: [] },
-    { id: "running", label: "RUNNING", rows: [] },
-    { id: "quiet", label: "QUIET", rows: [] },
-  ]
-  for (const row of sessionRows(snapshot)) {
-    const target = row.attention === "approval" ? 0 : row.dot === "active" ? 1 : 2
-    groups[target]!.rows.push(row)
+  const rows = sessionRows(snapshot)
+  const projects = workspaceProjects(snapshot)
+  const needsYou = (row: SessionRow) => row.attention === "approval" || (projects.length > 1 && row.failed)
+  if (projects.length <= 1) {
+    return [
+      { id: "needs-you" as const, label: "NEEDS YOU", rows: rows.filter(needsYou) },
+      { id: "running" as const, label: "RUNNING", rows: rows.filter((row) => !needsYou(row) && row.dot === "active") },
+      { id: "quiet" as const, label: "QUIET", rows: rows.filter((row) => !needsYou(row) && row.dot !== "active") },
+    ].filter((group) => group.rows.length > 0)
   }
-  return groups.filter((group) => group.rows.length > 0)
+  const attention = rows.filter(needsYou).map((row) => ({
+    ...row,
+    project: projects.find((project) => project.id === row.projectId)!.name,
+  }))
+  const groups: SessionGroup[] = attention.length
+    ? [{ id: "needs-you", label: "NEEDS YOU", rows: attention }]
+    : []
+  const ordered = [...projects].sort((a, b) => Number(b.id === snapshot.project?.id) - Number(a.id === snapshot.project?.id))
+  for (const project of ordered) {
+    const own = rows.filter((row) => row.projectId === project.id)
+    const rest = own.filter((row) => !needsYou(row))
+      .sort((a, b) => Number(b.dot === "active") - Number(a.dot === "active"))
+    groups.push({
+      id: `project:${project.id}`, label: project.name, project, rows: rest,
+      ...(rest.length ? {} : { emptyReason: own.length === 0 ? "No sessions yet"
+        : own.length === 1 ? "Its one session is in Needs you" : "Its sessions are in Needs you" }),
+    })
+  }
+  return groups
 }
 
 export function waitingCount(snapshot: WorkspaceSnapshot): number {
-  return new Set(snapshot.approvals.map((approval) => approval.sessionId)).size
+  return new Set([
+    ...snapshot.approvals.map((approval) => approval.sessionId),
+    ...(workspaceProjects(snapshot).length > 1
+      ? snapshot.sessions.filter((session) => session.state === "failed").map((session) => session.id)
+      : []),
+  ]).size
 }
 
 // The header pill: the count is of sessions, so one needs you and two need you.

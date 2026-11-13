@@ -1,6 +1,8 @@
 import {
   runtimeDiscoverResultSchema,
   workspaceSnapshotSchema,
+  workspaceProjects,
+  type Project,
   type RpcParams,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -28,8 +30,22 @@ function startableProvider(snapshot: WorkspaceSnapshot) {
     candidate.sessionCapable && candidate.status === "ready" && candidate.problem === undefined)
 }
 
-export function freshSessionReadiness(snapshot: WorkspaceSnapshot): FreshSessionReadiness {
-  if (!snapshot.project) return { canStart: false, reason: noOpenProjectReason }
+export function defaultFreshProjectId(snapshot: WorkspaceSnapshot, sourceSessionId?: string): string | undefined {
+  return snapshot.sessions.find((session) => session.id === sourceSessionId)?.projectId ?? snapshot.project?.id
+}
+
+export function projectStartReason(project: Project): string | undefined {
+  if (project.unavailableReason === "folder-missing") return "The project folder was not found. A session cannot start here."
+  if (project.unavailableReason === "folder-check-failed") return "The project folder could not be checked. A session cannot start here."
+  return undefined
+}
+
+export function freshSessionReadiness(snapshot: WorkspaceSnapshot, projectId = snapshot.project?.id): FreshSessionReadiness {
+  if (!projectId) return { canStart: false, reason: noOpenProjectReason }
+  const project = workspaceProjects(snapshot).find((candidate) => candidate.id === projectId)
+  if (!project) return { canStart: false, reason: "This project is no longer active. Choose an active project." }
+  const reason = projectStartReason(project)
+  if (reason) return { canStart: false, reason }
   if (startableProvider(snapshot)) return { canStart: true, reason: undefined }
   const blocked = snapshot.machine.providers.find((candidate) =>
     candidate.sessionCapable && candidate.status === "ready" && candidate.problem !== undefined)
@@ -41,8 +57,9 @@ export async function startFreshSession(
   prompt: string,
   call: FreshSessionCall,
   client: HandheldClient,
+  projectId = snapshot.project?.id,
 ): Promise<string> {
-  const readiness = freshSessionReadiness(snapshot)
+  const readiness = freshSessionReadiness(snapshot, projectId)
   if (!readiness.canStart) throw new Error(readiness.reason)
   const provider = startableProvider(snapshot)
   if (!provider) throw new Error("No ready session provider is available on this machine.")
@@ -54,6 +71,7 @@ export async function startFreshSession(
   const trimmed = prompt.trim()
   const firstLine = trimmed.split("\n")[0]?.trim() ?? trimmed
   const created = workspaceSnapshotSchema.parse(await call("session.create", {
+    projectId,
     title: firstLine.slice(0, 120),
     runtime: discovery.defaultRuntime,
     client,

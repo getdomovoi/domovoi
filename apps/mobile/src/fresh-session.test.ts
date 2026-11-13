@@ -1,7 +1,7 @@
 import { demoWorkspace, type RuntimeDiscoverResult, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { describe, expect, it, vi } from "vitest"
 
-import { freshSessionReadiness, startFreshSession } from "./fresh-session"
+import { defaultFreshProjectId, freshSessionReadiness, startFreshSession } from "./fresh-session"
 
 function workspace(): WorkspaceSnapshot {
   return structuredClone(demoWorkspace)
@@ -53,7 +53,7 @@ describe("fresh session start", () => {
       "session.send",
     ])
     expect(call).not.toHaveBeenCalledWith("project.open", expect.anything())
-    expect(call.mock.calls[1]?.[1]).toMatchObject({ runtime: discovery.defaultRuntime, client: "phone" })
+    expect(call.mock.calls[1]?.[1]).toMatchObject({ runtime: discovery.defaultRuntime, client: "phone", projectId: snapshot.project!.id })
     // A session made a moment ago has no comment, and the send says so
     // (ruling Q402: the daemon attaches only what a message names).
     expect(call.mock.calls[2]?.[1]).toEqual({
@@ -113,5 +113,41 @@ describe("fresh session start", () => {
     ]
 
     expect(freshSessionReadiness(snapshot)).toEqual({ canStart: false, reason: outdated })
+  })
+})
+
+
+describe("fresh session project", () => {
+  it("defaults to the source session project, otherwise the focused project", () => {
+    const snapshot = workspace()
+    const b = { ...snapshot.project!, id: "project-b", name: "Project B" }
+    snapshot.projects = [snapshot.project!, b]
+    snapshot.sessions[0]!.projectId = b.id
+    expect(defaultFreshProjectId(snapshot, snapshot.sessions[0]!.id)).toBe(b.id)
+    expect(defaultFreshProjectId(snapshot)).toBe(snapshot.project!.id)
+    expect(defaultFreshProjectId(snapshot, "removed-session")).toBe(snapshot.project!.id)
+  })
+
+  it.each([
+    ["folder-missing", "The project folder was not found. A session cannot start here."],
+    ["folder-check-failed", "The project folder could not be checked. A session cannot start here."],
+  ] as const)("blocks only the chosen project when %s", async (unavailableReason, reason) => {
+    const snapshot = workspace()
+    snapshot.machine.providers = [{ id: "codex", command: "codex", status: "ready", sessionCapable: true }]
+    const b = { ...snapshot.project!, id: "project-b", name: "Project B", unavailableReason }
+    snapshot.projects = [snapshot.project!, b]
+    expect(freshSessionReadiness(snapshot, b.id)).toEqual({ canStart: false, reason })
+    expect(freshSessionReadiness(snapshot, snapshot.project!.id).canStart).toBe(true)
+    const call = vi.fn(async () => ({}))
+    await expect(startFreshSession(snapshot, "Go", call, "phone", b.id)).rejects.toThrow(reason)
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it("does not substitute the focused project when the chosen project closes", async () => {
+    const snapshot = workspace()
+    const call = vi.fn(async () => ({}))
+    await expect(startFreshSession(snapshot, "Go", call, "phone", "project-closed"))
+      .rejects.toThrow("This project is no longer active. Choose an active project.")
+    expect(call).not.toHaveBeenCalled()
   })
 })

@@ -471,3 +471,22 @@ describe("SessionsScreen", () => {
     expect(screen.getByText("Keep Domovoi open to answer gates. Nothing is pushed to this phone yet.")).toBeOnTheScreen()
   })
 })
+
+
+describe("phone project sections", () => {
+  it("names a non-focused gate's project and draws non-pressable project headers", async () => {
+    const snapshot = workspace()
+    const a = snapshot.project!
+    const b = { ...a, id: "project-b", name: "Project B" }
+    snapshot.projects = [b, a]
+    const gate = snapshot.sessions.find((s) => s.id === snapshot.approvals[0]!.sessionId)!
+    gate.projectId = b.id
+    await draw({ snapshot, now: Date.parse(snapshot.approvals[0]!.requestedAt) + 240_000 })
+    expect(screen.getAllByRole("header").map((node) => node.props.children)).toEqual(["NEEDS YOU", a.name, b.name])
+    expect(screen.getByText(`${snapshot.machine.name} · ${b.name} · 4m`)).toBeOnTheScreen()
+    expect(screen.getByText("Its one session is in Needs you")).toBeOnTheScreen()
+    expect(screen.queryByRole("button", { name: b.name })).toBeNull()
+    expect(screen.queryByText("RUNNING")).toBeNull()
+    expect(screen.queryByRole("button", { name: /Close project/ })).toBeNull()
+  })
+})

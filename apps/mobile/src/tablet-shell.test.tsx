@@ -636,3 +636,48 @@ describe("TabletShell", () => {
   })
 })
 
+
+
+describe("tablet project sections", () => {
+  it("groups active projects with a non-focused gate first and its project named", async () => {
+    const { props } = await draw(undefined, "full", (snapshot) => {
+      const a = snapshot.project!
+      const b = { ...a, id: "project-b", name: "Project B" }
+      snapshot.projects = [b, a]
+      snapshot.sessions.find((s) => s.id === snapshot.approvals[0]!.sessionId)!.projectId = b.id
+    })
+    const pane = within(screen.getByTestId("tablet-sessions-pane"))
+    expect(pane.getAllByRole("header").map((node) => node.props.children)).toEqual(["NEEDS YOU", props.snapshot.project!.name, "Project B"])
+    expect(pane.getByText(`${props.snapshot.machine.name} · Project B · waiting on you`)).toBeOnTheScreen()
+    expect(pane.getByText("Its one session is in Needs you")).toBeOnTheScreen()
+    expect(pane.queryByText("RUNNING")).toBeNull()
+    expect(pane.queryByRole("button", { name: "Project B" })).toBeNull()
+  })
+})
+
+
+describe("tablet session project facts", () => {
+  it("omits the approval Project fact with one active project", async () => {
+    const { props } = await draw("normal", "full", (snapshot) => {
+      snapshot.projects = [snapshot.project!]
+    })
+    const thread = within(screen.getByTestId("tablet-thread"))
+    expect(thread.queryByText("Project")).toBeNull()
+    expect(thread.queryByText(props.snapshot.project!.name)).toBeNull()
+    expect(thread.getByText("Directory")).toBeOnTheScreen()
+  })
+
+  it("names B in the thread and Always here gate while A is focused", async () => {
+    const { props, approval } = await draw("normal", "full", (snapshot) => {
+      const b = { ...snapshot.project!, id: "project-b", name: "Project B", branch: "branch-b" }
+      snapshot.projects = [snapshot.project!, b]
+      snapshot.sessions.find((s) => s.id === snapshot.approvals[0]!.sessionId)!.projectId = b.id
+    })
+    expect(screen.getByText("Project B · branch-b · billing")).toBeOnTheScreen()
+    const thread = within(screen.getByTestId("tablet-thread"))
+    expect(thread.getByText("Project")).toBeOnTheScreen()
+    expect(thread.getByText("Project B")).toBeOnTheScreen()
+    await fireEvent.press(thread.getByRole("button", { name: "Always here" }))
+    expect(props.onResolve).toHaveBeenCalledWith(approval.id, "always-project", approval.revision)
+  })
+})
