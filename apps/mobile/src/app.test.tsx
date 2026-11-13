@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals"
-import { demoWorkspace, maximumReviewAnnotations, type SkillSummary, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, maximumReviewAnnotations, workspaceSnapshotSchema, type SkillSummary, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { act, fireEvent, render, screen } from "@testing-library/react-native"
 import { AppState, type AppStateStatus } from "react-native"
 
@@ -1704,6 +1704,68 @@ function enableProjectSkill(snapshot: WorkspaceSnapshot, projectId: string) {
     manifest: projectSkill.manifest, reviewedAt: "2026-09-03T10:00:00.000Z", reviewedBy: { client: "phone" },
   }]
 }
+
+describe.each([false, true])("tablet fallback project context (removed selection: %s)", (removed) => {
+  beforeEach(() => {
+    const native = jest.requireActual<typeof import("react-native")>("react-native")
+    jest.spyOn(native, "useWindowDimensions").mockReturnValue({ width: 1024, height: 768, scale: 2, fontScale: 1 })
+  })
+  afterEach(() => { jest.restoreAllMocks() })
+
+  async function openFallback() {
+    const snapshot = twoProjects()
+    snapshot.approvals = []
+    snapshot.activeSessionId = null
+    snapshot.machine.providers = [{ id: audit.runtime.provider, command: "codex", status: "ready", sessionCapable: true }]
+    const fallback = structuredClone(snapshot)
+    fallback.sessions = fallback.sessions.filter((session) => session.id === audit.id)
+    fallback.thread = fallback.thread.filter((entry) => entry.sessionId === audit.id)
+    fallback.artifacts = fallback.artifacts.filter((artifact) => artifact.sessionId === audit.id)
+    fallback.annotations = fallback.annotations.filter((annotation) => annotation.sessionId === audit.id)
+    fallback.workingPlans = fallback.workingPlans.filter((plan) => plan.sessionId === audit.id)
+    // Exercise both the first-session fallback and the active-session fallback.
+    if (removed) fallback.activeSessionId = audit.id
+    workspaceSnapshotSchema.parse(fallback)
+    const { socket } = await openApp(removed ? snapshot : fallback)
+    if (removed) {
+      await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+      await act(async () => { socket.push("workspace.changed", fallback) })
+      await settle()
+    }
+    expect(screen.getByText("Project B · branch-b · session-audit")).toBeOnTheScreen()
+    return { socket, snapshot: fallback }
+  }
+
+  it("defaults New session to the project of the displayed thread", async () => {
+    await openFallback()
+    await fireEvent.press(screen.getByRole("button", { name: "New session" }))
+    expect(screen.getByRole("button", { name: "Project Project B" })).toBeOnTheScreen()
+  })
+
+  it("requests the displayed thread's project skill catalog", async () => {
+    const { socket } = await openFallback()
+    expect(socket.requests("skill.list").at(-1)?.params).toEqual({ projectId: "project-b" })
+  })
+
+  it("keeps the displayed thread's project when opening Tools", async () => {
+    const { socket, snapshot } = await openFallback()
+    await fireEvent.press(screen.getByRole("button", { name: "Machines" }))
+    const self = snapshot.machine
+    await act(async () => {
+      socket.answer("fleet.list", { entries: [{
+        kind: "machine",
+        machine: {
+          id: self.id, label: self.name, platform: "darwin", arch: "arm64", version: "0.0.1",
+          connection: "local", capabilities: ["sessions"], protocolVersion: "0.2.0", transports: [],
+          heartbeat: { state: "online", lastSeenAt: new Date().toISOString() }, health: "healthy", self: true,
+        },
+      }] })
+    })
+    await settle()
+    await fireEvent.press(screen.getByRole("button", { name: `Tools on ${self.name}` }))
+    expect(socket.requests("tool.inventory").at(-1)?.params).toEqual({ projectId: "project-b" })
+  })
+})
 
 describe("session project facts", () => {
   it("omits the approval Project fact with one active project", async () => {

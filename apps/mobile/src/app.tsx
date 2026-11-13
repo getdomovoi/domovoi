@@ -79,6 +79,7 @@ import { queuedCancelParams, sendDelivery } from "./session-delivery"
 import { shellState, unreachableShell } from "./shell-state"
 import { waitingCount } from "./session-rows"
 import { railSelectionLeaves, TabletShell, type GateProblem } from "./tablet-shell"
+import { tabletSessionId } from "./tablet-session"
 import { useTheme } from "./theme/theme-provider"
 import {
   missingSkillProblem,
@@ -319,8 +320,9 @@ export function App() {
   const waiting = snapshot ? waitingCount(snapshot) : 0
   const projects = snapshot ? workspaceProjects(snapshot) : []
   const freshReadiness = snapshot ? freshSessionReadiness(snapshot, freshOpen ? freshProjectId : snapshot.project?.id) : undefined
+  const displayedTabletSessionId = tablet && snapshot ? tabletSessionId(snapshot, openSessionId) : undefined
   const viewedSessionId = snapshot?.approvals.find((approval) => approval.id === openApprovalId)?.sessionId
-    ?? openSessionId ?? (tablet && tab === "sessions" ? snapshot?.activeSessionId ?? undefined : undefined)
+    ?? (tablet ? displayedTabletSessionId : openSessionId)
   const sessionProjectId = snapshot?.sessions.find((session) => session.id === viewedSessionId)?.projectId
   const sessionProject = projects.find((project) => project.id === sessionProjectId)
   // A catalog from another project is never rendered, even before the reset effect.
@@ -328,7 +330,7 @@ export function App() {
   const freshProject = projects.find((project) => project.id === freshProjectId)
   const beginFresh = () => {
     if (!snapshot) return
-    setFreshProjectId(defaultFreshProjectId(snapshot, openSessionId ?? (tablet ? snapshot.activeSessionId ?? undefined : undefined)))
+    setFreshProjectId(defaultFreshProjectId(snapshot, tablet ? displayedTabletSessionId : openSessionId))
     setFreshProblem("")
     setFreshRefusal(undefined)
     setFreshOpen(true)
@@ -721,11 +723,13 @@ export function App() {
     setChosenSkills(undefined)
   }, [sessionProjectId])
 
+  // The tablet composer has no skill sheet to trigger its catalog read.
+  const needsSkillCatalog = skillsOpen || (tablet && tab === "sessions" && displayedTabletSessionId !== undefined)
   useEffect(() => {
-    if (!sessionProjectId || !skillsOpen || status !== "open" || skillsLoading) return
+    if (!sessionProjectId || !needsSkillCatalog || status !== "open" || skillsLoading) return
     if (skillCatalog && !catalogIncomplete) return
     void loadSkills()
-  }, [catalogIncomplete, loadSkills, skillCatalog, skillsLoading, skillsOpen, status, sessionProjectId])
+  }, [catalogIncomplete, loadSkills, skillCatalog, skillsLoading, needsSkillCatalog, status, sessionProjectId])
 
   // The list is asked for when a tab that draws it is opened rather than
   // polled: Machines, and Sessions for its idle card's fleet rows and its
@@ -1137,7 +1141,7 @@ export function App() {
             notice={notice}
             live={status === "open"}
             lastReadAt={lastReadAt}
-            selectedSessionId={openSessionId ?? snapshot.activeSessionId ?? undefined}
+            selectedSessionId={openSessionId}
             draft={draft}
             access={clientAccess}
             sending={sending || deciding}
@@ -1145,7 +1149,7 @@ export function App() {
             decideProblem={decideProblem}
             sendProblems={sendProblems}
             onSelectSession={(sessionId) => {
-              if (railSelectionLeaves(sessionId, { openSessionId, activeSessionId: snapshot.activeSessionId })) dropQueue()
+              if (railSelectionLeaves(sessionId, { openSessionId: displayedTabletSessionId, activeSessionId: snapshot.activeSessionId })) dropQueue()
               setOpenSessionId(sessionId)
               setOpenApprovalId(undefined)
               setDraft("")
@@ -1158,7 +1162,7 @@ export function App() {
             }}
             onChangeDraft={(next) => {
               setDraft(next)
-              const selected = openSessionId ?? snapshot.activeSessionId
+              const selected = displayedTabletSessionId
               if (selected) setSendProblem(selected, "")
             }}
             onSend={(sessionId) => void sendMessage(sessionId)}

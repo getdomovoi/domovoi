@@ -15,6 +15,7 @@ import { Mark } from "./components/mark"
 import { cn } from "./lib/cn"
 import { planForSession, planSummary } from "./plan-rows"
 import { sessionDetail, type SessionDetail, type ThreadEntry } from "./session-detail"
+import { tabletSessionId } from "./tablet-session"
 import { lastReadWords, sessionGroups, type LastRead, type SessionRow } from "./session-rows"
 import { useTheme } from "./theme/theme-provider"
 import { Button } from "./components/ui/button"
@@ -544,10 +545,7 @@ export function TabletShell({
   onPostReview: (artifactId: string, body: string) => Promise<void>
 }) {
   const [reviewOpen, setReviewOpen] = useState(false)
-  const fallbackSessionId = snapshot.activeSessionId ?? snapshot.sessions[0]?.id
-  const sessionId = selectedSessionId && snapshot.sessions.some((session) => session.id === selectedSessionId)
-    ? selectedSessionId
-    : fallbackSessionId
+  const sessionId = tabletSessionId(snapshot, selectedSessionId)
   const detail = useMemo(
     () => sessionId ? sessionDetail(snapshot, sessionId, access) : undefined,
     [access, sessionId, snapshot],
